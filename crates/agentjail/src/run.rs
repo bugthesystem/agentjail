@@ -3,10 +3,11 @@
 use crate::cgroup::Cgroup;
 use crate::config::{JailConfig, Network};
 use crate::error::{JailError, Result};
+use crate::events::{EventReceiver, EventSender, JailEvent};
 use crate::namespace::{NamespaceConfig, enter_namespaces, setup_loopback, write_uid_gid_map};
 use crate::pipe::{OutputStream, Pipe};
 use crate::seccomp::apply_filter;
-use crate::{landlock, mount};
+use crate::{events, landlock, mount};
 
 use rustix::process::{Pid, WaitOptions, WaitStatus, waitpid};
 use std::ffi::CString;
@@ -81,6 +82,8 @@ impl Jail {
         let cmd = cmd.to_string();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
+        // SAFETY: fork() is safe when we immediately either _exit() or exec() in child.
+        // Parent continues normally after fork returns.
         let child_pid = unsafe {
             match libc::fork() {
                 -1 => {
@@ -124,6 +127,7 @@ impl Jail {
             let _ = cg.add_pid(child_pid);
         }
 
+        // SAFETY: We own these fds from the pipe and transfer ownership to OutputStream.
         let stdout = unsafe { OutputStream::from_raw_fd(stdout_pipe.read.into_raw_fd()) };
         let stderr = unsafe { OutputStream::from_raw_fd(stderr_pipe.read.into_raw_fd()) };
 
@@ -146,6 +150,21 @@ impl Jail {
     pub async fn run(&self, cmd: &str, args: &[&str]) -> Result<Output> {
         let handle = self.spawn(cmd, args)?;
         handle.wait().await
+    }
+
+    /// Spawn with event stream for monitoring.
+    pub fn spawn_with_events(
+        &self,
+        cmd: &str,
+        args: &[&str],
+    ) -> Result<(JailHandle, EventReceiver)> {
+        let handle = self.spawn(cmd, args)?;
+        let (tx, rx) = events::channel();
+
+        // Send started event
+        let _ = tx.send(JailEvent::Started { pid: handle.pid });
+
+        Ok((handle, rx))
     }
 }
 
@@ -194,6 +213,82 @@ impl JailHandle {
         unsafe {
             libc::kill(self.pid as i32, libc::SIGKILL);
         }
+    }
+
+    /// Wait while streaming events to the sender.
+    ///
+    /// Streams stdout/stderr line by line and sends completion event.
+    pub async fn wait_with_events(mut self, tx: EventSender) -> Result<Output> {
+        let pid = self.pid;
+        let timeout = self.timeout;
+        let start_time = self.start_time;
+
+        let mut all_stdout = Vec::new();
+        let mut all_stderr = Vec::new();
+        let mut timed_out = false;
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+
+        let remaining = timeout.saturating_sub(start_time.elapsed());
+
+        let result = tokio::time::timeout(remaining, async {
+            loop {
+                tokio::select! {
+                    line = self.stdout.read_line(), if !stdout_done => {
+                        match line {
+                            Some(l) => {
+                                all_stdout.extend_from_slice(l.as_bytes());
+                                let _ = tx.send(JailEvent::Stdout(l.trim_end().to_string()));
+                            }
+                            None => stdout_done = true,
+                        }
+                    }
+                    line = self.stderr.read_line(), if !stderr_done => {
+                        match line {
+                            Some(l) => {
+                                all_stderr.extend_from_slice(l.as_bytes());
+                                let _ = tx.send(JailEvent::Stderr(l.trim_end().to_string()));
+                            }
+                            None => stderr_done = true,
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(50)), if stdout_done && stderr_done => {
+                        // Both streams closed, check if process exited
+                        if let Ok(Some(status)) = waitpid(Pid::from_raw(pid as i32), WaitOptions::NOHANG) {
+                            return extract_exit_code(status);
+                        }
+                    }
+                }
+            }
+        })
+        .await;
+
+        let exit_code = match result {
+            Ok(code) => code,
+            Err(_) => {
+                timed_out = true;
+                let _ = tx.send(JailEvent::TimedOut);
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+                wait_for_pid(pid).await
+            }
+        };
+
+        let duration = start_time.elapsed();
+
+        if !timed_out {
+            let _ = tx.send(JailEvent::Completed { exit_code, duration });
+        }
+
+        Ok(Output {
+            stdout: all_stdout,
+            stderr: all_stderr,
+            exit_code,
+            duration,
+            timed_out,
+        })
     }
 }
 

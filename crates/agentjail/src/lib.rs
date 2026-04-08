@@ -40,6 +40,7 @@
 mod cgroup;
 mod config;
 mod error;
+pub mod events;
 mod landlock;
 mod mount;
 mod namespace;
@@ -52,4 +53,5 @@ pub use config::{
     Access, JailConfig, Mount, Network, SeccompLevel, preset_agent, preset_build, preset_dev,
 };
 pub use error::{JailError, Result};
+pub use events::{EventReceiver, EventSender, JailEvent};
 pub use run::{Jail, JailHandle, Output};

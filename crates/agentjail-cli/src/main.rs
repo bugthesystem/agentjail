@@ -127,7 +127,6 @@ async fn run_jail(
 }
 
 async fn run_demo() -> anyhow::Result<()> {
-    use agentjail::{JailConfig, SeccompLevel};
     use std::fs;
 
     // Setup temp dirs
@@ -181,7 +180,7 @@ exit 1
     Ok(())
 }
 
-async fn spawn_demo_jails(app: Arc<Mutex<App>>, base: &PathBuf) {
+async fn spawn_demo_jails(app: Arc<Mutex<App>>, base: &std::path::Path) {
     use agentjail::{Jail, JailConfig, SeccompLevel};
 
     let source = base.join("src");

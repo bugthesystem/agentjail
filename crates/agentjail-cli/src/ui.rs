@@ -3,14 +3,10 @@
 use crate::app::{App, JailInfo, JailStatus, View, format_bytes, format_duration};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style, Stylize},
-    symbols,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Gauge, List, ListItem, Padding, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Wrap,
-    },
+    widgets::{Block, BorderType, Borders, List, ListItem, Padding, Paragraph, Wrap},
 };
 
 // Modern color palette
@@ -255,7 +251,7 @@ fn render_info_card(f: &mut Frame, jail: &JailInfo, area: Rect) {
     let (status_icon, status_color, status_text) = match jail.status {
         JailStatus::Running => ("●", SUCCESS, "Running"),
         JailStatus::Completed(0) => ("✓", INFO, "Completed"),
-        JailStatus::Completed(c) => ("✗", ERROR, "Failed"),
+        JailStatus::Completed(_) => ("✗", ERROR, "Failed"),
         JailStatus::TimedOut => ("⏱", WARNING, "Timed Out"),
         JailStatus::Killed => ("◼", ERROR, "Killed"),
     };

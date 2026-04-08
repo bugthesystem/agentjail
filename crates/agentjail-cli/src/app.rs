@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 /// A tracked jail instance.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct JailInfo {
     pub id: u32,
     pub pid: u32,
@@ -26,6 +27,7 @@ pub enum JailStatus {
     Killed,
 }
 
+#[allow(dead_code)]
 impl JailStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -46,6 +48,7 @@ pub enum View {
 }
 
 /// Application state.
+#[allow(dead_code)]
 pub struct App {
     pub jails: HashMap<u32, JailInfo>,
     pub selected: Option<u32>,
@@ -102,6 +105,7 @@ impl App {
     }
 
     /// Update jail resource usage.
+    #[allow(dead_code)]
     pub fn update_resources(&mut self, id: u32, memory_bytes: u64, cpu_percent: f32) {
         if let Some(jail) = self.jails.get_mut(&id) {
             jail.memory_bytes = memory_bytes;
@@ -170,6 +174,7 @@ impl App {
     }
 
     /// Toggle view.
+    #[allow(dead_code)]
     pub fn toggle_view(&mut self) {
         self.view = match self.view {
             View::List => View::Detail,

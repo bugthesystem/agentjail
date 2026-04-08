@@ -105,6 +105,26 @@ agentjail = "0.1"
 tokio = { version = "1", features = ["rt", "macros"] }
 ```
 
+## Event Streaming
+
+For build servers needing real-time output:
+
+```rust
+use agentjail::{Jail, JailEvent, preset_build, events};
+
+let jail = Jail::new(preset_build("./src", "./out"))?;
+let (handle, mut rx) = jail.spawn_with_events("npm", &["run", "build"])?;
+
+while let Some(event) = rx.recv().await {
+    match event {
+        JailEvent::Stdout(line) => println!("{}", line),
+        JailEvent::Stderr(line) => eprintln!("{}", line),
+        JailEvent::Completed { exit_code, .. } => break,
+        _ => {}
+    }
+}
+```
+
 ## CLI
 
 The CLI provides a real-time TUI for monitoring jails.
