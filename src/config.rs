@@ -1,0 +1,184 @@
+//! Jail configuration.
+
+use std::path::PathBuf;
+
+/// Filesystem access level for mounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Access {
+    #[default]
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
+/// Network access policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Network {
+    /// No network access at all.
+    #[default]
+    None,
+    /// Loopback (127.0.0.1) only.
+    Loopback,
+}
+
+/// Seccomp filter strictness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SeccompLevel {
+    /// No seccomp filtering.
+    Disabled,
+    /// Allow most syscalls, block dangerous ones (ptrace, reboot, etc).
+    #[default]
+    Standard,
+    /// Minimal syscalls for builds (no socket creation, etc).
+    Strict,
+}
+
+/// A filesystem mount point.
+#[derive(Debug, Clone)]
+pub struct Mount {
+    pub src: PathBuf,
+    pub dst: PathBuf,
+    pub access: Access,
+}
+
+/// Configuration for a jail instance.
+///
+/// Use struct syntax with `..Default::default()` for ergonomic construction:
+///
+/// ```ignore
+/// let config = JailConfig {
+///     source: "/path/to/code".into(),
+///     output: "/path/to/artifacts".into(),
+///     memory_mb: 1024,
+///     ..Default::default()
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct JailConfig {
+    /// Source directory (mounted read-only inside jail).
+    pub source: PathBuf,
+
+    /// Output directory (mounted write-only inside jail).
+    pub output: PathBuf,
+
+    /// Additional mounts.
+    pub mounts: Vec<Mount>,
+
+    /// Network policy.
+    pub network: Network,
+
+    /// Seccomp filtering level.
+    pub seccomp: SeccompLevel,
+
+    /// Use landlock for filesystem isolation.
+    pub landlock: bool,
+
+    /// Memory limit in megabytes.
+    pub memory_mb: u64,
+
+    /// CPU quota as percentage (100 = one full core).
+    pub cpu_percent: u64,
+
+    /// Maximum number of processes/threads.
+    pub max_pids: u64,
+
+    /// Execution timeout in seconds (0 = no limit).
+    pub timeout_secs: u64,
+
+    /// Environment variables to pass through (empty = clean env).
+    pub env: Vec<(String, String)>,
+
+    /// Use user namespace (rootless mode).
+    pub user_namespace: bool,
+
+    /// Use PID namespace (isolated process tree).
+    pub pid_namespace: bool,
+
+    /// Use IPC namespace (isolated shared memory).
+    pub ipc_namespace: bool,
+
+    /// Working directory inside the jail.
+    pub workdir: PathBuf,
+}
+
+impl Default for JailConfig {
+    fn default() -> Self {
+        Self {
+            source: PathBuf::new(),
+            output: PathBuf::new(),
+            mounts: Vec::new(),
+            network: Network::None,
+            seccomp: SeccompLevel::Standard,
+            landlock: true,
+            memory_mb: 512,
+            cpu_percent: 100,
+            max_pids: 64,
+            timeout_secs: 300,
+            env: Vec::new(),
+            user_namespace: true,
+            pid_namespace: true,
+            ipc_namespace: true,
+            workdir: PathBuf::from("/workspace"),
+        }
+    }
+}
+
+/// Preset for build sandboxes (npm install, cargo build, bun build).
+///
+/// - No network
+/// - Strict seccomp
+/// - Source read-only, output write-only
+/// - 4GB memory, 4 cores, 10 min timeout
+pub fn preset_build(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
+    JailConfig {
+        source: source.into(),
+        output: output.into(),
+        network: Network::None,
+        seccomp: SeccompLevel::Strict,
+        memory_mb: 4096,
+        cpu_percent: 400,
+        max_pids: 128,
+        timeout_secs: 600,
+        ..Default::default()
+    }
+}
+
+/// Preset for AI agent execution.
+///
+/// - No network
+/// - Standard seccomp (agents may need more syscalls)
+/// - Source read-only, output write-only
+/// - 1GB memory, 1 core, 5 min timeout
+pub fn preset_agent(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
+    JailConfig {
+        source: source.into(),
+        output: output.into(),
+        network: Network::None,
+        seccomp: SeccompLevel::Standard,
+        memory_mb: 1024,
+        cpu_percent: 100,
+        max_pids: 32,
+        timeout_secs: 300,
+        ..Default::default()
+    }
+}
+
+/// Preset for dev servers (HMR, watch mode).
+///
+/// - Loopback network (for localhost connections)
+/// - Standard seccomp
+/// - Source read-only, output read-write
+/// - 4GB memory, 4 cores, 1 hour timeout
+pub fn preset_dev(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
+    JailConfig {
+        source: source.into(),
+        output: output.into(),
+        network: Network::Loopback,
+        seccomp: SeccompLevel::Standard,
+        memory_mb: 4096,
+        cpu_percent: 400,
+        max_pids: 256,
+        timeout_secs: 3600,
+        ..Default::default()
+    }
+}
