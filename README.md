@@ -105,6 +105,32 @@ agentjail = "0.1"
 tokio = { version = "1", features = ["rt", "macros"] }
 ```
 
+## CLI
+
+The CLI provides a real-time TUI for monitoring jails.
+
+```bash
+# Run a command in a jail
+agentjail run -s ./src -o ./out npm run build
+
+# Open TUI dashboard
+agentjail tui
+
+# Demo mode (spawns sample jails)
+agentjail demo
+```
+
+### TUI Controls
+
+| Key | Action |
+|-----|--------|
+| `j`/`k` or arrows | Navigate list |
+| `Enter` | View details |
+| `Esc` | Back to list |
+| `K` | Kill selected jail |
+| `C` | Clear completed |
+| `q` | Quit |
+
 ## Development
 
 ```bash
@@ -113,6 +139,9 @@ docker compose run --rm dev cargo test
 
 # Run specific test
 docker compose run --rm dev cargo test --test integration
+
+# Build CLI
+docker compose run --rm dev cargo build -p agentjail-cli
 ```
 
 ## License
