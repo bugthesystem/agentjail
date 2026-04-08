@@ -70,9 +70,9 @@ let jail = Jail::new(config)?;
 
 | Preset | Use Case | Network | Memory | Timeout |
 |--------|----------|---------|--------|---------|
-| `preset_build` | npm/cargo/bun builds | None | 4GB | 10 min |
-| `preset_agent` | AI agent execution | None | 1GB | 5 min |
-| `preset_dev` | Dev servers (HMR) | Loopback | 4GB | 1 hour |
+| `preset_build` | npm/cargo/bun builds | None | 1GB | 10 min |
+| `preset_agent` | AI agent execution | None | 512MB | 5 min |
+| `preset_dev` | Dev servers (HMR) | Loopback | 2GB | 1 hour |
 
 ## Event Streaming
 

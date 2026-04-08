@@ -124,18 +124,13 @@ impl Default for JailConfig {
 }
 
 /// Preset for build sandboxes (npm install, cargo build, bun build).
-///
-/// - No network
-/// - Strict seccomp
-/// - Source read-only, output write-only
-/// - 4GB memory, 4 cores, 10 min timeout
 pub fn preset_build(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
     JailConfig {
         source: source.into(),
         output: output.into(),
         network: Network::None,
         seccomp: SeccompLevel::Strict,
-        memory_mb: 4096,
+        memory_mb: 1024,
         cpu_percent: 400,
         max_pids: 128,
         timeout_secs: 600,
@@ -144,18 +139,13 @@ pub fn preset_build(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> J
 }
 
 /// Preset for AI agent execution.
-///
-/// - No network
-/// - Standard seccomp (agents may need more syscalls)
-/// - Source read-only, output write-only
-/// - 1GB memory, 1 core, 5 min timeout
 pub fn preset_agent(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
     JailConfig {
         source: source.into(),
         output: output.into(),
         network: Network::None,
         seccomp: SeccompLevel::Standard,
-        memory_mb: 1024,
+        memory_mb: 512,
         cpu_percent: 100,
         max_pids: 32,
         timeout_secs: 300,
@@ -164,18 +154,13 @@ pub fn preset_agent(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> J
 }
 
 /// Preset for dev servers (HMR, watch mode).
-///
-/// - Loopback network (for localhost connections)
-/// - Standard seccomp
-/// - Source read-only, output read-write
-/// - 4GB memory, 4 cores, 1 hour timeout
 pub fn preset_dev(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
     JailConfig {
         source: source.into(),
         output: output.into(),
         network: Network::Loopback,
         seccomp: SeccompLevel::Standard,
-        memory_mb: 4096,
+        memory_mb: 2048,
         cpu_percent: 400,
         max_pids: 256,
         timeout_secs: 3600,
