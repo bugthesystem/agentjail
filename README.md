@@ -1,6 +1,16 @@
-# agentjail
+<p align="center">
+  <img src="logo.svg" width="100" height="100" alt="agentjail logo">
+</p>
 
-Minimal Linux sandbox for running untrusted code. Built for AI agents, build systems, and any scenario where you need to execute code you didn't write.
+<h1 align="center">agentjail</h1>
+
+<p align="center">
+  Minimal Linux sandbox for running untrusted code
+</p>
+
+---
+
+Built for AI agents, build systems, and any scenario where you need to execute code you didn't write.
 
 ## Features
 
@@ -18,7 +28,6 @@ use agentjail::{Jail, JailConfig, preset_build};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Use a preset for common scenarios
     let config = preset_build("/path/to/source", "/path/to/output");
 
     let jail = Jail::new(config)?;

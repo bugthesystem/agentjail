@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <!-- Outer cage/jail bars -->
+  <rect x="16" y="16" width="96" height="96" rx="8" stroke="#1a1a2e" stroke-width="4" fill="none"/>
+
+  <!-- Vertical bars -->
+  <line x1="40" y1="16" x2="40" y2="112" stroke="#1a1a2e" stroke-width="3" stroke-linecap="round"/>
+  <line x1="64" y1="16" x2="64" y2="112" stroke="#1a1a2e" stroke-width="3" stroke-linecap="round"/>
+  <line x1="88" y1="16" x2="88" y2="112" stroke="#1a1a2e" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Horizontal bars -->
+  <line x1="16" y1="44" x2="112" y2="44" stroke="#1a1a2e" stroke-width="3" stroke-linecap="round"/>
+  <line x1="16" y1="84" x2="112" y2="84" stroke="#1a1a2e" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Agent circle (contained inside) -->
+  <circle cx="64" cy="64" r="16" fill="#6366f1"/>
+
+  <!-- Agent "eye" - representing AI -->
+  <circle cx="64" cy="64" r="6" fill="#1a1a2e"/>
+  <circle cx="66" cy="62" r="2" fill="#fff"/>
+</svg>
