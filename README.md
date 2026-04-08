@@ -140,6 +140,17 @@ agentjail demo
 | `C` | Clear completed |
 | `q` | Quit |
 
+## Limitations
+
+- **Linux only** — Uses Linux-specific APIs (namespaces, seccomp, cgroups)
+- **Not a VM** — Shares kernel with host; kernel exploits could escape
+- **No GPU isolation** — GPU passthrough not supported
+- **PID namespace disabled** — Requires double-fork, not yet implemented
+- **Cgroups v2 only** — Won't work on older systems with cgroups v1
+- **Root in container** — Process runs as root inside jail (mapped to unprivileged user outside)
+
+For higher isolation guarantees, consider [gVisor](https://gvisor.dev) or [Firecracker](https://firecracker-microvm.github.io).
+
 ## Requirements
 
 - Linux kernel 5.13+ (for Landlock, optional)
