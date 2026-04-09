@@ -45,6 +45,7 @@ mod landlock;
 mod mount;
 mod namespace;
 mod pipe;
+mod proxy;
 mod run;
 mod seccomp;
 mod snapshot;

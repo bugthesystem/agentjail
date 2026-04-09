@@ -54,7 +54,7 @@ use agentjail::{Jail, JailConfig, Network, SeccompLevel};
 let config = JailConfig {
     source: "/code".into(),           // Read-only at /workspace
     output: "/artifacts".into(),      // Read-write at /output
-    network: Network::None,           // Or Network::Loopback
+    network: Network::None,           // Or Loopback, Allowlist
     seccomp: SeccompLevel::Standard,  // Or Strict, Disabled
     memory_mb: 512,
     cpu_percent: 100,                 // 100 = 1 core
@@ -67,6 +67,36 @@ let config = JailConfig {
 
 let jail = Jail::new(config)?;
 ```
+
+## Network Modes
+
+| Mode | Access | Use Case |
+|------|--------|----------|
+| `Network::None` | No network | Builds with vendored deps |
+| `Network::Loopback` | localhost only | Dev servers, local services |
+| `Network::Allowlist(vec![...])` | Whitelisted domains | AI agents, npm install |
+
+### Allowlist Mode
+
+For agents that need external access (MCP, APIs, npm):
+
+```rust
+let config = JailConfig {
+    network: Network::Allowlist(vec![
+        "api.anthropic.com".into(),
+        "api.openai.com".into(),
+        "registry.npmjs.org".into(),
+        "*.mcp.company.com".into(),  // Wildcards supported
+    ]),
+    ..Default::default()
+};
+```
+
+A built-in proxy runs on localhost, forwarding only to allowed domains.
+DNS is resolved at connection time (not stale). Works with:
+- SSE streams (Claude, OpenAI)
+- WebSocket connections (MCP)
+- HTTP requests (npm, API calls)
 
 ## Presets
 
@@ -142,8 +172,8 @@ while let Some(event) = rx.recv().await {
 | Attack | Protection |
 |--------|------------|
 | Read ~/.ssh, ~/.aws | Not mounted |
-| Network exfiltration | Network namespace |
-| Reverse shells | No network + no DNS |
+| Network exfiltration | Network namespace + allowlist proxy |
+| Reverse shells | No network or allowlist only |
 | Fork bombs | PID limit |
 | Memory exhaustion | Memory limit + OOM detection |
 | Disk thrashing | I/O bandwidth limits |

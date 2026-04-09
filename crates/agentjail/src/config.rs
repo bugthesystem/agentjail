@@ -12,13 +12,16 @@ pub enum Access {
 }
 
 /// Network access policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Network {
     /// No network access at all.
     #[default]
     None,
     /// Loopback (127.0.0.1) only.
     Loopback,
+    /// Allowlist: only connect to specified domains via built-in proxy.
+    /// Proxy runs on localhost, DNS resolved at connection time.
+    Allowlist(Vec<String>),
 }
 
 /// Seccomp filter strictness.

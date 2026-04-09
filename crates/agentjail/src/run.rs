@@ -6,8 +6,9 @@ use crate::error::{JailError, Result};
 use crate::events::{EventReceiver, EventSender, JailEvent};
 use crate::namespace::{NamespaceConfig, enter_namespaces, setup_loopback, write_uid_gid_map};
 use crate::pipe::{OutputStream, Pipe};
+use crate::proxy::ProxyConfig;
 use crate::seccomp::apply_filter;
-use crate::{events, landlock, mount};
+use crate::{events, landlock, mount, proxy};
 
 use rustix::process::{Pid, WaitOptions, WaitStatus, waitpid};
 use std::ffi::CString;
@@ -389,18 +390,28 @@ fn extract_exit_code(status: WaitStatus) -> i32 {
 /// Setup the child process inside the jail.
 fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
     // 1. Enter namespaces (PID namespace entered separately for double-fork)
+    let needs_network_ns = matches!(config.network, Network::None);
     let ns_config = NamespaceConfig {
         user: config.user_namespace,
         mount: true,
         pid: false, // Handled separately via double-fork
-        network: config.network == Network::None,
+        network: needs_network_ns,
         ipc: config.ipc_namespace,
     };
     enter_namespaces(ns_config)?;
 
-    // 2. Setup network if loopback mode
-    if config.network == Network::Loopback {
-        let _ = setup_loopback();
+    // 2. Setup network based on mode
+    match &config.network {
+        Network::None => {}
+        Network::Loopback => {
+            let _ = setup_loopback();
+        }
+        Network::Allowlist(domains) => {
+            // Setup loopback for proxy
+            let _ = setup_loopback();
+            // Spawn proxy in background
+            spawn_allowlist_proxy(domains.clone());
+        }
     }
 
     // 3. Setup filesystem mounts
@@ -423,17 +434,23 @@ fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
     rustix::process::chroot(".").map_err(JailError::Namespace)?;
     std::env::set_current_dir("/workspace").map_err(JailError::Exec)?;
 
-    // 6. Enter PID namespace and double-fork to become PID 1
+    // 6. Build final env (add proxy vars if using allowlist)
+    let mut env = config.env.clone();
+    if matches!(config.network, Network::Allowlist(_)) {
+        env.extend(proxy_env_vars());
+    }
+
+    // 7. Enter PID namespace and double-fork to become PID 1
     if config.pid_namespace {
-        enter_pid_namespace_and_exec(config, cmd, args)?;
+        enter_pid_namespace_and_exec(config, cmd, args, &env)?;
         unreachable!()
     }
 
-    // 7. Apply seccomp (must be last before exec)
+    // 8. Apply seccomp (must be last before exec)
     apply_filter(config.seccomp)?;
 
-    // 8. Exec
-    do_exec(cmd, args, &config.env)
+    // 9. Exec
+    do_exec(cmd, args, &env)
 }
 
 /// Enter PID namespace via double-fork pattern.
@@ -441,7 +458,12 @@ fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
 /// After unshare(NEWPID), the current process is NOT in the new PID namespace.
 /// Only children of this process will be. So we fork, and that child becomes
 /// PID 1 in the new namespace, then execs the target command.
-fn enter_pid_namespace_and_exec(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
+fn enter_pid_namespace_and_exec(
+    config: &JailConfig,
+    cmd: &str,
+    args: &[String],
+    env: &[(String, String)],
+) -> Result<()> {
     use rustix::thread::{UnshareFlags, unshare};
 
     // Enter new PID namespace
@@ -467,7 +489,7 @@ fn enter_pid_namespace_and_exec(config: &JailConfig, cmd: &str, args: &[String])
             }
 
             // Exec the target command
-            if let Err(e) = do_exec(cmd, args, &config.env) {
+            if let Err(e) = do_exec(cmd, args, env) {
                 eprintln!("exec failed: {}", e);
                 unsafe { libc::_exit(127) };
             }
@@ -559,4 +581,41 @@ fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
     }
 
     Err(JailError::Exec(std::io::Error::last_os_error()))
+}
+
+const PROXY_PORT: u16 = 8080;
+
+/// Spawn the allowlist proxy in a background thread.
+fn spawn_allowlist_proxy(allowlist: Vec<String>) {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime for proxy");
+
+        let config = ProxyConfig {
+            allowlist,
+            port: PROXY_PORT,
+        };
+
+        rt.block_on(async {
+            if let Err(e) = proxy::run_proxy(config).await {
+                eprintln!("proxy error: {}", e);
+            }
+        });
+    });
+
+    // Give proxy time to start
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
+
+/// Get proxy environment variables.
+fn proxy_env_vars() -> Vec<(String, String)> {
+    let proxy_url = format!("http://127.0.0.1:{}", PROXY_PORT);
+    vec![
+        ("HTTP_PROXY".into(), proxy_url.clone()),
+        ("HTTPS_PROXY".into(), proxy_url.clone()),
+        ("http_proxy".into(), proxy_url.clone()),
+        ("https_proxy".into(), proxy_url),
+    ]
 }
