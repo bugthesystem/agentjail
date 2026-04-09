@@ -89,7 +89,7 @@ impl Snapshot {
     }
 }
 
-/// Copy directory recursively.
+/// Copy directory recursively. Symlinks are skipped to prevent traversal attacks.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     if !dst.exists() {
         fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
@@ -97,10 +97,14 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
     for entry in fs::read_dir(src).map_err(JailError::Cgroup)? {
         let entry = entry.map_err(JailError::Cgroup)?;
+        let ft = entry.file_type().map_err(JailError::Cgroup)?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
-        if src_path.is_dir() {
+        if ft.is_symlink() {
+            // Skip symlinks — following them could escape the snapshot directory.
+            continue;
+        } else if ft.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             fs::copy(&src_path, &dst_path).map_err(JailError::Cgroup)?;
@@ -184,5 +188,42 @@ mod tests {
         // Cleanup
         snap.delete().unwrap();
         let _ = fs::remove_dir_all(&output);
+    }
+
+    #[test]
+    fn test_snapshot_skips_symlinks() {
+        let src = PathBuf::from("/tmp/snapshot-symlink-src");
+        let dst = PathBuf::from("/tmp/snapshot-symlink-dst");
+        let secret = PathBuf::from("/tmp/snapshot-symlink-secret");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+        let _ = fs::remove_dir_all(&secret);
+
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+
+        // Create a secret file outside the snapshot dir
+        fs::write(&secret, "TOP_SECRET_DATA").unwrap();
+
+        // Create a regular file and a symlink pointing to the secret
+        fs::write(src.join("legit.txt"), "normal").unwrap();
+        std::os::unix::fs::symlink(&secret, src.join("sneaky_link")).unwrap();
+
+        // Copy should skip the symlink
+        let snap = Snapshot::create(&src, &dst).unwrap();
+
+        // legit.txt must be copied
+        assert_eq!(fs::read_to_string(dst.join("legit.txt")).unwrap(), "normal");
+        // symlink must NOT be copied (not followed, not recreated)
+        assert!(
+            !dst.join("sneaky_link").exists(),
+            "Symlink should not be copied into snapshot"
+        );
+
+        // Cleanup
+        snap.delete().unwrap();
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_file(&secret);
     }
 }

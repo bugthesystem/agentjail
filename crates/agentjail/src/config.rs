@@ -61,7 +61,7 @@ pub struct JailConfig {
     /// Source directory (mounted read-only inside jail).
     pub source: PathBuf,
 
-    /// Output directory (mounted write-only inside jail).
+    /// Output directory (mounted read-write inside jail).
     pub output: PathBuf,
 
     /// Additional mounts.
@@ -134,7 +134,11 @@ impl Default for JailConfig {
     }
 }
 
-/// Preset for build sandboxes (npm install, cargo build, bun build).
+/// Preset for offline builds (vendored deps, no network).
+///
+/// Use this when all dependencies are already present (e.g. after npm ci
+/// with a lockfile, cargo build with vendored crates). Seccomp Strict
+/// blocks socket creation for maximum isolation.
 pub fn preset_build(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
     JailConfig {
         source: source.into(),
@@ -149,7 +153,32 @@ pub fn preset_build(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> J
     }
 }
 
+/// Preset for builds that need to fetch dependencies (npm install, cargo build).
+///
+/// Uses an allowlist proxy so only specified registries are reachable.
+/// Caller must provide the domains to allow.
+pub fn preset_install(
+    source: impl Into<PathBuf>,
+    output: impl Into<PathBuf>,
+    allowed_domains: Vec<String>,
+) -> JailConfig {
+    JailConfig {
+        source: source.into(),
+        output: output.into(),
+        network: Network::Allowlist(allowed_domains),
+        seccomp: SeccompLevel::Standard,
+        memory_mb: 512,
+        cpu_percent: 400,
+        max_pids: 128,
+        timeout_secs: 600,
+        ..Default::default()
+    }
+}
+
 /// Preset for AI agent execution.
+///
+/// No network by default. For agents that need API access, set
+/// `network: Network::Allowlist(vec!["api.anthropic.com".into()])`.
 pub fn preset_agent(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
     JailConfig {
         source: source.into(),

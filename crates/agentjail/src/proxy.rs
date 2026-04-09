@@ -8,6 +8,11 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+/// Maximum bytes for a single request line or header line.
+const MAX_LINE_BYTES: usize = 8192;
+/// Maximum number of header lines to consume before giving up.
+const MAX_HEADER_LINES: usize = 64;
+
 /// Proxy configuration.
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
@@ -27,9 +32,23 @@ impl Default for ProxyConfig {
 }
 
 /// Run the proxy server.
-pub async fn run_proxy(config: ProxyConfig) -> std::io::Result<()> {
+///
+/// Sends `Ok(())` on `ready` once bound, or `Err(msg)` on bind failure.
+pub async fn run_proxy(
+    config: ProxyConfig,
+    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+) -> std::io::Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    let listener = TcpListener::bind(addr).await?;
+    let listener = match TcpListener::bind(addr).await {
+        Ok(l) => {
+            let _ = ready.send(Ok(()));
+            l
+        }
+        Err(e) => {
+            let _ = ready.send(Err(e.to_string()));
+            return Err(e);
+        }
+    };
     let allowlist = Arc::new(config.allowlist);
 
     loop {
@@ -52,9 +71,9 @@ async fn handle_connection(
     let (reader, mut writer) = client.split();
     let mut reader = BufReader::new(reader);
 
-    // Read the request line
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line).await?;
+    // Read the request line (bounded to prevent memory exhaustion).
+    let mut request_line = String::with_capacity(256);
+    read_line_bounded(&mut reader, &mut request_line, MAX_LINE_BYTES).await?;
 
     // Parse CONNECT request: "CONNECT host:port HTTP/1.1"
     let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
@@ -72,10 +91,10 @@ async fn handle_connection(
         return Ok(());
     }
 
-    // Consume remaining headers
-    loop {
+    // Consume remaining headers (bounded count and size).
+    for _ in 0..MAX_HEADER_LINES {
         let mut line = String::new();
-        reader.read_line(&mut line).await?;
+        read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES).await?;
         if line == "\r\n" || line.is_empty() {
             break;
         }
@@ -113,6 +132,23 @@ async fn handle_connection(
         _ = target_to_client => {}
     }
 
+    Ok(())
+}
+
+/// Read a line from a buffered reader, rejecting lines over `max_bytes`.
+async fn read_line_bounded<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+    max_bytes: usize,
+) -> std::io::Result<()> {
+    let n = reader.read_line(buf).await?;
+    if n > max_bytes {
+        buf.clear();
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "line too long",
+        ));
+    }
     Ok(())
 }
 
@@ -185,5 +221,28 @@ mod tests {
         let (h, p) = parse_host_port("example.com").unwrap();
         assert_eq!(h, "example.com");
         assert_eq!(p, 443);
+    }
+
+    #[tokio::test]
+    async fn test_read_line_bounded_rejects_oversize() {
+        let long_line = format!("{}\n", "A".repeat(10_000));
+        let mut cursor = std::io::Cursor::new(long_line.into_bytes());
+        let mut reader = tokio::io::BufReader::new(&mut cursor);
+        let mut buf = String::new();
+
+        let result = read_line_bounded(&mut reader, &mut buf, 8192).await;
+        assert!(result.is_err(), "Should reject lines over MAX_LINE_BYTES");
+    }
+
+    #[tokio::test]
+    async fn test_read_line_bounded_accepts_normal() {
+        let line = "CONNECT example.com:443 HTTP/1.1\r\n";
+        let mut cursor = std::io::Cursor::new(line.as_bytes().to_vec());
+        let mut reader = tokio::io::BufReader::new(&mut cursor);
+        let mut buf = String::new();
+
+        let result = read_line_bounded(&mut reader, &mut buf, 8192).await;
+        assert!(result.is_ok(), "Should accept normal-sized lines");
+        assert!(buf.contains("CONNECT"));
     }
 }

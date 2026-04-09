@@ -98,12 +98,13 @@ impl Jail {
         if config.io_read_mbps > 0 || config.io_write_mbps > 0 {
             let read_bps = config.io_read_mbps * 1024 * 1024;
             let write_bps = config.io_write_mbps * 1024 * 1024;
-            // I/O limits are best-effort (may not work in all environments)
-            let _ = cg.set_io_limit(
+            if let Err(e) = cg.set_io_limit(
                 config.output.to_str().unwrap_or("/"),
                 read_bps,
                 write_bps,
-            );
+            ) {
+                eprintln!("warning: I/O limits not applied: {}", e);
+            }
         }
 
         Ok(Some(cg))
@@ -129,8 +130,10 @@ impl Jail {
                 }
                 0 => {
                     // Child process
-                    // Create new session and process group so we can kill all descendants
-                    libc::setsid();
+                    // Create new session and process group so we can kill all descendants.
+                    if libc::setsid() == -1 {
+                        libc::_exit(127);
+                    }
 
                     libc::dup2(stdout_pipe.write.as_raw_fd(), libc::STDOUT_FILENO);
                     libc::dup2(stderr_pipe.write.as_raw_fd(), libc::STDERR_FILENO);
@@ -151,10 +154,19 @@ impl Jail {
         drop(stdout_pipe.write);
         drop(stderr_pipe.write);
 
-        // Write UID/GID maps if using user namespace
+        // Write UID/GID maps if using user namespace.
+        // When running as root, user namespace uid mapping may fail (root
+        // already has full capabilities). Only propagate the error for
+        // unprivileged users where the mapping is required.
         if config.user_namespace {
             if let Some(pid) = Pid::from_raw(child_pid as i32) {
-                let _ = write_uid_gid_map(pid);
+                if let Err(e) = write_uid_gid_map(pid) {
+                    if rustix::process::getuid().is_root() {
+                        eprintln!("warning: uid/gid map failed (running as root): {}", e);
+                    } else {
+                        return Err(e);
+                    }
+                }
             }
         }
 
@@ -388,26 +400,30 @@ fn extract_exit_code(status: WaitStatus) -> i32 {
 /// Setup the child process inside the jail.
 fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
     // 1. Enter namespaces (PID namespace entered separately for double-fork)
-    let needs_network_ns = matches!(config.network, Network::None);
+    // Network namespace is ALWAYS created to isolate the network stack.
+    // The difference between modes is what we configure inside the namespace:
+    //   None      → empty namespace, no interfaces up
+    //   Loopback  → only loopback (lo) brought up
+    //   Allowlist → loopback up + proxy filtering outbound connections
     let ns_config = NamespaceConfig {
         user: config.user_namespace,
         mount: true,
         pid: false, // Handled separately via double-fork
-        network: needs_network_ns,
+        network: true,
         ipc: config.ipc_namespace,
     };
     enter_namespaces(ns_config)?;
 
     // 2. Setup network based on mode
     match &config.network {
-        Network::None => {}
+        Network::None => {
+            // No interfaces up — complete network blackout.
+        }
         Network::Loopback => {
-            let _ = setup_loopback();
+            setup_loopback()?;
         }
         Network::Allowlist(domains) => {
-            // Setup loopback for proxy
-            let _ = setup_loopback();
-            // Spawn proxy in background
+            setup_loopback()?;
             spawn_allowlist_proxy(domains.clone());
         }
     }
@@ -584,7 +600,11 @@ fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
 const PROXY_PORT: u16 = 8080;
 
 /// Spawn the allowlist proxy in a background thread.
+///
+/// Blocks until the proxy is listening or panics on failure.
 fn spawn_allowlist_proxy(allowlist: Vec<String>) {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<(), String>>(1);
+
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -597,14 +617,18 @@ fn spawn_allowlist_proxy(allowlist: Vec<String>) {
         };
 
         rt.block_on(async {
-            if let Err(e) = proxy::run_proxy(config).await {
+            if let Err(e) = proxy::run_proxy(config, tx).await {
                 eprintln!("proxy error: {}", e);
             }
         });
     });
 
-    // Give proxy time to start
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Wait for proxy to confirm it's listening (or report failure).
+    match rx.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("proxy bind failed: {}", e),
+        Err(_) => eprintln!("proxy thread died before signaling readiness"),
+    }
 }
 
 /// Get proxy environment variables.

@@ -18,3 +18,4 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+libc = "0.2"

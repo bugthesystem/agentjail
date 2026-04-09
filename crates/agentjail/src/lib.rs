@@ -53,6 +53,7 @@ mod snapshot;
 // Public API
 pub use config::{
     Access, JailConfig, Mount, Network, SeccompLevel, preset_agent, preset_build, preset_dev,
+    preset_install,
 };
 pub use error::{JailError, Result};
 pub use events::{EventReceiver, EventSender, JailEvent};

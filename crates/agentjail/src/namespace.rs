@@ -85,11 +85,30 @@ pub fn write_uid_gid_map(child_pid: Pid) -> Result<()> {
 }
 
 /// Setup loopback interface in network namespace.
+///
+/// Uses ioctl(SIOCSIFFLAGS) directly instead of shelling out to `ip`,
+/// so this works in minimal containers without iproute2.
 pub fn setup_loopback() -> Result<()> {
-    std::process::Command::new("ip")
-        .args(["link", "set", "lo", "up"])
-        .output()
-        .map_err(JailError::Exec)?;
+    // SAFETY: Creating a UDP socket just for the ioctl. Never used for traffic.
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if sock < 0 {
+        return Err(JailError::Exec(std::io::Error::last_os_error()));
+    }
+
+    let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+    // Write "lo\0" into ifr_name byte-by-byte to avoid c_char signedness issues.
+    ifr.ifr_name[0] = b'l' as _;
+    ifr.ifr_name[1] = b'o' as _;
+    ifr.ifr_name[2] = 0;
+    ifr.ifr_ifru.ifru_flags = (libc::IFF_UP | libc::IFF_LOOPBACK) as i16;
+
+    // SAFETY: Valid socket fd, valid ifreq struct with "lo" interface name.
+    let ret = unsafe { libc::ioctl(sock, libc::SIOCSIFFLAGS as _, &ifr) };
+    unsafe { libc::close(sock) };
+
+    if ret < 0 {
+        return Err(JailError::Exec(std::io::Error::last_os_error()));
+    }
 
     Ok(())
 }

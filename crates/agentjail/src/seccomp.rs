@@ -5,32 +5,11 @@ use crate::error::{JailError, Result};
 use seccompiler::{SeccompAction, SeccompFilter, TargetArch};
 use std::collections::BTreeMap;
 
-// Syscall numbers for x86_64 (from Linux kernel)
-const SYS_INIT_MODULE: i64 = 175;
-const SYS_FINIT_MODULE: i64 = 313;
-const SYS_DELETE_MODULE: i64 = 176;
-const SYS_REBOOT: i64 = 169;
-const SYS_KEXEC_LOAD: i64 = 246;
-const SYS_KEXEC_FILE_LOAD: i64 = 320;
-const SYS_PTRACE: i64 = 101;
-const SYS_PROCESS_VM_READV: i64 = 310;
-const SYS_PROCESS_VM_WRITEV: i64 = 311;
-const SYS_MOUNT: i64 = 165;
-const SYS_UMOUNT2: i64 = 166;
-const SYS_PIVOT_ROOT: i64 = 155;
-const SYS_SETHOSTNAME: i64 = 170;
-const SYS_SETDOMAINNAME: i64 = 171;
-const SYS_ACCT: i64 = 163;
-const SYS_SWAPON: i64 = 167;
-const SYS_SWAPOFF: i64 = 168;
-const SYS_IOPL: i64 = 172;
-const SYS_IOPERM: i64 = 173;
-const SYS_SETTIMEOFDAY: i64 = 164;
-const SYS_CLOCK_SETTIME: i64 = 227;
-const SYS_ADJTIMEX: i64 = 159;
-const SYS_ADD_KEY: i64 = 248;
-const SYS_REQUEST_KEY: i64 = 249;
-const SYS_KEYCTL: i64 = 250;
+#[cfg(target_arch = "x86_64")]
+const ARCH: TargetArch = TargetArch::x86_64;
+
+#[cfg(target_arch = "aarch64")]
+const ARCH: TargetArch = TargetArch::aarch64;
 
 /// Apply a seccomp filter to the current process.
 ///
@@ -51,58 +30,82 @@ pub fn apply_filter(level: SeccompLevel) -> Result<()> {
     Ok(())
 }
 
-fn build_standard_filter() -> Result<SeccompFilter> {
-    let blocked: &[i64] = &[
-        SYS_INIT_MODULE,
-        SYS_FINIT_MODULE,
-        SYS_DELETE_MODULE,
-        SYS_REBOOT,
-        SYS_KEXEC_LOAD,
-        SYS_KEXEC_FILE_LOAD,
-        SYS_PTRACE,
-        SYS_PROCESS_VM_READV,
-        SYS_PROCESS_VM_WRITEV,
-        SYS_MOUNT,
-        SYS_UMOUNT2,
-        SYS_PIVOT_ROOT,
-        SYS_SETHOSTNAME,
-        SYS_SETDOMAINNAME,
-        SYS_ACCT,
-        SYS_SWAPON,
-        SYS_SWAPOFF,
-        SYS_IOPL,
-        SYS_IOPERM,
-        SYS_SETTIMEOFDAY,
-        SYS_CLOCK_SETTIME,
-        SYS_ADJTIMEX,
-        SYS_ADD_KEY,
-        SYS_REQUEST_KEY,
-        SYS_KEYCTL,
+/// Syscalls blocked in both Standard and Strict modes.
+fn base_blocked_syscalls() -> Vec<i64> {
+    #[allow(unused_mut)]
+    let mut v = vec![
+        libc::SYS_init_module,
+        libc::SYS_finit_module,
+        libc::SYS_delete_module,
+        libc::SYS_reboot,
+        libc::SYS_kexec_load,
+        libc::SYS_ptrace,
+        libc::SYS_process_vm_readv,
+        libc::SYS_process_vm_writev,
+        libc::SYS_mount,
+        libc::SYS_umount2,
+        libc::SYS_pivot_root,
+        libc::SYS_sethostname,
+        libc::SYS_setdomainname,
+        libc::SYS_acct,
+        libc::SYS_swapon,
+        libc::SYS_swapoff,
+        libc::SYS_settimeofday,
+        libc::SYS_clock_settime,
+        libc::SYS_adjtimex,
+        libc::SYS_add_key,
+        libc::SYS_request_key,
+        libc::SYS_keyctl,
     ];
 
-    build_blocklist_filter(blocked)
+    // iopl/ioperm are x86-only (hardware port I/O).
+    #[cfg(target_arch = "x86_64")]
+    {
+        v.push(libc::SYS_iopl);
+        v.push(libc::SYS_ioperm);
+        v.push(libc::SYS_kexec_file_load);
+    }
+
+    v
+}
+
+fn build_standard_filter() -> Result<SeccompFilter> {
+    build_blocklist_filter(&base_blocked_syscalls())
 }
 
 fn build_strict_filter() -> Result<SeccompFilter> {
-    build_standard_filter()
+    // Everything in Standard, plus block network socket creation.
+    let mut blocked = base_blocked_syscalls();
+    blocked.extend_from_slice(&[
+        libc::SYS_socket,
+        libc::SYS_connect,
+        libc::SYS_accept,
+        libc::SYS_accept4,
+        libc::SYS_bind,
+        libc::SYS_listen,
+        libc::SYS_sendto,
+        libc::SYS_recvfrom,
+        libc::SYS_sendmsg,
+        libc::SYS_recvmsg,
+    ]);
+    build_blocklist_filter(&blocked)
 }
 
 fn build_blocklist_filter(blocked_syscalls: &[i64]) -> Result<SeccompFilter> {
-    // For a blocklist filter:
-    // - Default action: Allow (most syscalls pass through)
-    // - Match action: Errno (blocked syscalls return EPERM)
-    // - Empty rules map means "match all calls to this syscall number"
+    // Default action: Allow (most syscalls pass through)
+    // Match action: Errno (blocked syscalls return EPERM)
+    // Empty rules vec = match unconditionally for that syscall number
 
     let rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = blocked_syscalls
         .iter()
-        .map(|&num| (num, vec![]))  // Empty vec = match unconditionally
+        .map(|&num| (num, vec![]))
         .collect();
 
     SeccompFilter::new(
         rules,
         SeccompAction::Allow,
         SeccompAction::Errno(libc::EPERM as u32),
-        TargetArch::x86_64,
+        ARCH,
     )
     .map_err(|e| JailError::Seccomp(e.to_string()))
 }

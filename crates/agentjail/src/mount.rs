@@ -8,6 +8,16 @@ use std::path::Path;
 
 /// Bind mount a source path to a destination inside the jail.
 pub fn bind_mount(src: &Path, dst: &Path, access: Access) -> Result<()> {
+    do_bind_mount(src, dst, access, true)
+}
+
+/// Bind mount a device node. Same as bind_mount but omits NODEV
+/// so the device remains accessible.
+pub fn bind_mount_dev(src: &Path, dst: &Path, access: Access) -> Result<()> {
+    do_bind_mount(src, dst, access, false)
+}
+
+fn do_bind_mount(src: &Path, dst: &Path, access: Access, nodev: bool) -> Result<()> {
     if !src.exists() {
         return Ok(()); // Skip non-existent paths
     }
@@ -23,7 +33,10 @@ pub fn bind_mount(src: &Path, dst: &Path, access: Access) -> Result<()> {
 
     mount(src, dst, "", MountFlags::BIND, "").map_err(JailError::Mount)?;
 
-    let mut flags = MountFlags::BIND | MountFlags::NOSUID | MountFlags::NODEV;
+    let mut flags = MountFlags::BIND | MountFlags::NOSUID;
+    if nodev {
+        flags |= MountFlags::NODEV;
+    }
     if access == Access::ReadOnly {
         flags |= MountFlags::RDONLY;
     }
@@ -101,12 +114,21 @@ pub fn setup_root(new_root: &Path, source: &Path, output: &Path) -> Result<()> {
     let dev = new_root.join("dev");
     fs::create_dir_all(&dev).map_err(JailError::Cgroup)?;
 
-    // Create essential device nodes via bind mount
-    let dev_nodes = ["/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"];
-    for node in &dev_nodes {
+    // Device nodes use bind_mount_dev (omits NODEV so the device works).
+    // /dev/null needs write (programs redirect to it).
+    // /dev/zero, /dev/urandom, /dev/random are read-only entropy/zero sources.
+    let dev_rw = ["/dev/null"];
+    let dev_ro = ["/dev/zero", "/dev/urandom", "/dev/random"];
+
+    for node in &dev_rw {
         let src = Path::new(node);
         let dst = new_root.join(node.trim_start_matches('/'));
-        bind_mount(src, &dst, Access::ReadWrite)?;
+        bind_mount_dev(src, &dst, Access::ReadWrite)?;
+    }
+    for node in &dev_ro {
+        let src = Path::new(node);
+        let dst = new_root.join(node.trim_start_matches('/'));
+        bind_mount_dev(src, &dst, Access::ReadOnly)?;
     }
 
     Ok(())

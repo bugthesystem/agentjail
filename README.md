@@ -15,7 +15,7 @@ Built for AI agents, build systems, and any scenario where you need to execute c
 ## Features
 
 - **Rootless** — No root required, uses user namespaces
-- **Network isolation** — Block all network or allow loopback only
+- **Network isolation** — None, loopback-only, or domain allowlist via built-in proxy
 - **Filesystem isolation** — Chroot with minimal system mounts
 - **Resource limits** — Memory, CPU, PIDs, and disk I/O via cgroups v2
 - **Syscall filtering** — Seccomp-BPF blocks dangerous operations
@@ -93,18 +93,32 @@ let config = JailConfig {
 ```
 
 A built-in proxy runs on localhost, forwarding only to allowed domains.
-DNS is resolved at connection time (not stale). Works with:
-- SSE streams (Claude, OpenAI)
+DNS is resolved at connection time (not stale). Uses HTTP CONNECT
+tunneling, so all TLS-based protocols work:
+- HTTPS APIs (Claude, OpenAI, npm registry)
+- SSE streams over HTTPS
 - WebSocket connections (MCP)
-- HTTP requests (npm, API calls)
 
 ## Presets
 
 | Preset | Use Case | Network | Memory | Timeout |
 |--------|----------|---------|--------|---------|
-| `preset_build` | npm/cargo/bun builds | None | 512MB | 10 min |
+| `preset_build` | Offline builds (vendored deps) | None | 512MB | 10 min |
+| `preset_install` | npm install, cargo build | Allowlist | 512MB | 10 min |
 | `preset_agent` | AI agent execution | None | 256MB | 5 min |
 | `preset_dev` | Dev servers (HMR) | Loopback | 1GB | 1 hour |
+
+`preset_install` requires the caller to specify allowed domains:
+
+```rust
+use agentjail::{Jail, preset_install};
+
+let jail = Jail::new(preset_install("./src", "./out", vec![
+    "registry.npmjs.org".into(),
+    "registry.yarnpkg.com".into(),
+]))?;
+let result = jail.run("npm", &["install"]).await?;
+```
 
 ## Resource Monitoring
 
@@ -210,7 +224,7 @@ For stronger isolation: [gVisor](https://gvisor.dev) or [Firecracker](https://fi
 ## Requirements
 
 - Linux kernel 5.13+ (Landlock optional)
-- Rust 1.75+
+- Rust 1.85+ (edition 2024)
 - User namespace support
 
 ## Development
