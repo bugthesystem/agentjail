@@ -37,6 +37,7 @@ pub struct Output {
     pub exit_code: i32,
     pub duration: Duration,
     pub timed_out: bool,
+    pub oom_killed: bool,
     pub stats: Option<ResourceStats>,
 }
 
@@ -47,6 +48,8 @@ pub struct ResourceStats {
     pub memory_peak_bytes: u64,
     /// Total CPU time used in microseconds.
     pub cpu_usage_usec: u64,
+    /// Whether OOM killer was triggered.
+    pub oom_killed: bool,
 }
 
 impl Jail {
@@ -210,6 +213,7 @@ impl JailHandle {
 
         // Collect stats before cgroup is cleaned up
         let stats = self.collect_stats();
+        let oom_killed = stats.as_ref().map(|s| s.oom_killed).unwrap_or(false);
 
         // Read output (process is dead, pipes will EOF)
         let stdout = self.stdout.read_all().await;
@@ -221,6 +225,7 @@ impl JailHandle {
             exit_code,
             duration: start_time.elapsed(),
             timed_out,
+            oom_killed,
             stats,
         })
     }
@@ -246,6 +251,7 @@ impl JailHandle {
         Some(ResourceStats {
             memory_peak_bytes: cg.memory_peak().unwrap_or(0),
             cpu_usage_usec: cg.cpu_usage_usec().unwrap_or(0),
+            oom_killed: cg.oom_killed(),
         })
     }
 
@@ -312,9 +318,14 @@ impl JailHandle {
 
         let duration = start_time.elapsed();
         let stats = self.collect_stats();
+        let oom_killed = stats.as_ref().map(|s| s.oom_killed).unwrap_or(false);
 
         if !timed_out {
             let _ = tx.send(JailEvent::Completed { exit_code, duration });
+        }
+
+        if oom_killed {
+            let _ = tx.send(JailEvent::OomKilled);
         }
 
         Ok(Output {
@@ -323,6 +334,7 @@ impl JailHandle {
             exit_code,
             duration,
             timed_out,
+            oom_killed,
             stats,
         })
     }

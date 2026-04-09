@@ -76,7 +76,7 @@ let jail = Jail::new(config)?;
 
 ## Resource Monitoring
 
-Track memory and CPU usage per jail:
+Track memory, CPU, and OOM events per jail:
 
 ```rust
 let handle = jail.spawn("npm", &["run", "build"])?;
@@ -89,6 +89,9 @@ if let Some(stats) = handle.stats() {
 
 // Final stats after completion
 let output = handle.wait().await?;
+if output.oom_killed {
+    println!("Process was killed by OOM killer!");
+}
 if let Some(stats) = output.stats {
     println!("Peak memory: {} bytes", stats.memory_peak_bytes);
 }

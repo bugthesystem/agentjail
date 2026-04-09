@@ -20,6 +20,8 @@ pub enum JailEvent {
     Killed,
     /// Jail timed out.
     TimedOut,
+    /// Jail was killed by OOM killer.
+    OomKilled,
 }
 
 /// Sender for jail events (held by the jail runner).

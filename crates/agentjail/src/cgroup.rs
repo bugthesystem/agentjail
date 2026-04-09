@@ -97,6 +97,39 @@ impl Cgroup {
             .parse()
             .ok()
     }
+
+    /// Check if OOM killer was triggered.
+    pub fn oom_killed(&self) -> bool {
+        let events = match fs::read_to_string(self.path.join("memory.events")) {
+            Ok(e) => e,
+            Err(_) => return false,
+        };
+
+        for line in events.lines() {
+            if let Some(val) = line.strip_prefix("oom_kill ") {
+                if let Ok(count) = val.trim().parse::<u64>() {
+                    return count > 0;
+                }
+            }
+        }
+        false
+    }
+
+    /// Get OOM kill count.
+    #[allow(dead_code)]
+    pub fn oom_kill_count(&self) -> u64 {
+        let events = match fs::read_to_string(self.path.join("memory.events")) {
+            Ok(e) => e,
+            Err(_) => return 0,
+        };
+
+        for line in events.lines() {
+            if let Some(val) = line.strip_prefix("oom_kill ") {
+                return val.trim().parse().unwrap_or(0);
+            }
+        }
+        0
+    }
 }
 
 impl Drop for Cgroup {
