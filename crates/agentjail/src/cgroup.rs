@@ -53,9 +53,46 @@ impl Cgroup {
     }
 
     /// Get the cgroup path.
-    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Read current memory usage in bytes.
+    pub fn memory_usage(&self) -> Option<u64> {
+        fs::read_to_string(self.path.join("memory.current"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Read peak memory usage in bytes.
+    pub fn memory_peak(&self) -> Option<u64> {
+        fs::read_to_string(self.path.join("memory.peak"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Read CPU usage in microseconds.
+    pub fn cpu_usage_usec(&self) -> Option<u64> {
+        let stat = fs::read_to_string(self.path.join("cpu.stat")).ok()?;
+        for line in stat.lines() {
+            if let Some(val) = line.strip_prefix("usage_usec ") {
+                return val.trim().parse().ok();
+            }
+        }
+        None
+    }
+
+    /// Read current number of processes.
+    pub fn pids_current(&self) -> Option<u64> {
+        fs::read_to_string(self.path.join("pids.current"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
     }
 }
 

@@ -54,4 +54,4 @@ pub use config::{
 };
 pub use error::{JailError, Result};
 pub use events::{EventReceiver, EventSender, JailEvent};
-pub use run::{Jail, JailHandle, Output};
+pub use run::{Jail, JailHandle, Output, ResourceStats};

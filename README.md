@@ -74,6 +74,26 @@ let jail = Jail::new(config)?;
 | `preset_agent` | AI agent execution | None | 512MB | 5 min |
 | `preset_dev` | Dev servers (HMR) | Loopback | 2GB | 1 hour |
 
+## Resource Monitoring
+
+Track memory and CPU usage per jail:
+
+```rust
+let handle = jail.spawn("npm", &["run", "build"])?;
+
+// Live stats while running
+if let Some(stats) = handle.stats() {
+    println!("Memory: {} bytes", stats.memory_peak_bytes);
+    println!("CPU: {} µs", stats.cpu_usage_usec);
+}
+
+// Final stats after completion
+let output = handle.wait().await?;
+if let Some(stats) = output.stats {
+    println!("Peak memory: {} bytes", stats.memory_peak_bytes);
+}
+```
+
 ## Event Streaming
 
 For build servers needing real-time output:

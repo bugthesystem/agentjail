@@ -27,6 +27,7 @@ pub struct JailHandle {
     pub stderr: OutputStream,
     start_time: Instant,
     timeout: Duration,
+    cgroup: Option<Cgroup>,
 }
 
 /// Result of a completed jail execution.
@@ -37,6 +38,16 @@ pub struct Output {
     pub exit_code: i32,
     pub duration: Duration,
     pub timed_out: bool,
+    pub stats: Option<ResourceStats>,
+}
+
+/// Resource usage statistics from cgroup.
+#[derive(Debug, Clone, Default)]
+pub struct ResourceStats {
+    /// Peak memory usage in bytes.
+    pub memory_peak_bytes: u64,
+    /// Total CPU time used in microseconds.
+    pub cpu_usage_usec: u64,
 }
 
 impl Jail {
@@ -49,28 +60,32 @@ impl Jail {
             return Err(JailError::PathNotFound(config.output.clone()));
         }
 
-        let cgroup = if config.memory_mb > 0 || config.cpu_percent > 0 || config.max_pids > 0 {
-            let name = format!("{}", std::process::id());
-            match Cgroup::create(&name) {
-                Ok(cg) => {
-                    if config.memory_mb > 0 {
-                        let _ = cg.set_memory_limit(config.memory_mb * 1024 * 1024);
-                    }
-                    if config.cpu_percent > 0 {
-                        let _ = cg.set_cpu_quota(config.cpu_percent);
-                    }
-                    if config.max_pids > 0 {
-                        let _ = cg.set_pids_max(config.max_pids);
-                    }
-                    Some(cg)
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
+        Ok(Self { config, cgroup: None })
+    }
 
-        Ok(Self { config, cgroup })
+    /// Create cgroup for a new spawn.
+    fn create_cgroup(&self, pid: u32) -> Option<Cgroup> {
+        let config = &self.config;
+        if config.memory_mb == 0 && config.cpu_percent == 0 && config.max_pids == 0 {
+            return None;
+        }
+
+        let name = format!("{}-{}", std::process::id(), pid);
+        match Cgroup::create(&name) {
+            Ok(cg) => {
+                if config.memory_mb > 0 {
+                    let _ = cg.set_memory_limit(config.memory_mb * 1024 * 1024);
+                }
+                if config.cpu_percent > 0 {
+                    let _ = cg.set_cpu_quota(config.cpu_percent);
+                }
+                if config.max_pids > 0 {
+                    let _ = cg.set_pids_max(config.max_pids);
+                }
+                Some(cg)
+            }
+            Err(_) => None,
+        }
     }
 
     /// Spawn a command in the jail.
@@ -122,8 +137,9 @@ impl Jail {
             }
         }
 
-        // Add child to cgroup
-        if let Some(ref cg) = self.cgroup {
+        // Create and configure cgroup for this process
+        let cgroup = self.create_cgroup(child_pid);
+        if let Some(ref cg) = cgroup {
             let _ = cg.add_pid(child_pid);
         }
 
@@ -143,6 +159,7 @@ impl Jail {
             stderr,
             start_time: Instant::now(),
             timeout,
+            cgroup,
         })
     }
 
@@ -192,6 +209,9 @@ impl JailHandle {
             }
         };
 
+        // Collect stats before cgroup is cleaned up
+        let stats = self.collect_stats();
+
         // Read output (process is dead, pipes will EOF)
         let stdout = self.stdout.read_all().await;
         let stderr = self.stderr.read_all().await;
@@ -202,6 +222,7 @@ impl JailHandle {
             exit_code,
             duration: start_time.elapsed(),
             timed_out,
+            stats,
         })
     }
 
@@ -210,9 +231,23 @@ impl JailHandle {
     }
 
     pub fn kill(&self) {
+        // SAFETY: Sending SIGKILL to a process we spawned.
         unsafe {
             libc::kill(self.pid as i32, libc::SIGKILL);
         }
+    }
+
+    /// Get current resource usage (live monitoring).
+    pub fn stats(&self) -> Option<ResourceStats> {
+        self.collect_stats()
+    }
+
+    fn collect_stats(&self) -> Option<ResourceStats> {
+        let cg = self.cgroup.as_ref()?;
+        Some(ResourceStats {
+            memory_peak_bytes: cg.memory_peak().unwrap_or(0),
+            cpu_usage_usec: cg.cpu_usage_usec().unwrap_or(0),
+        })
     }
 
     /// Wait while streaming events to the sender.
@@ -277,6 +312,7 @@ impl JailHandle {
         };
 
         let duration = start_time.elapsed();
+        let stats = self.collect_stats();
 
         if !timed_out {
             let _ = tx.send(JailEvent::Completed { exit_code, duration });
@@ -288,6 +324,7 @@ impl JailHandle {
             exit_code,
             duration,
             timed_out,
+            stats,
         })
     }
 }
