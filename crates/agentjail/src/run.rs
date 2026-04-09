@@ -71,7 +71,7 @@ impl Jail {
     }
 
     /// Create cgroup for a new spawn.
-    fn create_cgroup(&self, pid: u32) -> Option<Cgroup> {
+    fn create_cgroup(&self, pid: u32) -> Result<Option<Cgroup>> {
         let config = &self.config;
         let has_limits = config.memory_mb > 0
             || config.cpu_percent > 0
@@ -80,35 +80,33 @@ impl Jail {
             || config.io_write_mbps > 0;
 
         if !has_limits {
-            return None;
+            return Ok(None);
         }
 
         let name = format!("{}-{}", std::process::id(), pid);
-        match Cgroup::create(&name) {
-            Ok(cg) => {
-                if config.memory_mb > 0 {
-                    let _ = cg.set_memory_limit(config.memory_mb * 1024 * 1024);
-                }
-                if config.cpu_percent > 0 {
-                    let _ = cg.set_cpu_quota(config.cpu_percent);
-                }
-                if config.max_pids > 0 {
-                    let _ = cg.set_pids_max(config.max_pids);
-                }
-                if config.io_read_mbps > 0 || config.io_write_mbps > 0 {
-                    // Apply I/O limits to the output directory's device
-                    let read_bps = config.io_read_mbps * 1024 * 1024;
-                    let write_bps = config.io_write_mbps * 1024 * 1024;
-                    let _ = cg.set_io_limit(
-                        config.output.to_str().unwrap_or("/"),
-                        read_bps,
-                        write_bps,
-                    );
-                }
-                Some(cg)
-            }
-            Err(_) => None,
+        let cg = Cgroup::create(&name)?;
+
+        if config.memory_mb > 0 {
+            cg.set_memory_limit(config.memory_mb * 1024 * 1024)?;
         }
+        if config.cpu_percent > 0 {
+            cg.set_cpu_quota(config.cpu_percent)?;
+        }
+        if config.max_pids > 0 {
+            cg.set_pids_max(config.max_pids)?;
+        }
+        if config.io_read_mbps > 0 || config.io_write_mbps > 0 {
+            let read_bps = config.io_read_mbps * 1024 * 1024;
+            let write_bps = config.io_write_mbps * 1024 * 1024;
+            // I/O limits are best-effort (may not work in all environments)
+            let _ = cg.set_io_limit(
+                config.output.to_str().unwrap_or("/"),
+                read_bps,
+                write_bps,
+            );
+        }
+
+        Ok(Some(cg))
     }
 
     /// Spawn a command in the jail.
@@ -161,9 +159,9 @@ impl Jail {
         }
 
         // Create and configure cgroup for this process
-        let cgroup = self.create_cgroup(child_pid);
+        let cgroup = self.create_cgroup(child_pid)?;
         if let Some(ref cg) = cgroup {
-            let _ = cg.add_pid(child_pid);
+            cg.add_pid(child_pid)?;
         }
 
         // SAFETY: We own these fds from the pipe and transfer ownership to OutputStream.
