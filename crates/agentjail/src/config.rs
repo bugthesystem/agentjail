@@ -82,6 +82,12 @@ pub struct JailConfig {
     /// Maximum number of processes/threads.
     pub max_pids: u64,
 
+    /// Disk read bandwidth limit in MB/s (0 = unlimited).
+    pub io_read_mbps: u64,
+
+    /// Disk write bandwidth limit in MB/s (0 = unlimited).
+    pub io_write_mbps: u64,
+
     /// Execution timeout in seconds (0 = no limit).
     pub timeout_secs: u64,
 
@@ -113,6 +119,8 @@ impl Default for JailConfig {
             memory_mb: 512,
             cpu_percent: 100,
             max_pids: 64,
+            io_read_mbps: 0,
+            io_write_mbps: 0,
             timeout_secs: 300,
             env: Vec::new(),
             user_namespace: true,

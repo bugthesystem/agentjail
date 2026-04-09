@@ -59,6 +59,8 @@ let config = JailConfig {
     memory_mb: 512,
     cpu_percent: 100,                 // 100 = 1 core
     max_pids: 64,
+    io_read_mbps: 100,                // Disk read limit (0 = unlimited)
+    io_write_mbps: 50,                // Disk write limit (0 = unlimited)
     timeout_secs: 300,
     ..Default::default()
 };
@@ -136,6 +138,7 @@ while let Some(event) = rx.recv().await {
 | Reverse shells | No network + DNS resolution fails |
 | Fork bombs | PID limit via cgroups |
 | Memory exhaustion | Memory limit via cgroups |
+| Disk thrashing | I/O bandwidth limits via cgroups |
 | Escape via `/home`, `/var` | Not mounted |
 | Syscall attacks | Seccomp blocklist |
 | Signal host processes | PID namespace isolation |

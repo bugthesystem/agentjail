@@ -130,6 +130,80 @@ impl Cgroup {
         }
         0
     }
+
+    /// Set I/O bandwidth limits.
+    ///
+    /// Format for io.max: "MAJ:MIN rbps=N wbps=N riops=N wiops=N"
+    /// - rbps/wbps: read/write bytes per second
+    /// - riops/wiops: read/write IOPS
+    pub fn set_io_limit(&self, device: &str, read_bps: u64, write_bps: u64) -> Result<()> {
+        // Get device major:minor from path
+        let dev_id = get_device_id(device)?;
+        let value = format!("{} rbps={} wbps={}", dev_id, read_bps, write_bps);
+        fs::write(self.path.join("io.max"), value).map_err(JailError::Cgroup)
+    }
+
+    /// Set I/O bandwidth limits with IOPS.
+    #[allow(dead_code)]
+    pub fn set_io_limit_full(
+        &self,
+        device: &str,
+        read_bps: u64,
+        write_bps: u64,
+        read_iops: u64,
+        write_iops: u64,
+    ) -> Result<()> {
+        let dev_id = get_device_id(device)?;
+        let value = format!(
+            "{} rbps={} wbps={} riops={} wiops={}",
+            dev_id, read_bps, write_bps, read_iops, write_iops
+        );
+        fs::write(self.path.join("io.max"), value).map_err(JailError::Cgroup)
+    }
+
+    /// Read I/O statistics.
+    pub fn io_stats(&self) -> Option<IoStats> {
+        let stat = fs::read_to_string(self.path.join("io.stat")).ok()?;
+        let mut total = IoStats::default();
+
+        for line in stat.lines() {
+            // Format: "MAJ:MIN rbytes=N wbytes=N rios=N wios=N"
+            for part in line.split_whitespace().skip(1) {
+                if let Some(val) = part.strip_prefix("rbytes=") {
+                    total.read_bytes += val.parse::<u64>().unwrap_or(0);
+                } else if let Some(val) = part.strip_prefix("wbytes=") {
+                    total.write_bytes += val.parse::<u64>().unwrap_or(0);
+                } else if let Some(val) = part.strip_prefix("rios=") {
+                    total.read_ios += val.parse::<u64>().unwrap_or(0);
+                } else if let Some(val) = part.strip_prefix("wios=") {
+                    total.write_ios += val.parse::<u64>().unwrap_or(0);
+                }
+            }
+        }
+
+        Some(total)
+    }
+}
+
+/// I/O statistics from cgroup.
+#[derive(Debug, Clone, Default)]
+pub struct IoStats {
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    pub read_ios: u64,
+    pub write_ios: u64,
+}
+
+/// Get device major:minor from path.
+fn get_device_id(path: &str) -> Result<String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let meta = fs::metadata(path).map_err(JailError::Cgroup)?;
+    let dev = meta.dev();
+    let major = libc::major(dev);
+    let minor = libc::minor(dev);
+
+    Ok(format!("{}:{}", major, minor))
 }
 
 impl Drop for Cgroup {

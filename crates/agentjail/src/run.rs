@@ -50,6 +50,10 @@ pub struct ResourceStats {
     pub cpu_usage_usec: u64,
     /// Whether OOM killer was triggered.
     pub oom_killed: bool,
+    /// Total bytes read from disk.
+    pub io_read_bytes: u64,
+    /// Total bytes written to disk.
+    pub io_write_bytes: u64,
 }
 
 impl Jail {
@@ -68,7 +72,13 @@ impl Jail {
     /// Create cgroup for a new spawn.
     fn create_cgroup(&self, pid: u32) -> Option<Cgroup> {
         let config = &self.config;
-        if config.memory_mb == 0 && config.cpu_percent == 0 && config.max_pids == 0 {
+        let has_limits = config.memory_mb > 0
+            || config.cpu_percent > 0
+            || config.max_pids > 0
+            || config.io_read_mbps > 0
+            || config.io_write_mbps > 0;
+
+        if !has_limits {
             return None;
         }
 
@@ -83,6 +93,16 @@ impl Jail {
                 }
                 if config.max_pids > 0 {
                     let _ = cg.set_pids_max(config.max_pids);
+                }
+                if config.io_read_mbps > 0 || config.io_write_mbps > 0 {
+                    // Apply I/O limits to the output directory's device
+                    let read_bps = config.io_read_mbps * 1024 * 1024;
+                    let write_bps = config.io_write_mbps * 1024 * 1024;
+                    let _ = cg.set_io_limit(
+                        config.output.to_str().unwrap_or("/"),
+                        read_bps,
+                        write_bps,
+                    );
                 }
                 Some(cg)
             }
@@ -248,10 +268,13 @@ impl JailHandle {
 
     fn collect_stats(&self) -> Option<ResourceStats> {
         let cg = self.cgroup.as_ref()?;
+        let io = cg.io_stats().unwrap_or_default();
         Some(ResourceStats {
             memory_peak_bytes: cg.memory_peak().unwrap_or(0),
             cpu_usage_usec: cg.cpu_usage_usec().unwrap_or(0),
             oom_killed: cg.oom_killed(),
+            io_read_bytes: io.read_bytes,
+            io_write_bytes: io.write_bytes,
         })
     }
 
