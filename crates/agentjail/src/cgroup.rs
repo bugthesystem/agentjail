@@ -53,11 +53,13 @@ impl Cgroup {
     }
 
     /// Get the cgroup path.
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Read current memory usage in bytes.
+    #[allow(dead_code)]
     pub fn memory_usage(&self) -> Option<u64> {
         fs::read_to_string(self.path.join("memory.current"))
             .ok()?
@@ -87,6 +89,7 @@ impl Cgroup {
     }
 
     /// Read current number of processes.
+    #[allow(dead_code)]
     pub fn pids_current(&self) -> Option<u64> {
         fs::read_to_string(self.path.join("pids.current"))
             .ok()?

@@ -118,7 +118,7 @@ while let Some(event) = rx.recv().await {
 
 ### Layers
 
-1. **Namespaces** — Isolated mount, network, IPC, and user views
+1. **Namespaces** — Isolated mount, network, IPC, PID, and user views
 2. **Chroot** — Process sees minimal filesystem
 3. **Seccomp** — Blocks dangerous syscalls (ptrace, mount, reboot, etc.)
 4. **Cgroups v2** — Enforces resource limits
@@ -135,6 +135,7 @@ while let Some(event) = rx.recv().await {
 | Memory exhaustion | Memory limit via cgroups |
 | Escape via `/home`, `/var` | Not mounted |
 | Syscall attacks | Seccomp blocklist |
+| Signal host processes | PID namespace isolation |
 
 ## CLI
 
@@ -165,7 +166,7 @@ agentjail demo
 - **Linux only** — Uses Linux-specific APIs (namespaces, seccomp, cgroups)
 - **Not a VM** — Shares kernel with host; kernel exploits could escape
 - **No GPU isolation** — GPU passthrough not supported
-- **PID namespace disabled** — Requires double-fork, not yet implemented
+- **PID namespace overhead** — Uses double-fork pattern, slight process tree complexity
 - **Cgroups v2 only** — Won't work on older systems with cgroups v1
 - **Root in container** — Process runs as root inside jail (mapped to unprivileged user outside)
 

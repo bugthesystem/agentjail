@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 /// A configured jail ready to execute commands.
 pub struct Jail {
     config: JailConfig,
-    cgroup: Option<Cgroup>,
 }
 
 /// Handle to a running jailed process.
@@ -60,7 +59,7 @@ impl Jail {
             return Err(JailError::PathNotFound(config.output.clone()));
         }
 
-        Ok(Self { config, cgroup: None })
+        Ok(Self { config })
     }
 
     /// Create cgroup for a new spawn.
@@ -354,11 +353,11 @@ fn extract_exit_code(status: WaitStatus) -> i32 {
 
 /// Setup the child process inside the jail.
 fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
-    // 1. Enter namespaces
+    // 1. Enter namespaces (PID namespace entered separately for double-fork)
     let ns_config = NamespaceConfig {
         user: config.user_namespace,
         mount: true,
-        pid: false, // Disabled - requires double-fork
+        pid: false, // Handled separately via double-fork
         network: config.network == Network::None,
         ipc: config.ipc_namespace,
     };
@@ -389,10 +388,112 @@ fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
     rustix::process::chroot(".").map_err(JailError::Namespace)?;
     std::env::set_current_dir("/workspace").map_err(JailError::Exec)?;
 
-    // 6. Apply seccomp (must be last)
+    // 6. Enter PID namespace and double-fork to become PID 1
+    if config.pid_namespace {
+        enter_pid_namespace_and_exec(config, cmd, args)?;
+        unreachable!()
+    }
+
+    // 7. Apply seccomp (must be last before exec)
     apply_filter(config.seccomp)?;
 
-    // 7. Exec
+    // 8. Exec
+    do_exec(cmd, args, &config.env)
+}
+
+/// Enter PID namespace via double-fork pattern.
+///
+/// After unshare(NEWPID), the current process is NOT in the new PID namespace.
+/// Only children of this process will be. So we fork, and that child becomes
+/// PID 1 in the new namespace, then execs the target command.
+fn enter_pid_namespace_and_exec(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
+    use rustix::thread::{UnshareFlags, unshare};
+
+    // Enter new PID namespace
+    unshare(UnshareFlags::NEWPID).map_err(JailError::Namespace)?;
+
+    // Fork - child will be PID 1 in the new namespace
+    // SAFETY: fork() is safe when we immediately either _exit() or exec() in child.
+    let pid = unsafe { libc::fork() };
+
+    match pid {
+        -1 => Err(JailError::Fork(rustix::io::Errno::from_raw_os_error(
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+        ))),
+        0 => {
+            // Child: now PID 1 in the new namespace
+            // Remount /proc for this PID namespace
+            let _ = remount_proc();
+
+            // Apply seccomp (must be last before exec)
+            if let Err(e) = apply_filter(config.seccomp) {
+                eprintln!("seccomp failed: {}", e);
+                unsafe { libc::_exit(127) };
+            }
+
+            // Exec the target command
+            if let Err(e) = do_exec(cmd, args, &config.env) {
+                eprintln!("exec failed: {}", e);
+                unsafe { libc::_exit(127) };
+            }
+            unreachable!()
+        }
+        child_pid => {
+            // Parent: wait for child and propagate exit status
+            let mut status: libc::c_int = 0;
+            // SAFETY: Waiting for our own child with valid pointer.
+            unsafe {
+                libc::waitpid(child_pid, &mut status, 0);
+            }
+
+            let exit_code = if libc::WIFEXITED(status) {
+                libc::WEXITSTATUS(status)
+            } else if libc::WIFSIGNALED(status) {
+                128 + libc::WTERMSIG(status)
+            } else {
+                1
+            };
+
+            // SAFETY: Exiting the intermediate process cleanly.
+            unsafe { libc::_exit(exit_code) };
+        }
+    }
+}
+
+/// Remount /proc for the new PID namespace.
+fn remount_proc() -> Result<()> {
+    use std::ffi::CString;
+
+    let proc = CString::new("/proc").unwrap();
+    let procfs = CString::new("proc").unwrap();
+
+    // First unmount the old /proc (from parent PID namespace)
+    // SAFETY: Unmounting /proc with valid C string.
+    unsafe {
+        libc::umount2(proc.as_ptr(), libc::MNT_DETACH);
+    }
+
+    // Mount fresh /proc for this PID namespace
+    // SAFETY: Mounting proc filesystem with valid C strings.
+    let ret = unsafe {
+        libc::mount(
+            procfs.as_ptr(),
+            proc.as_ptr(),
+            procfs.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(JailError::Exec(std::io::Error::last_os_error()))
+    }
+}
+
+/// Execute the target command.
+fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
     let c_cmd =
         CString::new(cmd).map_err(|_| JailError::Exec(std::io::Error::other("invalid command")))?;
 
@@ -406,8 +507,7 @@ fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
         .chain(std::iter::once(std::ptr::null()))
         .collect();
 
-    let c_env: Vec<CString> = config
-        .env
+    let c_env: Vec<CString> = env
         .iter()
         .filter_map(|(k, v)| CString::new(format!("{}={}", k, v)).ok())
         .collect();
@@ -418,6 +518,7 @@ fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
         .chain(std::iter::once(std::ptr::null()))
         .collect();
 
+    // SAFETY: execve with valid C strings and null-terminated arrays.
     unsafe {
         libc::execve(c_cmd.as_ptr(), c_args_ptrs.as_ptr(), c_env_ptrs.as_ptr());
     }

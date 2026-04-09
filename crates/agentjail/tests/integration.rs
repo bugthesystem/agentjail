@@ -38,6 +38,7 @@ fn test_config(source: PathBuf, output: PathBuf) -> JailConfig {
         memory_mb: 0,
         cpu_percent: 0,
         max_pids: 0,
+        pid_namespace: true, // Test with PID namespace enabled
         ..Default::default()
     }
 }
@@ -215,6 +216,34 @@ async fn test_workspace_readonly() {
     assert!(
         stdout.contains("WRITE_BLOCKED") || stdout.contains("Read-only"),
         "Workspace should be read-only, got: {}",
+        stdout
+    );
+
+    cleanup_test_dirs(&source, &output);
+}
+
+#[tokio::test]
+async fn test_pid_namespace() {
+    let (source, output) = setup_test_dirs("pidns");
+
+    // Check that the process sees itself as PID 1 in the new namespace
+    fs::write(source.join("check_pid.sh"), "#!/bin/sh\necho PID=$$\n").unwrap();
+
+    let mut config = test_config(source.clone(), output.clone());
+    config.pid_namespace = true;
+
+    let jail = Jail::new(config).unwrap();
+    let result = jail
+        .run("/bin/sh", &["/workspace/check_pid.sh"])
+        .await
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    // In PID namespace, the shell should be PID 1
+    assert!(
+        stdout.contains("PID=1"),
+        "Process should see itself as PID 1, got: {}",
         stdout
     );
 
