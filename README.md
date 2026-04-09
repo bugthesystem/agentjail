@@ -14,13 +14,14 @@ Built for AI agents, build systems, and any scenario where you need to execute c
 
 ## Features
 
-- **Rootless by default** — No root required, uses user namespaces
-- **Network isolation** — Block all network access or allow loopback only
+- **Rootless** — No root required, uses user namespaces
+- **Network isolation** — Block all network or allow loopback only
 - **Filesystem isolation** — Chroot with minimal system mounts
-- **Resource limits** — Memory, CPU, and process limits via cgroups v2
+- **Resource limits** — Memory, CPU, PIDs, and disk I/O via cgroups v2
 - **Syscall filtering** — Seccomp-BPF blocks dangerous operations
-- **Timeout handling** — Automatic cleanup of hung processes
-- **Event streaming** — Real-time stdout/stderr for build server integration
+- **OOM detection** — Know when builds fail due to memory limits
+- **Snapshotting** — Save/restore output directory for faster rebuilds
+- **Event streaming** — Real-time stdout/stderr for build servers
 
 ## Installation
 
@@ -37,11 +38,10 @@ use agentjail::{Jail, preset_build};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = preset_build("/path/to/source", "/path/to/output");
-    let jail = Jail::new(config)?;
+    let jail = Jail::new(preset_build("./src", "./out"))?;
     let result = jail.run("npm", &["run", "build"]).await?;
 
-    println!("Exit code: {}", result.exit_code);
+    println!("Exit: {} | OOM: {}", result.exit_code, result.oom_killed);
     Ok(())
 }
 ```
@@ -52,15 +52,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 use agentjail::{Jail, JailConfig, Network, SeccompLevel};
 
 let config = JailConfig {
-    source: "/code".into(),           // Mounted read-only at /workspace
-    output: "/artifacts".into(),      // Mounted read-write at /output
+    source: "/code".into(),           // Read-only at /workspace
+    output: "/artifacts".into(),      // Read-write at /output
     network: Network::None,           // Or Network::Loopback
     seccomp: SeccompLevel::Standard,  // Or Strict, Disabled
     memory_mb: 512,
     cpu_percent: 100,                 // 100 = 1 core
     max_pids: 64,
-    io_read_mbps: 100,                // Disk read limit (0 = unlimited)
-    io_write_mbps: 50,                // Disk write limit (0 = unlimited)
+    io_read_mbps: 100,                // 0 = unlimited
+    io_write_mbps: 50,
     timeout_secs: 300,
     ..Default::default()
 };
@@ -78,41 +78,49 @@ let jail = Jail::new(config)?;
 
 ## Resource Monitoring
 
-Track memory, CPU, and OOM events per jail:
-
 ```rust
 let handle = jail.spawn("npm", &["run", "build"])?;
 
-// Live stats while running
+// Live stats
 if let Some(stats) = handle.stats() {
-    println!("Memory: {} bytes", stats.memory_peak_bytes);
-    println!("CPU: {} µs", stats.cpu_usage_usec);
+    println!("Memory: {} MB", stats.memory_peak_bytes / 1024 / 1024);
+    println!("I/O: {} MB written", stats.io_write_bytes / 1024 / 1024);
 }
 
-// Final stats after completion
+// Final results
 let output = handle.wait().await?;
 if output.oom_killed {
-    println!("Process was killed by OOM killer!");
+    eprintln!("Build killed by OOM!");
 }
-if let Some(stats) = output.stats {
-    println!("Peak memory: {} bytes", stats.memory_peak_bytes);
-}
+```
+
+## Snapshotting
+
+Save and restore output directory state for faster rebuilds:
+
+```rust
+use agentjail::Snapshot;
+
+// After successful build, save snapshot
+let snap = Snapshot::create(&output_dir, &snapshot_dir)?;
+
+// Later, restore before next build
+snap.restore()?;
+
+// Check size
+println!("Snapshot: {} MB", snap.size_bytes() / 1024 / 1024);
 ```
 
 ## Event Streaming
 
-For build servers needing real-time output:
-
 ```rust
-use agentjail::{Jail, JailEvent, preset_build};
-
-let jail = Jail::new(preset_build("./src", "./out"))?;
 let (handle, mut rx) = jail.spawn_with_events("npm", &["run", "build"])?;
 
 while let Some(event) = rx.recv().await {
     match event {
         JailEvent::Stdout(line) => println!("{}", line),
         JailEvent::Stderr(line) => eprintln!("{}", line),
+        JailEvent::OomKilled => eprintln!("OOM!"),
         JailEvent::Completed { exit_code, .. } => break,
         _ => {}
     }
@@ -123,37 +131,31 @@ while let Some(event) = rx.recv().await {
 
 ### Layers
 
-1. **Namespaces** — Isolated mount, network, IPC, PID, and user views
-2. **Chroot** — Process sees minimal filesystem
-3. **Seccomp** — Blocks dangerous syscalls (ptrace, mount, reboot, etc.)
-4. **Cgroups v2** — Enforces resource limits
-5. **Landlock** — Kernel-level filesystem access control (Linux 5.13+)
+1. **Namespaces** — Isolated mount, network, IPC, PID, user
+2. **Chroot** — Minimal filesystem view
+3. **Seccomp** — Syscall filtering
+4. **Cgroups v2** — Resource limits
+5. **Landlock** — Filesystem access control (Linux 5.13+)
 
 ### What Gets Blocked
 
-| Attack Vector | Protection |
-|--------------|------------|
-| Read `~/.ssh`, `~/.aws` | Not mounted in jail |
-| Network exfiltration | Network namespace isolation |
-| Reverse shells | No network + DNS resolution fails |
-| Fork bombs | PID limit via cgroups |
-| Memory exhaustion | Memory limit via cgroups |
-| Disk thrashing | I/O bandwidth limits via cgroups |
-| Escape via `/home`, `/var` | Not mounted |
-| Syscall attacks | Seccomp blocklist |
-| Signal host processes | PID namespace isolation |
+| Attack | Protection |
+|--------|------------|
+| Read ~/.ssh, ~/.aws | Not mounted |
+| Network exfiltration | Network namespace |
+| Reverse shells | No network + no DNS |
+| Fork bombs | PID limit |
+| Memory exhaustion | Memory limit + OOM detection |
+| Disk thrashing | I/O bandwidth limits |
+| Signal host processes | PID namespace |
+| Syscall exploits | Seccomp blocklist |
 
 ## CLI
 
 ```bash
-# Run a command in a jail
 agentjail run -s ./src -o ./out npm run build
-
-# TUI dashboard
-agentjail tui
-
-# Demo mode
-agentjail demo
+agentjail tui   # Dashboard
+agentjail demo  # Demo mode
 ```
 
 ### TUI Controls
@@ -162,35 +164,29 @@ agentjail demo
 |-----|--------|
 | `j`/`k` | Navigate |
 | `Enter` | Details |
-| `Esc` | Back |
 | `K` | Kill |
-| `C` | Clear completed |
+| `C` | Clear |
 | `q` | Quit |
 
 ## Limitations
 
-- **Linux only** — Uses Linux-specific APIs (namespaces, seccomp, cgroups)
-- **Not a VM** — Shares kernel with host; kernel exploits could escape
-- **No GPU isolation** — GPU passthrough not supported
-- **PID namespace overhead** — Uses double-fork pattern, slight process tree complexity
-- **Cgroups v2 only** — Won't work on older systems with cgroups v1
-- **Root in container** — Process runs as root inside jail (mapped to unprivileged user outside)
+- **Linux only** — Uses namespaces, seccomp, cgroups
+- **Not a VM** — Kernel exploits could escape
+- **No GPU** — GPU passthrough not supported
+- **Cgroups v2 only** — Won't work with cgroups v1
 
-For higher isolation guarantees, consider [gVisor](https://gvisor.dev) or [Firecracker](https://firecracker-microvm.github.io).
+For stronger isolation: [gVisor](https://gvisor.dev) or [Firecracker](https://firecracker-microvm.github.io).
 
 ## Requirements
 
-- Linux kernel 5.13+ (for Landlock, optional)
+- Linux kernel 5.13+ (Landlock optional)
 - Rust 1.75+
-- User namespace support for rootless mode
+- User namespace support
 
 ## Development
 
 ```bash
-# Build and test (Docker required on macOS)
 docker compose run --rm dev cargo test
-
-# Build CLI
 docker compose run --rm dev cargo build -p agentjail-cli
 ```
 

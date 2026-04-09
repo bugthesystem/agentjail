@@ -47,6 +47,7 @@ mod namespace;
 mod pipe;
 mod run;
 mod seccomp;
+mod snapshot;
 
 // Public API
 pub use config::{
@@ -55,3 +56,4 @@ pub use config::{
 pub use error::{JailError, Result};
 pub use events::{EventReceiver, EventSender, JailEvent};
 pub use run::{Jail, JailHandle, Output, ResourceStats};
+pub use snapshot::Snapshot;
