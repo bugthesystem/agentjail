@@ -36,6 +36,19 @@ pub enum SeccompLevel {
     Strict,
 }
 
+/// GPU passthrough configuration.
+#[derive(Debug, Clone, Default)]
+pub struct GpuConfig {
+    /// Enable NVIDIA GPU passthrough.
+    ///
+    /// Mounts `/dev/nvidia*` devices and host NVIDIA libraries into the jail.
+    /// This widens the attack surface — only enable for trusted workloads.
+    pub enabled: bool,
+    /// Specific GPU indices to expose (e.g., `vec![0]` for GPU 0 only).
+    /// Empty means all available GPUs.
+    pub devices: Vec<u32>,
+}
+
 /// A filesystem mount point.
 #[derive(Debug, Clone)]
 pub struct Mount {
@@ -108,6 +121,9 @@ pub struct JailConfig {
 
     /// Working directory inside the jail.
     pub workdir: PathBuf,
+
+    /// GPU passthrough.
+    pub gpu: GpuConfig,
 }
 
 impl Default for JailConfig {
@@ -130,6 +146,7 @@ impl Default for JailConfig {
             pid_namespace: true,
             ipc_namespace: true,
             workdir: PathBuf::from("/workspace"),
+            gpu: GpuConfig::default(),
         }
     }
 }
@@ -189,6 +206,29 @@ pub fn preset_agent(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> J
         cpu_percent: 100,
         max_pids: 32,
         timeout_secs: 300,
+        ..Default::default()
+    }
+}
+
+/// Preset for GPU/ML workloads (CUDA, PyTorch).
+///
+/// Mounts NVIDIA devices and libraries. Higher resource limits for
+/// training jobs. No network by default — set an allowlist if the
+/// workload needs to download models.
+pub fn preset_gpu(source: impl Into<PathBuf>, output: impl Into<PathBuf>) -> JailConfig {
+    JailConfig {
+        source: source.into(),
+        output: output.into(),
+        network: Network::None,
+        seccomp: SeccompLevel::Standard,
+        memory_mb: 8192,
+        cpu_percent: 400,
+        max_pids: 256,
+        timeout_secs: 3600,
+        gpu: GpuConfig {
+            enabled: true,
+            devices: vec![],
+        },
         ..Default::default()
     }
 }

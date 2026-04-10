@@ -8,7 +8,7 @@ use crate::namespace::{NamespaceConfig, enter_namespaces, setup_loopback, write_
 use crate::pipe::{OutputStream, Pipe};
 use crate::proxy::ProxyConfig;
 use crate::seccomp::apply_filter;
-use crate::{events, landlock, mount, proxy};
+use crate::{events, gpu, landlock, mount, proxy};
 
 use rustix::process::{Pid, WaitOptions, WaitStatus, waitpid};
 use std::ffi::CString;
@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 /// A configured jail ready to execute commands.
 pub struct Jail {
     config: JailConfig,
+    /// Pre-discovered GPU resources (if gpu.enabled).
+    gpu_resources: Option<gpu::NvidiaResources>,
 }
 
 /// Handle to a running jailed process.
@@ -59,6 +61,9 @@ pub struct ResourceStats {
 
 impl Jail {
     /// Create a new jail from configuration.
+    ///
+    /// Validates paths and discovers GPU resources upfront so errors
+    /// are reported before forking.
     pub fn new(config: JailConfig) -> Result<Self> {
         if !config.source.exists() {
             return Err(JailError::PathNotFound(config.source.clone()));
@@ -67,7 +72,16 @@ impl Jail {
             return Err(JailError::PathNotFound(config.output.clone()));
         }
 
-        Ok(Self { config })
+        let gpu_resources = if config.gpu.enabled {
+            Some(gpu::discover(&config.gpu)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            config,
+            gpu_resources,
+        })
     }
 
     /// Create cgroup for a new spawn.
@@ -116,6 +130,7 @@ impl Jail {
         let stderr_pipe = Pipe::new()?;
 
         let config = self.config.clone();
+        let gpu_resources = self.gpu_resources.clone();
         let cmd = cmd.to_string();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
@@ -140,7 +155,7 @@ impl Jail {
                     drop(stdout_pipe);
                     drop(stderr_pipe);
 
-                    if let Err(e) = setup_child(&config, &cmd, &args) {
+                    if let Err(e) = setup_child(&config, &gpu_resources, &cmd, &args) {
                         eprintln!("jail setup failed: {}", e);
                         libc::_exit(127);
                     }
@@ -398,7 +413,12 @@ fn extract_exit_code(status: WaitStatus) -> i32 {
 }
 
 /// Setup the child process inside the jail.
-fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
+fn setup_child(
+    config: &JailConfig,
+    gpu_resources: &Option<gpu::NvidiaResources>,
+    cmd: &str,
+    args: &[String],
+) -> Result<()> {
     // 1. Enter namespaces (PID namespace entered separately for double-fork)
     // Network namespace is ALWAYS created to isolate the network stack.
     // The difference between modes is what we configure inside the namespace:
@@ -434,6 +454,11 @@ fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
     let new_root = std::env::temp_dir().join(format!("agentjail-{}", std::process::id()));
     mount::setup_root(&new_root, &config.source, &config.output)?;
 
+    // 3.5. GPU passthrough: mount pre-discovered NVIDIA devices + libraries
+    if let Some(res) = &gpu_resources {
+        gpu::setup_mounts(&new_root, res)?;
+    }
+
     // 4. Apply landlock
     if config.landlock && landlock::is_available() {
         let rules = [
@@ -448,10 +473,13 @@ fn setup_child(config: &JailConfig, cmd: &str, args: &[String]) -> Result<()> {
     rustix::process::chroot(".").map_err(JailError::Namespace)?;
     std::env::set_current_dir("/workspace").map_err(JailError::Exec)?;
 
-    // 6. Build final env (add proxy vars if using allowlist)
+    // 6. Build final env (add proxy vars if using allowlist, GPU vars if enabled)
     let mut env = config.env.clone();
     if matches!(config.network, Network::Allowlist(_)) {
         env.extend(proxy_env_vars());
+    }
+    if gpu_resources.is_some() {
+        env.extend(gpu::env_vars(&config.gpu));
     }
 
     // 7. Enter PID namespace and double-fork to become PID 1

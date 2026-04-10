@@ -19,6 +19,7 @@ Built for AI agents, build systems, and any scenario where you need to execute c
 - **Filesystem isolation** — Chroot with minimal system mounts
 - **Resource limits** — Memory, CPU, PIDs, and disk I/O via cgroups v2
 - **Syscall filtering** — Seccomp-BPF blocks dangerous operations
+- **GPU passthrough** _(experimental)_ — NVIDIA CUDA/PyTorch with per-GPU isolation
 - **OOM detection** — Know when builds fail due to memory limits
 - **Snapshotting** — Save/restore output directory for faster rebuilds
 - **Event streaming** — Real-time stdout/stderr for build servers
@@ -106,6 +107,7 @@ tunneling, so all TLS-based protocols work:
 | `preset_build` | Offline builds (vendored deps) | None | 512MB | 10 min |
 | `preset_install` | npm install, cargo build | Allowlist | 512MB | 10 min |
 | `preset_agent` | AI agent execution | None | 256MB | 5 min |
+| `preset_gpu` | CUDA / PyTorch / ML training | None | 8GB | 1 hour |
 | `preset_dev` | Dev servers (HMR) | Loopback | 1GB | 1 hour |
 
 `preset_install` requires the caller to specify allowed domains:
@@ -119,6 +121,40 @@ let jail = Jail::new(preset_install("./src", "./out", vec![
 ]))?;
 let result = jail.run("npm", &["install"]).await?;
 ```
+
+## GPU Passthrough (Experimental)
+
+> **Warning:** GPU passthrough is experimental and not yet verified on
+> real hardware. Use at your own risk. See [GPU Testing](#gpu-testing)
+> for how to validate on a machine with an NVIDIA GPU.
+
+NVIDIA GPU access for CUDA/PyTorch workloads:
+
+```rust
+use agentjail::{Jail, preset_gpu};
+
+let jail = Jail::new(preset_gpu("./src", "./out"))?;
+let result = jail.run("python3", &["train.py"]).await?;
+```
+
+Or enable GPU on any preset:
+
+```rust
+use agentjail::{Jail, JailConfig, GpuConfig};
+
+let config = JailConfig {
+    gpu: GpuConfig { enabled: true, devices: vec![0] }, // GPU 0 only
+    ..Default::default()
+};
+```
+
+Automatically discovers and mounts `/dev/nvidia*` devices and host
+NVIDIA libraries. Sets `LD_LIBRARY_PATH` and `CUDA_VISIBLE_DEVICES`.
+
+**Security note:** GPU passthrough gives the jailed process direct
+`ioctl` access to the NVIDIA kernel driver. This is a large, closed-source
+attack surface. Use for trusted workloads (your own training jobs), not
+for fully adversarial code.
 
 ## Resource Monitoring
 
@@ -216,7 +252,7 @@ agentjail demo  # Demo mode
 
 - **Linux only** — Uses namespaces, seccomp, cgroups
 - **Not a VM** — Kernel exploits could escape
-- **No GPU** — GPU passthrough not supported
+- **GPU requires trust** — GPU passthrough exposes the NVIDIA kernel driver attack surface
 - **Cgroups v2 only** — Won't work with cgroups v1
 
 For stronger isolation: [gVisor](https://gvisor.dev) or [Firecracker](https://firecracker-microvm.github.io).
@@ -233,6 +269,18 @@ For stronger isolation: [gVisor](https://gvisor.dev) or [Firecracker](https://fi
 docker compose run --rm dev cargo test
 docker compose run --rm dev cargo build -p agentjail-cli
 ```
+
+### GPU Testing
+
+Requires a machine with an NVIDIA GPU and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html):
+
+```bash
+docker compose run --rm gpu cargo test --test gpu_test -- --nocapture
+```
+
+This runs real GPU tests: `nvidia-smi` inside the jail, CUDA device
+query via `libcuda.so`, and per-GPU device filtering. Without a GPU,
+these tests skip gracefully.
 
 ## License
 

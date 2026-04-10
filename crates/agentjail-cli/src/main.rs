@@ -30,13 +30,17 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Preset: build, agent, dev, test
+        /// Preset: build, install, agent, dev, gpu, test
         #[arg(short, long, default_value = "build")]
         preset: String,
 
         /// Timeout in seconds (0 = no limit)
         #[arg(short, long)]
         timeout: Option<u64>,
+
+        /// Enable GPU passthrough (NVIDIA)
+        #[arg(long)]
+        gpu: bool,
 
         /// Command to run
         cmd: String,
@@ -62,10 +66,11 @@ async fn main() -> anyhow::Result<()> {
             output,
             preset,
             timeout,
+            gpu,
             cmd,
             args,
         } => {
-            run_jail(source, output, &preset, timeout, &cmd, &args).await?;
+            run_jail(source, output, &preset, timeout, gpu, &cmd, &args).await?;
         }
         Commands::Tui => {
             let mut app = App::new();
@@ -84,15 +89,20 @@ async fn run_jail(
     output: PathBuf,
     preset: &str,
     timeout: Option<u64>,
+    gpu_flag: bool,
     cmd: &str,
     args: &[String],
 ) -> anyhow::Result<()> {
-    use agentjail::{Jail, JailConfig, SeccompLevel, preset_agent, preset_build, preset_dev};
+    use agentjail::{
+        GpuConfig, Jail, JailConfig, SeccompLevel, preset_agent, preset_build, preset_dev,
+        preset_gpu,
+    };
 
     let mut config = match preset {
         "build" => preset_build(&source, &output),
         "agent" => preset_agent(&source, &output),
         "dev" => preset_dev(&source, &output),
+        "gpu" => preset_gpu(&source, &output),
         "test" => JailConfig {
             source,
             output,
@@ -111,6 +121,14 @@ async fn run_jail(
             preset_build(&source, &output)
         }
     };
+
+    // --gpu flag enables GPU on any preset
+    if gpu_flag {
+        config.gpu = GpuConfig {
+            enabled: true,
+            devices: vec![],
+        };
+    }
 
     if let Some(t) = timeout {
         config.timeout_secs = t;

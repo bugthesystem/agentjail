@@ -41,6 +41,7 @@ mod cgroup;
 mod config;
 mod error;
 pub mod events;
+mod gpu;
 mod landlock;
 mod mount;
 mod namespace;
@@ -52,8 +53,8 @@ mod snapshot;
 
 // Public API
 pub use config::{
-    Access, JailConfig, Mount, Network, SeccompLevel, preset_agent, preset_build, preset_dev,
-    preset_install,
+    Access, GpuConfig, JailConfig, Mount, Network, SeccompLevel, preset_agent, preset_build,
+    preset_dev, preset_gpu, preset_install,
 };
 pub use error::{JailError, Result};
 pub use events::{EventReceiver, EventSender, JailEvent};
