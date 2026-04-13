@@ -35,18 +35,12 @@ fn setup_terminal() -> anyhow::Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let terminal = Terminal::new(backend)?;
-    Ok(terminal)
+    Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
 
 fn restore_terminal(terminal: &mut Tui) -> anyhow::Result<()> {
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -54,25 +48,17 @@ fn restore_terminal(terminal: &mut Tui) -> anyhow::Result<()> {
 async fn event_loop_simple(terminal: &mut Tui, app: &mut App) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, app))?;
-
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-
+                if key.kind != KeyEventKind::Press { continue; }
                 match app.view {
                     View::List => handle_list_key(app, key.code),
                     View::Detail => handle_detail_key(app, key.code),
                 }
-
-                if app.should_quit {
-                    break;
-                }
+                if app.should_quit { break; }
             }
         }
     }
-
     Ok(())
 }
 
@@ -82,26 +68,18 @@ async fn event_loop_shared(terminal: &mut Tui, app: Arc<Mutex<App>>) -> anyhow::
             let app = app.lock().await;
             terminal.draw(|f| ui::render(f, &app))?;
         }
-
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-
+                if key.kind != KeyEventKind::Press { continue; }
                 let mut app = app.lock().await;
                 match app.view {
                     View::List => handle_list_key(&mut app, key.code),
                     View::Detail => handle_detail_key(&mut app, key.code),
                 }
-
-                if app.should_quit {
-                    break;
-                }
+                if app.should_quit { break; }
             }
         }
     }
-
     Ok(())
 }
 
@@ -121,6 +99,9 @@ fn handle_detail_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Esc => app.view = View::List,
+        KeyCode::Char('j') | KeyCode::Down => app.scroll_down(),
+        KeyCode::Char('k') | KeyCode::Up => app.scroll_up(),
+        KeyCode::Char('G') => app.scroll_end(),
         KeyCode::Char('K') => app.kill_selected(),
         _ => {}
     }

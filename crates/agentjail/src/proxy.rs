@@ -1,7 +1,7 @@
 //! Lightweight HTTP CONNECT proxy for network allowlisting.
 //!
-//! Runs inside the jail's network namespace, allowing only connections
-//! to whitelisted domains. DNS is resolved at connection time.
+//! Runs in the parent process with real network access. Jailed processes
+//! reach it via a veth pair. DNS is resolved at connection time.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,8 +20,8 @@ pub struct ProxyConfig {
     pub allowlist: Vec<String>,
     /// Port to listen on (default: 8080).
     pub port: u16,
-    /// IP address to bind to (default: "127.0.0.1").
-    pub bind_ip: String,
+    /// IP address to bind to (default: localhost).
+    pub bind_ip: std::net::IpAddr,
 }
 
 impl Default for ProxyConfig {
@@ -29,7 +29,7 @@ impl Default for ProxyConfig {
         Self {
             allowlist: Vec::new(),
             port: 8080,
-            bind_ip: "127.0.0.1".into(),
+            bind_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         }
     }
 }
@@ -43,10 +43,7 @@ pub async fn run_proxy(
     ready: std::sync::mpsc::SyncSender<Result<(), String>>,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> std::io::Result<()> {
-    let ip: std::net::IpAddr = config.bind_ip.parse().map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad bind_ip: {}", e))
-    })?;
-    let addr = SocketAddr::new(ip, config.port);
+    let addr = SocketAddr::new(config.bind_ip, config.port);
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => {
             let _ = ready.send(Ok(()));

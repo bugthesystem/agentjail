@@ -1,10 +1,10 @@
-//! agentjail CLI - Real-time jail monitoring TUI
+//! agentjail CLI — sandbox runner and monitoring TUI.
 
 mod app;
 mod tui;
 mod ui;
 
-use app::{App, JailStatus};
+use app::{App, JailStatus, Stream};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,65 +22,43 @@ struct Cli {
 enum Commands {
     /// Run a command in a jail
     Run {
-        /// Source directory (mounted read-only)
         #[arg(short, long)]
         source: PathBuf,
-
-        /// Output directory (mounted read-write)
         #[arg(short, long)]
         output: PathBuf,
-
         /// Preset: build, install, agent, dev, gpu, test
         #[arg(short, long, default_value = "build")]
         preset: String,
-
-        /// Timeout in seconds (0 = no limit)
         #[arg(short, long)]
         timeout: Option<u64>,
-
         /// Enable GPU passthrough (NVIDIA)
         #[arg(long)]
         gpu: bool,
-
         /// Command to run
         cmd: String,
-
         /// Arguments
         args: Vec<String>,
     },
-
-    /// Open TUI dashboard to monitor jails
+    /// Open TUI dashboard
     Tui,
-
-    /// Demo mode: spawn sample jails and monitor in TUI
+    /// Spawn sample jails and monitor in TUI
     Demo,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
     match cli.command {
-        Commands::Run {
-            source,
-            output,
-            preset,
-            timeout,
-            gpu,
-            cmd,
-            args,
-        } => {
+        Commands::Run { source, output, preset, timeout, gpu, cmd, args } => {
             run_jail(source, output, &preset, timeout, gpu, &cmd, &args).await?;
         }
         Commands::Tui => {
-            let mut app = App::new();
-            tui::run(&mut app).await?;
+            tui::run(&mut App::new()).await?;
         }
         Commands::Demo => {
             run_demo().await?;
         }
     }
-
     Ok(())
 }
 
@@ -93,10 +71,7 @@ async fn run_jail(
     cmd: &str,
     args: &[String],
 ) -> anyhow::Result<()> {
-    use agentjail::{
-        GpuConfig, Jail, JailConfig, SeccompLevel, preset_agent, preset_build, preset_dev,
-        preset_gpu,
-    };
+    use agentjail::{GpuConfig, Jail, JailConfig, SeccompLevel, preset_agent, preset_build, preset_dev, preset_gpu};
 
     let mut config = match preset {
         "build" => preset_build(&source, &output),
@@ -104,16 +79,13 @@ async fn run_jail(
         "dev" => preset_dev(&source, &output),
         "gpu" => preset_gpu(&source, &output),
         "test" => JailConfig {
-            source,
-            output,
+            source, output,
             timeout_secs: 30,
             user_namespace: false,
             seccomp: SeccompLevel::Disabled,
             landlock: false,
-            memory_mb: 0,
-            cpu_percent: 0,
-            max_pids: 0,
-            env: vec![("PATH".to_string(), "/usr/local/bin:/usr/bin:/bin".to_string())],
+            memory_mb: 0, cpu_percent: 0, max_pids: 0,
+            env: vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())],
             ..Default::default()
         },
         _ => {
@@ -122,14 +94,9 @@ async fn run_jail(
         }
     };
 
-    // --gpu flag enables GPU on any preset
     if gpu_flag {
-        config.gpu = GpuConfig {
-            enabled: true,
-            devices: vec![],
-        };
+        config.gpu = GpuConfig { enabled: true, devices: vec![] };
     }
-
     if let Some(t) = timeout {
         config.timeout_secs = t;
     }
@@ -140,210 +107,110 @@ async fn run_jail(
 
     print!("{}", String::from_utf8_lossy(&result.stdout));
     eprint!("{}", String::from_utf8_lossy(&result.stderr));
-
     std::process::exit(result.exit_code);
 }
 
+// ---------------------------------------------------------------------------
+// Demo mode
+// ---------------------------------------------------------------------------
+
 async fn run_demo() -> anyhow::Result<()> {
+    use agentjail::{JailConfig, SeccompLevel};
     use std::fs;
 
-    // Setup temp dirs
     let base = PathBuf::from("/tmp/agentjail-demo");
     let _ = fs::remove_dir_all(&base);
     fs::create_dir_all(base.join("src"))?;
     fs::create_dir_all(base.join("out"))?;
 
-    // Create demo scripts
-    let slow_script = r#"#!/bin/sh
-echo "Starting slow build..."
-for i in $(seq 1 10); do
-    echo "Step $i/10..."
-    sleep 1
-done
-echo "Build complete!"
-"#;
-
-    let quick_script = r#"#!/bin/sh
-echo "Quick task running"
-echo "Output line 1"
-echo "Output line 2"
-echo "Done!"
-"#;
-
-    let fail_script = r#"#!/bin/sh
-echo "Starting..."
-echo "Something went wrong!" >&2
-exit 1
-"#;
-
-    fs::write(base.join("src/slow.sh"), slow_script)?;
-    fs::write(base.join("src/quick.sh"), quick_script)?;
-    fs::write(base.join("src/fail.sh"), fail_script)?;
-
-    let app = Arc::new(Mutex::new(App::new()));
-    let app_clone = app.clone();
-    let base_clone = base.clone();
-
-    // Spawn demo jails in background
-    tokio::spawn(async move {
-        spawn_demo_jails(app_clone, &base_clone).await;
-    });
-
-    // Run TUI with shared state
-    tui::run_shared(app).await?;
-
-    // Cleanup
-    let _ = fs::remove_dir_all(&base);
-
-    Ok(())
-}
-
-async fn spawn_demo_jails(app: Arc<Mutex<App>>, base: &std::path::Path) {
-    use agentjail::{Jail, JailConfig, SeccompLevel};
-
-    let source = base.join("src");
-    let output = base.join("out");
+    fs::write(base.join("src/slow.sh"), "#!/bin/sh\necho 'Starting slow build...'\nfor i in $(seq 1 10); do echo \"Step $i/10...\"; sleep 1; done\necho 'Build complete!'\n")?;
+    fs::write(base.join("src/quick.sh"), "#!/bin/sh\necho 'Quick task running'\necho 'Output line 1'\necho 'Output line 2'\necho 'Done!'\n")?;
+    fs::write(base.join("src/fail.sh"), "#!/bin/sh\necho 'Starting...'\necho 'Something went wrong!' >&2\nexit 1\n")?;
 
     let config = JailConfig {
-        source: source.clone(),
-        output: output.clone(),
+        source: base.join("src"),
+        output: base.join("out"),
         timeout_secs: 30,
         user_namespace: false,
         seccomp: SeccompLevel::Disabled,
         landlock: false,
-        memory_mb: 0,
-        cpu_percent: 0,
-        max_pids: 0,
-        env: vec![("PATH".to_string(), "/usr/local/bin:/usr/bin:/bin".to_string())],
+        memory_mb: 0, cpu_percent: 0, max_pids: 0,
+        env: vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())],
         ..Default::default()
     };
 
-    // Spawn slow job
-    {
-        let jail = match Jail::new(config.clone()) {
-            Ok(j) => j,
-            Err(_) => return,
-        };
+    let app = Arc::new(Mutex::new(App::new()));
 
-        let handle = match jail.spawn("/bin/sh", &["/workspace/slow.sh"]) {
-            Ok(h) => h,
-            Err(_) => return,
-        };
+    // Spawn jails in background
+    let app_bg = app.clone();
+    let cfg = config.clone();
+    tokio::spawn(async move {
+        let demos = [
+            ("/workspace/slow.sh", "sh slow.sh", "build", "none", "standard", 30u64, 512u64),
+            ("/workspace/quick.sh", "sh quick.sh", "agent", "loopback", "standard", 30, 256),
+            ("/workspace/fail.sh", "sh fail.sh", "dev", "allowlist", "strict", 10, 128),
+        ];
+        for (script, label, preset, net, sec, timeout, mem) in demos {
+            spawn_demo(&app_bg, &cfg, script, label, preset, net, sec, timeout, mem).await;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    });
 
-        let id = {
-            let mut app = app.lock().await;
-            app.add_jail(handle.pid(), "sh slow.sh".to_string(), "build".to_string())
-        };
+    tui::run_shared(app).await?;
+    let _ = std::fs::remove_dir_all(&base);
+    Ok(())
+}
 
-        let app_clone = app.clone();
-        tokio::spawn(async move {
-            let result = handle.wait().await;
-            let mut app = app_clone.lock().await;
-            match result {
-                Ok(out) => {
-                    let status = if out.timed_out {
-                        JailStatus::TimedOut
-                    } else {
-                        JailStatus::Completed(out.exit_code)
-                    };
-                    app.update_status(id, status);
-                    for line in String::from_utf8_lossy(&out.stdout).lines() {
-                        app.append_stdout(id, line.to_string());
-                    }
-                    for line in String::from_utf8_lossy(&out.stderr).lines() {
-                        app.append_stderr(id, line.to_string());
-                    }
+async fn spawn_demo(
+    app: &Arc<Mutex<App>>,
+    config: &agentjail::JailConfig,
+    script: &str,
+    label: &str,
+    preset: &str,
+    network: &str,
+    seccomp: &str,
+    timeout_secs: u64,
+    memory_limit_mb: u64,
+) {
+    use agentjail::Jail;
+
+    let jail = match Jail::new(config.clone()) {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+    let handle = match jail.spawn("/bin/sh", &[script]) {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    let id = {
+        let mut a = app.lock().await;
+        a.add_jail(
+            handle.pid(), label.into(), preset.into(),
+            network.into(), seccomp.into(), timeout_secs, memory_limit_mb,
+        )
+    };
+
+    let app = app.clone();
+    tokio::spawn(async move {
+        let result = handle.wait().await;
+        let mut a = app.lock().await;
+        match result {
+            Ok(out) => {
+                let status = if out.timed_out {
+                    JailStatus::TimedOut
+                } else {
+                    JailStatus::Completed(out.exit_code)
+                };
+                a.update_status(id, status);
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    a.append_output(id, Stream::Stdout, line.to_string());
                 }
-                Err(_) => app.update_status(id, JailStatus::Killed),
-            }
-        });
-    }
-
-    // Small delay before next
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    // Spawn quick job
-    {
-        let jail = match Jail::new(config.clone()) {
-            Ok(j) => j,
-            Err(_) => return,
-        };
-
-        let handle = match jail.spawn("/bin/sh", &["/workspace/quick.sh"]) {
-            Ok(h) => h,
-            Err(_) => return,
-        };
-
-        let id = {
-            let mut app = app.lock().await;
-            app.add_jail(handle.pid(), "sh quick.sh".to_string(), "agent".to_string())
-        };
-
-        let app_clone = app.clone();
-        tokio::spawn(async move {
-            let result = handle.wait().await;
-            let mut app = app_clone.lock().await;
-            match result {
-                Ok(out) => {
-                    let status = if out.timed_out {
-                        JailStatus::TimedOut
-                    } else {
-                        JailStatus::Completed(out.exit_code)
-                    };
-                    app.update_status(id, status);
-                    for line in String::from_utf8_lossy(&out.stdout).lines() {
-                        app.append_stdout(id, line.to_string());
-                    }
-                    for line in String::from_utf8_lossy(&out.stderr).lines() {
-                        app.append_stderr(id, line.to_string());
-                    }
+                for line in String::from_utf8_lossy(&out.stderr).lines() {
+                    a.append_output(id, Stream::Stderr, line.to_string());
                 }
-                Err(_) => app.update_status(id, JailStatus::Killed),
             }
-        });
-    }
-
-    // Small delay before next
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    // Spawn failing job
-    {
-        let jail = match Jail::new(config.clone()) {
-            Ok(j) => j,
-            Err(_) => return,
-        };
-
-        let handle = match jail.spawn("/bin/sh", &["/workspace/fail.sh"]) {
-            Ok(h) => h,
-            Err(_) => return,
-        };
-
-        let id = {
-            let mut app = app.lock().await;
-            app.add_jail(handle.pid(), "sh fail.sh".to_string(), "dev".to_string())
-        };
-
-        let app_clone = app.clone();
-        tokio::spawn(async move {
-            let result = handle.wait().await;
-            let mut app = app_clone.lock().await;
-            match result {
-                Ok(out) => {
-                    let status = if out.timed_out {
-                        JailStatus::TimedOut
-                    } else {
-                        JailStatus::Completed(out.exit_code)
-                    };
-                    app.update_status(id, status);
-                    for line in String::from_utf8_lossy(&out.stdout).lines() {
-                        app.append_stdout(id, line.to_string());
-                    }
-                    for line in String::from_utf8_lossy(&out.stderr).lines() {
-                        app.append_stderr(id, line.to_string());
-                    }
-                }
-                Err(_) => app.update_status(id, JailStatus::Killed),
-            }
-        });
-    }
+            Err(_) => a.update_status(id, JailStatus::Killed),
+        }
+    });
 }

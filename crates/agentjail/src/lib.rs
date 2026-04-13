@@ -40,11 +40,13 @@
 mod cgroup;
 mod config;
 mod error;
+mod exec;
 pub mod events;
 mod gpu;
 mod landlock;
 mod mount;
 mod namespace;
+mod netlink;
 mod pipe;
 mod proxy;
 mod run;

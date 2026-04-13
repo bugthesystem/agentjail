@@ -20,6 +20,9 @@ pub enum JailError {
     #[error("landlock setup failed: {0}")]
     Landlock(#[source] landlock::RulesetError),
 
+    #[error("network setup failed: {0}")]
+    Network(#[source] io::Error),
+
     #[error("failed to execute command: {0}")]
     Exec(#[source] io::Error),
 

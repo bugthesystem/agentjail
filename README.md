@@ -96,14 +96,12 @@ let config = JailConfig {
 A built-in CONNECT proxy runs in the parent process with real network
 access. The jailed process connects through a veth pair — it can only
 reach the proxy, not the internet directly. DNS is resolved by the proxy
-at connection time (not stale). Uses HTTP CONNECT tunneling, so all
-TLS-based protocols work:
+at connection time (not stale). Veth pairs and routing are configured
+via direct netlink syscalls (no external tools required). Uses HTTP
+CONNECT tunneling, so all TLS-based protocols work:
 - HTTPS APIs (Claude, OpenAI, npm registry)
 - SSE streams over HTTPS
 - WebSocket connections (MCP)
-
-**Requirements:** `iproute2` must be installed on the host (for veth setup).
-Requires `CAP_NET_ADMIN` or root.
 
 ## Presets
 
@@ -259,7 +257,7 @@ agentjail demo  # Demo mode
 - **Not a VM** — Kernel exploits could escape
 - **GPU requires trust** — GPU passthrough exposes the NVIDIA kernel driver attack surface
 - **Cgroups v2 only** — Won't work with cgroups v1
-- **Allowlist proxy** — Uses veth pairs (one per jail) and shells out to `ip`. For high-concurrency build farms, consider switching to netlink syscalls directly. Veth interfaces leak if the parent is SIGKILLed without cleanup.
+- **Allowlist proxy** — Uses veth pairs (one per jail). Veth interfaces leak if the parent is SIGKILLed without cleanup.
 
 For stronger isolation: [gVisor](https://gvisor.dev) or [Firecracker](https://firecracker-microvm.github.io).
 
@@ -268,7 +266,7 @@ For stronger isolation: [gVisor](https://gvisor.dev) or [Firecracker](https://fi
 - Linux kernel 5.13+ (Landlock optional)
 - Rust 1.85+ (edition 2024)
 - User namespace support
-- `iproute2` (for `Network::Allowlist` veth setup)
+- `CAP_NET_ADMIN` or root (for `Network::Allowlist` veth setup)
 
 ## Development
 
