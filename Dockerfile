@@ -3,6 +3,10 @@ FROM rust:1.85-bookworm
 # Install dependencies for sandbox testing
 RUN apt-get update && apt-get install -y \
     libseccomp-dev \
+    iproute2 \
+    iptables \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

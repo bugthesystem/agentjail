@@ -30,6 +30,10 @@ pub struct JailHandle {
     start_time: Instant,
     timeout: Duration,
     cgroup: Option<Cgroup>,
+    /// Host-side veth interface name to clean up (Allowlist mode only).
+    veth_host_iface: Option<String>,
+    /// Shutdown signal for the proxy thread (Allowlist mode only).
+    proxy_shutdown: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// Result of a completed jail execution.
@@ -129,10 +133,25 @@ impl Jail {
         let stdout_pipe = Pipe::new()?;
         let stderr_pipe = Pipe::new()?;
 
+        // For Allowlist mode, we need a sync pipe so the child can signal
+        // "I've entered my network namespace" and wait for the parent to
+        // set up the veth pair + proxy before continuing.
+        let needs_veth = matches!(self.config.network, Network::Allowlist(_));
+        let sync_pipe = if needs_veth {
+            Some((Pipe::new()?, Pipe::new()?)) // (child→parent, parent→child)
+        } else {
+            None
+        };
+
         let config = self.config.clone();
         let gpu_resources = self.gpu_resources.clone();
         let cmd = cmd.to_string();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+
+        // Extract sync pipe fds for child before moving into closure
+        let child_sync = sync_pipe.as_ref().map(|(c2p, p2c)| {
+            (c2p.write.as_raw_fd(), p2c.read.as_raw_fd())
+        });
 
         // SAFETY: fork() is safe when we immediately either _exit() or exec() in child.
         // Parent continues normally after fork returns.
@@ -155,7 +174,7 @@ impl Jail {
                     drop(stdout_pipe);
                     drop(stderr_pipe);
 
-                    if let Err(e) = setup_child(&config, &gpu_resources, &cmd, &args) {
+                    if let Err(e) = setup_child(&config, &gpu_resources, &cmd, &args, child_sync) {
                         eprintln!("jail setup failed: {}", e);
                         libc::_exit(127);
                     }
@@ -165,7 +184,7 @@ impl Jail {
             }
         };
 
-        // Parent: close write ends
+        // Parent: close write ends of stdout/stderr
         drop(stdout_pipe.write);
         drop(stderr_pipe.write);
 
@@ -185,6 +204,33 @@ impl Jail {
             }
         }
 
+        // For Allowlist mode: wait for child to enter netns, then set up veth + proxy
+        let mut proxy_shutdown = None;
+        if let (Some((c2p, p2c)), Network::Allowlist(domains)) =
+            (sync_pipe, &config.network)
+        {
+            // Close child-side fds in parent
+            drop(c2p.write);
+            drop(p2c.read);
+
+            // Wait for child to signal "I'm in my network namespace"
+            let mut buf = [0u8; 1];
+            let _ = read_byte(c2p.read.as_raw_fd(), &mut buf);
+
+            let (host_ip, _jail_ip) = veth_ips(child_pid);
+
+            // Set up veth pair bridging parent netns ↔ child netns
+            if let Err(e) = setup_veth_pair(child_pid) {
+                eprintln!("veth setup failed: {}", e);
+            }
+
+            // Spawn proxy in parent (has real network access)
+            proxy_shutdown = Some(spawn_allowlist_proxy(domains.clone(), &host_ip));
+
+            // Signal child to continue
+            let _ = write_byte(p2c.write.as_raw_fd(), 1);
+        }
+
         // Create and configure cgroup for this process
         let cgroup = self.create_cgroup(child_pid)?;
         if let Some(ref cg) = cgroup {
@@ -201,6 +247,12 @@ impl Jail {
             Duration::from_secs(u64::MAX)
         };
 
+        let veth_host_iface = if needs_veth {
+            Some(format!("aj-h{}", child_pid))
+        } else {
+            None
+        };
+
         Ok(JailHandle {
             pid: child_pid,
             stdout,
@@ -208,6 +260,8 @@ impl Jail {
             start_time: Instant::now(),
             timeout,
             cgroup,
+            veth_host_iface,
+            proxy_shutdown,
         })
     }
 
@@ -265,6 +319,9 @@ impl JailHandle {
         let stdout = self.stdout.read_all().await;
         let stderr = self.stderr.read_all().await;
 
+        // Clean up veth interface (removes both ends + stops proxy bind)
+        self.cleanup_veth();
+
         Ok(Output {
             stdout,
             stderr,
@@ -302,6 +359,17 @@ impl JailHandle {
             io_read_bytes: io.read_bytes,
             io_write_bytes: io.write_bytes,
         })
+    }
+
+    /// Shut down the proxy and remove the host-side veth interface.
+    fn cleanup_veth(&mut self) {
+        // Signal proxy to stop (drop releases the watch channel)
+        if let Some(tx) = self.proxy_shutdown.take() {
+            let _ = tx.send(true);
+        }
+        if let Some(iface) = self.veth_host_iface.take() {
+            let _ = run_cmd("ip", &["link", "del", &iface]);
+        }
     }
 
     /// Wait while streaming events to the sender.
@@ -377,6 +445,9 @@ impl JailHandle {
             let _ = tx.send(JailEvent::OomKilled);
         }
 
+        // Clean up veth interface
+        self.cleanup_veth();
+
         Ok(Output {
             stdout: all_stdout,
             stderr: all_stderr,
@@ -386,6 +457,12 @@ impl JailHandle {
             oom_killed,
             stats,
         })
+    }
+}
+
+impl Drop for JailHandle {
+    fn drop(&mut self) {
+        self.cleanup_veth();
     }
 }
 
@@ -413,18 +490,22 @@ fn extract_exit_code(status: WaitStatus) -> i32 {
 }
 
 /// Setup the child process inside the jail.
+///
+/// `sync_fds`: For Allowlist mode, (write_fd, read_fd) for syncing with parent.
+/// Child signals parent after entering netns, then waits for parent to set up veth.
 fn setup_child(
     config: &JailConfig,
     gpu_resources: &Option<gpu::NvidiaResources>,
     cmd: &str,
     args: &[String],
+    sync_fds: Option<(i32, i32)>,
 ) -> Result<()> {
     // 1. Enter namespaces (PID namespace entered separately for double-fork)
     // Network namespace is ALWAYS created to isolate the network stack.
     // The difference between modes is what we configure inside the namespace:
     //   None      → empty namespace, no interfaces up
     //   Loopback  → only loopback (lo) brought up
-    //   Allowlist → loopback up + proxy filtering outbound connections
+    //   Allowlist → loopback up + veth to parent where proxy runs
     let ns_config = NamespaceConfig {
         user: config.user_namespace,
         mount: true,
@@ -442,9 +523,22 @@ fn setup_child(
         Network::Loopback => {
             setup_loopback()?;
         }
-        Network::Allowlist(domains) => {
+        Network::Allowlist(_) => {
+            // Signal parent that we've entered the network namespace
+            if let Some((write_fd, read_fd)) = sync_fds {
+                let _ = write_byte(write_fd, 1);
+                // Wait for parent to set up the veth pair
+                let mut buf = [0u8; 1];
+                let _ = read_byte(read_fd, &mut buf);
+                // Close sync fds
+                unsafe {
+                    libc::close(write_fd);
+                    libc::close(read_fd);
+                }
+            }
+            // Bring up loopback + configure our veth end
             setup_loopback()?;
-            spawn_allowlist_proxy(domains.clone());
+            setup_veth_child()?;
         }
     }
 
@@ -627,11 +721,32 @@ fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
 
 const PROXY_PORT: u16 = 8080;
 
+/// Derive unique veth IP addresses from child PID to avoid collisions
+/// between concurrent jails. Uses 10.<pid_hi>.<pid_lo>.{1,2}/24.
+fn veth_ips(child_pid: u32) -> (String, String) {
+    // Use the lower 16 bits of the PID to derive the second and third octets.
+    // This gives us up to 65535 concurrent jails without collision.
+    let b2 = ((child_pid >> 8) & 0xFF) as u8;
+    let b3 = (child_pid & 0xFF) as u8;
+    // Avoid 0.0 subnet (invalid) — offset by 1
+    let b3 = if b2 == 0 && b3 == 0 { 1 } else { b3 };
+    let host_ip = format!("10.{}.{}.1", b2, b3);
+    let jail_ip = format!("10.{}.{}.2", b2, b3);
+    (host_ip, jail_ip)
+}
+
 /// Spawn the allowlist proxy in a background thread.
 ///
-/// Blocks until the proxy is listening or panics on failure.
-fn spawn_allowlist_proxy(allowlist: Vec<String>) {
+/// Runs in the **parent** process (which has real network access).
+/// Listens on `bind_ip:PROXY_PORT` so the child can reach it via the veth.
+/// Returns a shutdown sender — drop it or send `true` to stop the proxy.
+fn spawn_allowlist_proxy(
+    allowlist: Vec<String>,
+    bind_ip: &str,
+) -> tokio::sync::watch::Sender<bool> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<(), String>>(1);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let bind_ip = bind_ip.to_string();
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -642,10 +757,11 @@ fn spawn_allowlist_proxy(allowlist: Vec<String>) {
         let config = ProxyConfig {
             allowlist,
             port: PROXY_PORT,
+            bind_ip,
         };
 
         rt.block_on(async {
-            if let Err(e) = proxy::run_proxy(config, tx).await {
+            if let Err(e) = proxy::run_proxy(config, tx, shutdown_rx).await {
                 eprintln!("proxy error: {}", e);
             }
         });
@@ -657,15 +773,106 @@ fn spawn_allowlist_proxy(allowlist: Vec<String>) {
         Ok(Err(e)) => eprintln!("proxy bind failed: {}", e),
         Err(_) => eprintln!("proxy thread died before signaling readiness"),
     }
+
+    shutdown_tx
 }
 
-/// Get proxy environment variables.
+/// Get proxy environment variables pointing to the parent-side proxy via veth.
+/// Called from the child, uses its PID to derive the host IP.
 fn proxy_env_vars() -> Vec<(String, String)> {
-    let proxy_url = format!("http://127.0.0.1:{}", PROXY_PORT);
+    let (host_ip, _) = veth_ips(std::process::id());
+    let proxy_url = format!("http://{}:{}", host_ip, PROXY_PORT);
     vec![
         ("HTTP_PROXY".into(), proxy_url.clone()),
         ("HTTPS_PROXY".into(), proxy_url.clone()),
         ("http_proxy".into(), proxy_url.clone()),
         ("https_proxy".into(), proxy_url),
     ]
+}
+
+// ---------------------------------------------------------------------------
+// Veth pair setup for allowlist proxy
+// ---------------------------------------------------------------------------
+
+/// Read a single byte from an fd (blocking).
+fn read_byte(fd: i32, buf: &mut [u8; 1]) -> std::io::Result<()> {
+    let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+    if n == 1 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+/// Write a single byte to an fd.
+fn write_byte(fd: i32, val: u8) -> std::io::Result<()> {
+    let n = unsafe { libc::write(fd, &val as *const u8 as *const libc::c_void, 1) };
+    if n == 1 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+/// Create a veth pair and move one end into the child's network namespace.
+///
+/// Called from the parent after the child has entered its netns.
+/// Sets up: aj-h<pid> (parent side) ↔ aj-j<pid> (child side).
+/// IPs are derived from the PID to avoid collisions between concurrent jails.
+fn setup_veth_pair(child_pid: u32) -> std::io::Result<()> {
+    let host_if = format!("aj-h{}", child_pid);
+    let jail_if = format!("aj-j{}", child_pid);
+    let (host_ip, _) = veth_ips(child_pid);
+
+    // Create veth pair
+    run_cmd("ip", &[
+        "link", "add", &host_if, "type", "veth", "peer", "name", &jail_if,
+    ])?;
+
+    // Move jail end into child's netns
+    let pid_str = child_pid.to_string();
+    run_cmd("ip", &["link", "set", &jail_if, "netns", &pid_str])?;
+
+    // Configure host end
+    run_cmd("ip", &[
+        "addr", "add", &format!("{}/24", host_ip), "dev", &host_if,
+    ])?;
+    run_cmd("ip", &["link", "set", &host_if, "up"])?;
+
+    // No IP forwarding or NAT — the child can ONLY reach the proxy on
+    // the host veth IP. The proxy (running in the parent with full network
+    // access) makes the real outbound connections. This prevents the jailed
+    // process from bypassing the allowlist via direct connections.
+
+    Ok(())
+}
+
+/// Configure the child's veth end (called from inside the child's netns).
+fn setup_veth_child() -> Result<()> {
+    // At this point we haven't entered a PID namespace yet, so getpid()
+    // returns the same PID the parent used to name the interface.
+    let pid = std::process::id();
+    let jail_if = format!("aj-j{}", pid);
+    let (host_ip, jail_ip) = veth_ips(pid);
+
+    run_cmd("ip", &[
+        "addr", "add", &format!("{}/24", jail_ip), "dev", &jail_if,
+    ]).map_err(JailError::Exec)?;
+    run_cmd("ip", &["link", "set", &jail_if, "up"])
+        .map_err(JailError::Exec)?;
+    // Default route via the host side of the veth
+    run_cmd("ip", &["route", "add", "default", "via", &host_ip])
+        .map_err(JailError::Exec)?;
+
+    Ok(())
+}
+
+/// Run a command and check its exit status.
+fn run_cmd(cmd: &str, args: &[&str]) -> std::io::Result<()> {
+    let status = std::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "{} {:?} failed with {}",
+            cmd, args, status
+        )))
+    }
 }

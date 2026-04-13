@@ -20,6 +20,8 @@ pub struct ProxyConfig {
     pub allowlist: Vec<String>,
     /// Port to listen on (default: 8080).
     pub port: u16,
+    /// IP address to bind to (default: "127.0.0.1").
+    pub bind_ip: String,
 }
 
 impl Default for ProxyConfig {
@@ -27,6 +29,7 @@ impl Default for ProxyConfig {
         Self {
             allowlist: Vec::new(),
             port: 8080,
+            bind_ip: "127.0.0.1".into(),
         }
     }
 }
@@ -34,11 +37,16 @@ impl Default for ProxyConfig {
 /// Run the proxy server.
 ///
 /// Sends `Ok(())` on `ready` once bound, or `Err(msg)` on bind failure.
+/// Stops when `shutdown` is dropped or receives a signal.
 pub async fn run_proxy(
     config: ProxyConfig,
     ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> std::io::Result<()> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
+    let ip: std::net::IpAddr = config.bind_ip.parse().map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad bind_ip: {}", e))
+    })?;
+    let addr = SocketAddr::new(ip, config.port);
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => {
             let _ = ready.send(Ok(()));
@@ -50,16 +58,23 @@ pub async fn run_proxy(
         }
     };
     let allowlist = Arc::new(config.allowlist);
+    let mut shutdown = shutdown;
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        let allowlist = allowlist.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, &allowlist).await {
-                eprintln!("proxy error: {}", e);
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, _) = result?;
+                let allowlist = allowlist.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection(stream, &allowlist).await {
+                        eprintln!("proxy error: {}", e);
+                    }
+                });
             }
-        });
+            _ = shutdown.changed() => {
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -191,11 +206,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_is_allowed_empty_blocks_everything() {
+        let allowlist: Vec<String> = vec![];
+        assert!(!is_allowed("api.anthropic.com", &allowlist));
+        assert!(!is_allowed("google.com", &allowlist));
+        assert!(!is_allowed("localhost", &allowlist));
+        assert!(!is_allowed("127.0.0.1", &allowlist));
+    }
+
+    #[test]
     fn test_is_allowed_exact() {
         let allowlist = vec!["api.anthropic.com".into()];
         assert!(is_allowed("api.anthropic.com", &allowlist));
         assert!(is_allowed("API.ANTHROPIC.COM", &allowlist));
         assert!(!is_allowed("evil.com", &allowlist));
+        assert!(!is_allowed("anthropic.com", &allowlist));
+        assert!(!is_allowed("sub.api.anthropic.com", &allowlist));
     }
 
     #[test]
@@ -244,5 +270,99 @@ mod tests {
         let result = read_line_bounded(&mut reader, &mut buf, 8192).await;
         assert!(result.is_ok(), "Should accept normal-sized lines");
         assert!(buf.contains("CONNECT"));
+    }
+
+    /// Helper: send a CONNECT request through the proxy and return the response status line.
+    async fn proxy_connect(port: u16, target: &str) -> String {
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .expect("connect to proxy");
+        let request = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, target);
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut reader = BufReader::new(stream);
+        let mut response = String::new();
+        reader
+            .read_line(&mut response)
+            .await
+            .expect("read response");
+        response
+    }
+
+    #[tokio::test]
+    async fn test_proxy_blocks_disallowed_domain() {
+        // Bind to a random port
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let allowlist = Arc::new(vec!["allowed.example.com".into()]);
+
+        // Spawn proxy handler for one connection
+        let al = allowlist.clone();
+        let handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, &al).await.unwrap();
+        });
+
+        let response = proxy_connect(port, "evil.com:443").await;
+        assert!(
+            response.contains("403"),
+            "Disallowed domain should get 403, got: {}",
+            response.trim()
+        );
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_blocks_everything_when_empty_allowlist() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let allowlist: Arc<Vec<String>> = Arc::new(vec![]);
+
+        let al = allowlist.clone();
+        let handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, &al).await.unwrap();
+        });
+
+        let response = proxy_connect(port, "google.com:443").await;
+        assert!(
+            response.contains("403"),
+            "Empty allowlist should block everything, got: {}",
+            response.trim()
+        );
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_proxy_rejects_non_connect_method() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let allowlist = Arc::new(vec!["anything.com".into()]);
+
+        let al = allowlist.clone();
+        let handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, &al).await.unwrap();
+        });
+
+        // Send a GET instead of CONNECT
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET http://anything.com/ HTTP/1.1\r\nHost: anything.com\r\n\r\n")
+            .await
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        assert!(
+            response.contains("400"),
+            "Non-CONNECT should get 400, got: {}",
+            response.trim()
+        );
+        let _ = handle.await;
     }
 }

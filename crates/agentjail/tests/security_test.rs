@@ -552,6 +552,128 @@ async fn test_cannot_read_ssh_keys() {
     cleanup(&src, &out);
 }
 
+// ---------------------------------------------------------------------------
+// Allowlist proxy integration tests
+// ---------------------------------------------------------------------------
+
+/// Network::Allowlist with empty list must block all outbound traffic.
+#[tokio::test]
+async fn test_allowlist_empty_blocks_all() {
+    let (src, out) = setup("al-empty");
+    fs::write(
+        src.join("t.sh"),
+        "#!/bin/sh\ntimeout 5 bash -c 'echo x > /dev/tcp/8.8.8.8/53' 2>&1 && echo REACHABLE || echo BLOCKED\n",
+    ).unwrap();
+
+    let mut config = full_config(src.clone(), out.clone());
+    config.network = Network::Allowlist(vec![]);
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let stdout = String::from_utf8_lossy(&r.stdout);
+
+    assert!(
+        stdout.contains("BLOCKED"),
+        "Empty allowlist must block all traffic, got: {}",
+        stdout
+    );
+
+    cleanup(&src, &out);
+}
+
+/// Network::Allowlist must allow npm install when registry domains are allowlisted.
+///
+/// Sets up a tiny Node project with a single small dependency (is-number)
+/// and verifies `npm install` succeeds through the proxy.
+/// Workspace is read-only, so we copy to /output and install there.
+#[tokio::test]
+async fn test_allowlist_npm_install_allowed() {
+    let (src, out) = setup("al-npm-ok");
+
+    // Minimal package.json with a tiny dep
+    fs::write(
+        src.join("package.json"),
+        r#"{"name":"test","version":"1.0.0","dependencies":{"is-number":"7.0.0"}}"#,
+    ).unwrap();
+
+    // Copy to writable /output, then npm install there
+    fs::write(
+        src.join("t.sh"),
+        concat!(
+            "#!/bin/sh\n",
+            "cp /workspace/package.json /output/package.json\n",
+            "cd /output\n",
+            "npm install --prefer-online 2>&1\n",
+            "if [ -d /output/node_modules/is-number ]; then\n",
+            "  echo NPM_INSTALL_OK\n",
+            "else\n",
+            "  echo NPM_INSTALL_FAILED\n",
+            "fi\n",
+        ),
+    ).unwrap();
+
+    let mut config = full_config(src.clone(), out.clone());
+    config.network = Network::Allowlist(vec![
+        "registry.npmjs.org".into(),
+        "*.npmjs.org".into(),
+    ]);
+    config.timeout_secs = 60;
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    let stderr = String::from_utf8_lossy(&r.stderr);
+
+    assert!(
+        stdout.contains("NPM_INSTALL_OK"),
+        "npm install should succeed with registry allowlisted, stdout={:?} stderr={:?}",
+        stdout.trim(),
+        stderr.trim()
+    );
+
+    cleanup(&src, &out);
+}
+
+/// Network::Allowlist must block npm install when registry is NOT in the allowlist.
+#[tokio::test]
+async fn test_allowlist_npm_install_blocked() {
+    let (src, out) = setup("al-npm-no");
+
+    fs::write(
+        src.join("package.json"),
+        r#"{"name":"test","version":"1.0.0","dependencies":{"is-number":"7.0.0"}}"#,
+    ).unwrap();
+
+    fs::write(
+        src.join("t.sh"),
+        concat!(
+            "#!/bin/sh\n",
+            "cp /workspace/package.json /output/package.json\n",
+            "cd /output\n",
+            "npm install --prefer-online 2>&1\n",
+            "if [ -d /output/node_modules/is-number ]; then\n",
+            "  echo NPM_INSTALL_OK\n",
+            "else\n",
+            "  echo NPM_INSTALL_BLOCKED\n",
+            "fi\n",
+        ),
+    ).unwrap();
+
+    let mut config = full_config(src.clone(), out.clone());
+    // Only allow a domain that isn't the npm registry
+    config.network = Network::Allowlist(vec!["api.anthropic.com".into()]);
+    config.timeout_secs = 30;
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let stdout = String::from_utf8_lossy(&r.stdout);
+
+    assert!(
+        stdout.contains("NPM_INSTALL_BLOCKED"),
+        "npm install should fail when registry not in allowlist, got: {}",
+        stdout
+    );
+
+    cleanup(&src, &out);
+}
+
 /// Reverse shell must fail (no network + even loopback external blocked).
 #[tokio::test]
 async fn test_reverse_shell_blocked() {
