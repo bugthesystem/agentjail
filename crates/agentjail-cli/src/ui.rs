@@ -1,4 +1,4 @@
-//! Modern UI rendering for the TUI.
+//! TUI rendering — modern, borderless, information-dense.
 
 use crate::app::{App, JailInfo, JailStatus, Stream, View, format_bytes, format_duration};
 use ratatui::{
@@ -6,18 +6,19 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, LineGauge, List, ListItem, Padding, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, List, ListItem, Padding, Paragraph, Wrap},
 };
 
-// Modern color palette
-const PRIMARY: Color = Color::Rgb(139, 92, 246);    // Violet
-const SUCCESS: Color = Color::Rgb(34, 197, 94);     // Green
-const ERROR: Color = Color::Rgb(239, 68, 68);       // Red
-const WARNING: Color = Color::Rgb(250, 204, 21);    // Yellow
-const INFO: Color = Color::Rgb(56, 189, 248);       // Sky blue
-const MUTED: Color = Color::Rgb(113, 113, 122);     // Zinc
-const SURFACE: Color = Color::Rgb(39, 39, 42);      // Dark surface
-const BG: Color = Color::Rgb(24, 24, 27);           // Background
+// Restrained palette — most of the UI is white/gray, color only for status.
+const ACCENT: Color = Color::Rgb(99, 102, 241);     // Indigo — brand, selection
+const GREEN: Color = Color::Rgb(34, 197, 94);        // Running / healthy
+const RED: Color = Color::Rgb(248, 113, 113);         // Failed / error (softer red)
+const AMBER: Color = Color::Rgb(251, 191, 36);       // Timeout / warning
+const CYAN: Color = Color::Rgb(34, 211, 238);         // Completed / info
+const DIM: Color = Color::Rgb(82, 82, 91);            // Labels, secondary
+const FAINT: Color = Color::Rgb(52, 52, 59);          // Separators, empty bars
+const SURFACE: Color = Color::Rgb(30, 30, 36);        // Subtle backgrounds
+const BG: Color = Color::Rgb(17, 17, 21);             // Main background
 
 pub fn render(f: &mut Frame, app: &App) {
     f.render_widget(Block::default().style(Style::default().bg(BG)), f.size());
@@ -26,84 +27,78 @@ pub fn render(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(2),
+            Constraint::Length(2), // Header
+            Constraint::Length(1), // Separator
+            Constraint::Min(0),    // Main
+            Constraint::Length(1), // Footer
         ])
         .split(f.size());
 
     render_header(f, app, chunks[0]);
+    // Thin separator line
+    f.render_widget(
+        Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(FAINT)),
+        chunks[1],
+    );
     match app.view {
-        View::List => render_list(f, app, chunks[1]),
-        View::Detail => render_detail(f, app, chunks[1]),
+        View::List => render_list(f, app, chunks[2]),
+        View::Detail => render_detail(f, app, chunks[2]),
     }
-    render_footer(f, app, chunks[2]);
+    render_footer(f, app, chunks[3]);
 }
 
+// ---------------------------------------------------------------------------
+// Header — clean, minimal
+// ---------------------------------------------------------------------------
+
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
-    let mut running = 0u32;
-    let mut failed = 0u32;
-    let mut done = 0u32;
+    let (mut running, mut failed, mut done) = (0u32, 0u32, 0u32);
     for j in app.jails.values() {
         match j.status {
             JailStatus::Running => running += 1,
             JailStatus::Completed(0) => done += 1,
-            JailStatus::Completed(_) | JailStatus::Killed => failed += 1,
-            JailStatus::TimedOut => failed += 1,
+            _ => failed += 1,
         }
     }
 
     let mut spans = vec![
-        Span::styled("◉ ", Style::default().fg(PRIMARY)),
-        Span::styled("agentjail", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled("  │  ", Style::default().fg(MUTED)),
+        Span::styled("  agentjail", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled("  ", Style::default()),
     ];
 
-    if running > 0 {
-        spans.push(Span::styled(format!("{} running", running), Style::default().fg(SUCCESS)));
-        spans.push(Span::styled("  ", Style::default()));
-    }
-    if failed > 0 {
-        spans.push(Span::styled(format!("{} failed", failed), Style::default().fg(ERROR)));
-        spans.push(Span::styled("  ", Style::default()));
-    }
-    if done > 0 {
-        spans.push(Span::styled(format!("{} done", done), Style::default().fg(INFO)));
+    let parts: Vec<(u32, &str, Color)> = vec![
+        (running, "running", GREEN),
+        (failed, "failed", RED),
+        (done, "done", CYAN),
+    ];
+    for (count, label, color) in &parts {
+        if *count > 0 {
+            spans.push(Span::styled(format!("{}", count), Style::default().fg(*color)));
+            spans.push(Span::styled(format!(" {}  ", label), Style::default().fg(DIM)));
+        }
     }
     if running == 0 && failed == 0 && done == 0 {
-        spans.push(Span::styled("no jails", Style::default().fg(MUTED)));
+        spans.push(Span::styled("waiting for jails", Style::default().fg(DIM)));
     }
 
-    let header = Paragraph::new(Line::from(spans))
-        .alignment(Alignment::Left)
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(SURFACE))
-                .padding(Padding::horizontal(1)),
-        );
-    f.render_widget(header, area);
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+// ---------------------------------------------------------------------------
+// Footer — subtle key hints
+// ---------------------------------------------------------------------------
+
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
-    let keys = match app.view {
-        View::List => vec![
-            ("↑↓", "navigate"), ("⏎", "details"), ("K", "kill"), ("C", "clear"), ("q", "quit"),
-        ],
-        View::Detail => vec![
-            ("↑↓", "scroll"), ("G", "end"), ("esc", "back"), ("K", "kill"), ("q", "quit"),
-        ],
+    let keys: &[(&str, &str)] = match app.view {
+        View::List => &[("j/k", "nav"), ("enter", "open"), ("K", "kill"), ("C", "clear"), ("q", "quit")],
+        View::Detail => &[("j/k", "scroll"), ("G", "end"), ("esc", "back"), ("K", "kill"), ("q", "quit")],
     };
 
-    let spans: Vec<Span> = keys.iter().enumerate().flat_map(|(i, (key, action))| {
-        let mut v = vec![
-            Span::styled(format!(" {} ", key), Style::default().fg(BG).bg(MUTED)),
-            Span::styled(format!(" {} ", action), Style::default().fg(MUTED)),
-        ];
-        if i < keys.len() - 1 {
-            v.push(Span::styled(" ", Style::default()));
-        }
-        v
+    let spans: Vec<Span> = keys.iter().flat_map(|(key, action)| {
+        vec![
+            Span::styled(format!(" {} ", key), Style::default().fg(SURFACE).bg(DIM)),
+            Span::styled(format!(" {}  ", action), Style::default().fg(DIM)),
+        ]
     }).collect();
 
     f.render_widget(
@@ -113,7 +108,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ---------------------------------------------------------------------------
-// List view
+// List view — each row is a mini dashboard
 // ---------------------------------------------------------------------------
 
 fn render_list(f: &mut Frame, app: &App, area: Rect) {
@@ -122,106 +117,100 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
     if ids.is_empty() {
         let empty = Paragraph::new(vec![
             Line::from(""),
-            Line::from(Span::styled("◇", Style::default().fg(MUTED))),
             Line::from(""),
-            Line::from(Span::styled("No jails running", Style::default().fg(MUTED))),
             Line::from(Span::styled(
-                "Run `agentjail run` to start a sandbox",
-                Style::default().fg(MUTED).add_modifier(Modifier::DIM),
+                "No sandboxes running",
+                Style::default().fg(DIM),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "agentjail run -s ./src -o ./out <cmd>",
+                Style::default().fg(FAINT),
             )),
         ])
-        .alignment(Alignment::Center)
-        .block(rounded_block(""));
+        .alignment(Alignment::Center);
         f.render_widget(empty, area);
         return;
     }
 
     let items: Vec<ListItem> = ids.iter().map(|&id| {
-        let jail = &app.jails[&id];
+        let j = &app.jails[&id];
         let sel = app.selected == Some(id);
-        let (icon, color) = status_style(&jail.status);
-        let dur = format_duration(jail.started_at.elapsed());
+        let (icon, color) = status_icon(&j.status);
+        let elapsed = format_duration(j.started_at.elapsed());
+
+        // Row: [sel] [icon] command                preset  net/sec  memory  time
+        let cmd_style = if sel {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(212, 212, 216)) // Slightly off-white
+        };
 
         let mut spans = vec![
-            Span::styled(if sel { " ▸ " } else { "   " }, Style::default().fg(PRIMARY)),
-            Span::styled(format!("{} ", icon), Style::default().fg(color)),
+            // Selection + status
             Span::styled(
-                format!("{:<24}", truncate(&jail.command, 24)),
-                if sel {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                },
+                if sel { "  ▸ " } else { "    " },
+                Style::default().fg(ACCENT),
             ),
+            Span::styled(format!("{}  ", icon), Style::default().fg(color)),
+            // Command — primary content
+            Span::styled(format!("{:<22}", truncate(&j.command, 22)), cmd_style),
+            // Preset pill
             Span::styled(
-                format!(" {} ", jail.preset),
-                Style::default().fg(BG).bg(preset_color(&jail.preset)),
+                format!(" {} ", j.preset),
+                Style::default().fg(Color::Rgb(200, 200, 206)).bg(FAINT),
             ),
-            Span::styled(
-                format!(" {}", seccomp_icon(&jail.seccomp)),
-                Style::default().fg(seccomp_color(&jail.seccomp)),
-            ),
-            Span::styled(
-                network_icon(&jail.network),
-                Style::default().fg(network_color(&jail.network)),
-            ),
+            Span::styled("  ", Style::default()),
+            // Security: network + seccomp as compact text
+            Span::styled(net_short(&j.network), Style::default().fg(net_color(&j.network))),
+            Span::styled(" ", Style::default()),
+            Span::styled(sec_short(&j.seccomp), Style::default().fg(sec_color(&j.seccomp))),
         ];
 
-        // Memory bar if limit is set
-        if jail.memory_limit_mb > 0 {
-            spans.push(Span::styled(" ", Style::default()));
-            let ratio = (jail.memory_bytes as f64) / (jail.memory_limit_mb as f64 * 1024.0 * 1024.0);
-            spans.extend(memory_bar(ratio));
+        // Memory bar — only if limit set and there's usage
+        if j.memory_limit_mb > 0 {
+            let ratio = (j.memory_bytes as f64) / (j.memory_limit_mb as f64 * 1024.0 * 1024.0);
+            spans.push(Span::styled("  ", Style::default()));
+            spans.extend(mini_bar(ratio, 8));
         }
 
-        spans.push(Span::styled(format!("  {:>6}", dur), Style::default().fg(MUTED)));
+        // Duration — right side
+        spans.push(Span::styled(format!("  {:>6}", elapsed), Style::default().fg(DIM)));
 
-        let style = if sel { Style::default().bg(SURFACE) } else { Style::default() };
-        ListItem::new(Line::from(spans)).style(style)
+        let bg = if sel { Style::default().bg(SURFACE) } else { Style::default() };
+        ListItem::new(Line::from(spans)).style(bg)
     }).collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .title(Line::from(Span::styled(
-                " Sandboxes ",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(SURFACE))
-            .padding(Padding::vertical(1)),
+    f.render_widget(
+        List::new(items).block(
+            Block::default().padding(Padding::new(0, 0, 1, 0)), // top padding only
+        ),
+        area,
     );
-    f.render_widget(list, area);
 }
 
-/// Inline memory bar: `[████░░]`
-fn memory_bar(ratio: f64) -> Vec<Span<'static>> {
+/// Compact memory bar using thin block characters.
+fn mini_bar(ratio: f64, width: usize) -> Vec<Span<'static>> {
     let ratio = ratio.clamp(0.0, 1.0);
-    let width = 6;
     let filled = (ratio * width as f64).round() as usize;
     let empty = width - filled;
-
-    let bar_color = if ratio > 0.9 { ERROR } else if ratio > 0.7 { WARNING } else { SUCCESS };
+    let color = if ratio > 0.85 { RED } else if ratio > 0.6 { AMBER } else { GREEN };
 
     vec![
-        Span::styled("[", Style::default().fg(MUTED)),
-        Span::styled("█".repeat(filled), Style::default().fg(bar_color)),
-        Span::styled("░".repeat(empty), Style::default().fg(SURFACE)),
-        Span::styled("]", Style::default().fg(MUTED)),
+        Span::styled("▐".repeat(filled), Style::default().fg(color)),
+        Span::styled("▐".repeat(empty), Style::default().fg(FAINT)),
     ]
 }
 
 // ---------------------------------------------------------------------------
-// Detail view
+// Detail view — borderless info section + bordered output
 // ---------------------------------------------------------------------------
 
 fn render_detail(f: &mut Frame, app: &App, area: Rect) {
     let Some(jail) = app.selected_jail() else {
         f.render_widget(
-            Paragraph::new("No jail selected")
-                .style(Style::default().fg(MUTED))
-                .alignment(Alignment::Center)
-                .block(rounded_block("")),
+            Paragraph::new(Span::styled("No jail selected", Style::default().fg(DIM)))
+                .alignment(Alignment::Center),
             area,
         );
         return;
@@ -229,239 +218,180 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(8),  // Info
+            Constraint::Length(1),  // Separator
+            Constraint::Min(0),     // Output
+        ])
         .split(area);
 
-    render_info_card(f, jail, chunks[0]);
-    render_output(f, jail, app.scroll_offset, chunks[1]);
+    render_info(f, jail, chunks[0]);
+    f.render_widget(
+        Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(FAINT)),
+        chunks[1],
+    );
+    render_output(f, jail, app.scroll_offset, chunks[2]);
 }
 
-fn render_info_card(f: &mut Frame, jail: &JailInfo, area: Rect) {
-    let (icon, color, text) = match jail.status {
-        JailStatus::Running => ("●", SUCCESS, "Running"),
-        JailStatus::Completed(0) => ("✓", INFO, "Completed"),
-        JailStatus::Completed(_) => ("✗", ERROR, "Failed"),
-        JailStatus::TimedOut => ("⏱", WARNING, "Timed Out"),
-        JailStatus::Killed => ("◼", ERROR, "Killed"),
+fn render_info(f: &mut Frame, jail: &JailInfo, area: Rect) {
+    let (icon, color, status_text) = match jail.status {
+        JailStatus::Running => ("●", GREEN, "Running"),
+        JailStatus::Completed(0) => ("✓", CYAN, "Completed"),
+        JailStatus::Completed(_) => ("✗", RED, "Failed"),
+        JailStatus::TimedOut => ("⏱", AMBER, "Timed Out"),
+        JailStatus::Killed => ("■", RED, "Killed"),
     };
 
     let exit_str = match jail.status {
-        JailStatus::Completed(c) => format!(" (exit {})", c),
+        JailStatus::Completed(c) if c != 0 => format!(" exit {}", c),
         _ => String::new(),
     };
 
     let elapsed = jail.started_at.elapsed();
-    let mut content = vec![
+    let w = Style::default().fg(Color::White); // White for values
+    let d = Style::default().fg(DIM);           // Dim for labels
+    let pad = "    ";
+
+    let mut lines = vec![
         Line::from(""),
+        // Command — hero text
         Line::from(vec![
-            Span::styled("  Command   ", Style::default().fg(MUTED)),
+            Span::styled(pad, d),
             Span::styled(&jail.command, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("  ", d),
+            Span::styled(format!(" {} ", jail.preset), Style::default().fg(Color::Rgb(200, 200, 206)).bg(FAINT)),
         ]),
+        Line::from(""),
+        // Status + PID
         Line::from(vec![
-            Span::styled("  Status    ", Style::default().fg(MUTED)),
-            Span::styled(format!("{} ", icon), Style::default().fg(color)),
-            Span::styled(text, Style::default().fg(color)),
-            Span::styled(&exit_str, Style::default().fg(MUTED)),
+            Span::styled(pad, d),
+            Span::styled(format!("{} {}", icon, status_text), Style::default().fg(color)),
+            Span::styled(&exit_str, d),
+            Span::styled("    pid ", d),
+            Span::styled(format!("{}", jail.pid), w),
+            Span::styled("    elapsed ", d),
+            Span::styled(format_duration(elapsed), w),
+            Span::styled("    mem ", d),
+            Span::styled(format_bytes(jail.memory_bytes), w),
         ]),
+        // Security row
         Line::from(vec![
-            Span::styled("  PID       ", Style::default().fg(MUTED)),
-            Span::styled(format!("{}", jail.pid), Style::default().fg(Color::White)),
-            Span::styled("    Preset  ", Style::default().fg(MUTED)),
-            Span::styled(
-                format!(" {} ", jail.preset),
-                Style::default().fg(BG).bg(preset_color(&jail.preset)),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  Elapsed   ", Style::default().fg(MUTED)),
-            Span::styled(format_duration(elapsed), Style::default().fg(Color::White)),
-            Span::styled("    Memory  ", Style::default().fg(MUTED)),
-            Span::styled(format_bytes(jail.memory_bytes), Style::default().fg(Color::White)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Network   ", Style::default().fg(MUTED)),
-            Span::styled(&jail.network, Style::default().fg(network_color(&jail.network))),
-            Span::styled("    Seccomp ", Style::default().fg(MUTED)),
-            Span::styled(&jail.seccomp, Style::default().fg(seccomp_color(&jail.seccomp))),
+            Span::styled(pad, d),
+            Span::styled("net ", d),
+            Span::styled(&jail.network, Style::default().fg(net_color(&jail.network))),
+            Span::styled("    seccomp ", d),
+            Span::styled(&jail.seccomp, Style::default().fg(sec_color(&jail.seccomp))),
         ]),
     ];
 
-    // Timeout progress bar
+    // Timeout progress — inline text bar
     if jail.timeout_secs > 0 {
-        let ratio = (elapsed.as_secs() as f64 / jail.timeout_secs as f64).clamp(0.0, 1.0);
-        let bar_color = if ratio > 0.9 { ERROR } else if ratio > 0.75 { WARNING } else { SUCCESS };
-        let label = format!("{}s / {}s", elapsed.as_secs(), jail.timeout_secs);
+        let secs = elapsed.as_secs();
+        let ratio = (secs as f64 / jail.timeout_secs as f64).clamp(0.0, 1.0);
+        let bar_w = 20;
+        let filled = (ratio * bar_w as f64).round() as usize;
+        let empty = bar_w - filled;
+        let bar_color = if ratio > 0.9 { RED } else if ratio > 0.75 { AMBER } else { GREEN };
 
-        content.push(Line::from(""));
-
-        // We'll render the LineGauge separately below the paragraph
-        let gauge = LineGauge::default()
-            .ratio(ratio)
-            .label(Span::styled(
-                format!("  Timeout   {}", label),
-                Style::default().fg(MUTED),
-            ))
-            .gauge_style(Style::default().fg(bar_color))
-            .line_set(ratatui::symbols::line::NORMAL);
-
-        // Render paragraph in the top portion, gauge in the last line
-        let inner_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(
-                Block::default()
-                    .title(Line::from(Span::styled(
-                        format!(" Jail #{} ", jail.id),
-                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                    )))
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(SURFACE))
-                    .inner(area),
-            );
-
-        // Render the block first
-        f.render_widget(
-            Block::default()
-                .title(Line::from(Span::styled(
-                    format!(" Jail #{} ", jail.id),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                )))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(SURFACE)),
-            area,
-        );
-
-        let para = Paragraph::new(content);
-        f.render_widget(para, inner_chunks[0]);
-        f.render_widget(gauge, inner_chunks[1]);
-    } else {
-        let block = Block::default()
-            .title(Line::from(Span::styled(
-                format!(" Jail #{} ", jail.id),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(SURFACE));
-        f.render_widget(Paragraph::new(content).block(block), area);
+        lines.push(Line::from(vec![
+            Span::styled(pad, d),
+            Span::styled("timeout ", d),
+            Span::styled("━".repeat(filled), Style::default().fg(bar_color)),
+            Span::styled("━".repeat(empty), Style::default().fg(FAINT)),
+            Span::styled(format!(" {}s/{}s", secs, jail.timeout_secs), d),
+        ]));
     }
+
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_output(f: &mut Frame, jail: &JailInfo, scroll_offset: usize, area: Rect) {
     let total = jail.output.len();
-    let visible_height = area.height.saturating_sub(2) as usize; // borders
+    let visible = area.height.saturating_sub(2) as usize;
 
-    // Calculate window: show `visible_height` lines ending at scroll_offset
     let end = (scroll_offset + 1).min(total);
-    let start = end.saturating_sub(visible_height);
+    let start = end.saturating_sub(visible);
 
-    let lines: Vec<Line> = jail.output.iter().skip(start).take(end - start).map(|(stream, text)| {
-        let color = match stream {
-            Stream::Stdout => Color::White,
-            Stream::Stderr => ERROR,
-        };
-        Line::from(Span::styled(text.as_str(), Style::default().fg(color)))
-    }).collect();
+    let lines: Vec<Line> = jail.output.iter()
+        .skip(start).take(end - start)
+        .map(|(stream, text)| {
+            let (prefix, color) = match stream {
+                Stream::Stdout => ("", Color::Rgb(190, 190, 196)),
+                Stream::Stderr => ("", RED),
+            };
+            Line::from(Span::styled(
+                format!("{}{}", prefix, text),
+                Style::default().fg(color),
+            ))
+        })
+        .collect();
 
-    let scroll_indicator = if total > visible_height {
-        format!(" {}/{} ", end, total)
-    } else {
-        String::new()
-    };
+    let mut title_spans = vec![
+        Span::styled(" output ", Style::default().fg(Color::White)),
+    ];
+    if total > 0 {
+        title_spans.push(Span::styled(
+            format!("{} ", total),
+            Style::default().fg(DIM),
+        ));
+    }
 
     let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" output ", Style::default().fg(SUCCESS)),
-            Span::styled(
-                format!("{}+{} ", jail.stdout_count, jail.stderr_count),
-                Style::default().fg(MUTED).add_modifier(Modifier::DIM),
-            ),
-        ]))
-        .title_bottom(Line::from(Span::styled(
-            scroll_indicator,
-            Style::default().fg(MUTED).add_modifier(Modifier::DIM),
-        )).alignment(Alignment::Right))
+        .title(Line::from(title_spans))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(SURFACE))
+        .border_style(Style::default().fg(FAINT))
         .padding(Padding::horizontal(1));
 
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), area);
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(block),
+        area,
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers — compact, consistent
 // ---------------------------------------------------------------------------
 
-fn rounded_block(title: &str) -> Block {
-    let mut b = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(SURFACE));
-    if !title.is_empty() {
-        b = b.title(Line::from(Span::styled(
-            format!(" {} ", title),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        )));
-    }
-    b
-}
-
-fn status_style(status: &JailStatus) -> (&'static str, Color) {
+fn status_icon(status: &JailStatus) -> (&'static str, Color) {
     match status {
-        JailStatus::Running => ("●", SUCCESS),
-        JailStatus::Completed(0) => ("✓", INFO),
-        JailStatus::Completed(_) => ("✗", ERROR),
-        JailStatus::TimedOut => ("⏱", WARNING),
-        JailStatus::Killed => ("◼", ERROR),
+        JailStatus::Running => ("●", GREEN),
+        JailStatus::Completed(0) => ("✓", CYAN),
+        JailStatus::Completed(_) => ("✗", RED),
+        JailStatus::TimedOut => ("⏱", AMBER),
+        JailStatus::Killed => ("■", RED),
     }
 }
 
-fn preset_color(preset: &str) -> Color {
-    match preset {
-        "build" => PRIMARY,
-        "install" => PRIMARY,
-        "agent" => INFO,
-        "dev" => SUCCESS,
-        "test" => WARNING,
-        "gpu" => Color::Rgb(236, 72, 153), // Pink
-        _ => MUTED,
-    }
-}
-
-fn seccomp_icon(seccomp: &str) -> &'static str {
-    match seccomp {
-        "strict" => "◆",
-        "standard" => "◆",
-        "disabled" | "" => "○",
-        _ => "○",
-    }
-}
-
-fn seccomp_color(seccomp: &str) -> Color {
-    match seccomp {
-        "strict" => WARNING,
-        "standard" => SUCCESS,
-        _ => MUTED,
-    }
-}
-
-fn network_icon(network: &str) -> &'static str {
+fn net_short(network: &str) -> &'static str {
     match network {
         "allowlist" => "⇄",
         "loopback" => "↻",
-        "none" | "" => "◌",
         _ => "◌",
     }
 }
 
-fn network_color(network: &str) -> Color {
+fn net_color(network: &str) -> Color {
     match network {
-        "allowlist" => INFO,
-        "loopback" => MUTED,
-        _ => Color::Rgb(63, 63, 70), // Very dim
+        "allowlist" => CYAN,
+        "loopback" => DIM,
+        _ => FAINT,
+    }
+}
+
+fn sec_short(seccomp: &str) -> &'static str {
+    match seccomp {
+        "strict" => "◆◆",
+        "standard" => "◆",
+        _ => "○",
+    }
+}
+
+fn sec_color(seccomp: &str) -> Color {
+    match seccomp {
+        "strict" => AMBER,
+        "standard" => GREEN,
+        _ => FAINT,
     }
 }
 

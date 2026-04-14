@@ -13,7 +13,6 @@ pub enum Stream {
 /// A tracked jail instance.
 #[derive(Debug, Clone)]
 pub struct JailInfo {
-    pub id: u32,
     pub pid: u32,
     pub command: String,
     pub preset: String,
@@ -82,7 +81,6 @@ impl App {
         self.next_id += 1;
 
         self.jails.insert(id, JailInfo {
-            id,
             pid,
             command,
             preset,
