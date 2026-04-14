@@ -146,12 +146,12 @@ async fn run_demo() -> anyhow::Result<()> {
     let cfg = config.clone();
     tokio::spawn(async move {
         let demos = [
-            ("/workspace/slow.sh", "sh slow.sh", "build", "none", "standard", 30u64, 512u64),
-            ("/workspace/quick.sh", "sh quick.sh", "agent", "loopback", "standard", 30, 256),
-            ("/workspace/fail.sh", "sh fail.sh", "dev", "allowlist", "strict", 10, 128),
+            DemoSpec { script: "/workspace/slow.sh", label: "sh slow.sh", preset: "build", network: "none", seccomp: "standard", timeout_secs: 30, memory_limit_mb: 512 },
+            DemoSpec { script: "/workspace/quick.sh", label: "sh quick.sh", preset: "agent", network: "loopback", seccomp: "standard", timeout_secs: 30, memory_limit_mb: 256 },
+            DemoSpec { script: "/workspace/fail.sh", label: "sh fail.sh", preset: "dev", network: "allowlist", seccomp: "strict", timeout_secs: 10, memory_limit_mb: 128 },
         ];
-        for (script, label, preset, net, sec, timeout, mem) in demos {
-            spawn_demo(&app_bg, &cfg, script, label, preset, net, sec, timeout, mem).await;
+        for spec in &demos {
+            spawn_demo(&app_bg, &cfg, spec).await;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     });
@@ -161,34 +161,52 @@ async fn run_demo() -> anyhow::Result<()> {
     Ok(())
 }
 
+struct DemoSpec {
+    script: &'static str,
+    label: &'static str,
+    preset: &'static str,
+    network: &'static str,
+    seccomp: &'static str,
+    timeout_secs: u64,
+    memory_limit_mb: u64,
+}
+
 async fn spawn_demo(
     app: &Arc<Mutex<App>>,
     config: &agentjail::JailConfig,
-    script: &str,
-    label: &str,
-    preset: &str,
-    network: &str,
-    seccomp: &str,
-    timeout_secs: u64,
-    memory_limit_mb: u64,
+    spec: &DemoSpec,
 ) {
     use agentjail::Jail;
+    use app::JailInfo;
+    use std::collections::VecDeque;
+    use std::time::Instant;
 
     let jail = match Jail::new(config.clone()) {
         Ok(j) => j,
         Err(_) => return,
     };
-    let handle = match jail.spawn("/bin/sh", &[script]) {
+    let handle = match jail.spawn("/bin/sh", &[spec.script]) {
         Ok(h) => h,
         Err(_) => return,
     };
 
     let id = {
         let mut a = app.lock().await;
-        a.add_jail(
-            handle.pid(), label.into(), preset.into(),
-            network.into(), seccomp.into(), timeout_secs, memory_limit_mb,
-        )
+        a.add_jail(JailInfo {
+            pid: handle.pid(),
+            command: spec.label.into(),
+            preset: spec.preset.into(),
+            status: JailStatus::Running,
+            started_at: Instant::now(),
+            memory_bytes: 0,
+            network: spec.network.into(),
+            seccomp: spec.seccomp.into(),
+            timeout_secs: spec.timeout_secs,
+            memory_limit_mb: spec.memory_limit_mb,
+            output: VecDeque::new(),
+            stdout_count: 0,
+            stderr_count: 0,
+        })
     };
 
     let app = app.clone();

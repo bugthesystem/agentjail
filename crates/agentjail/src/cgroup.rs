@@ -2,7 +2,7 @@
 
 use crate::error::{JailError, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
@@ -52,14 +52,7 @@ impl Cgroup {
         fs::write(self.path.join("cgroup.procs"), pid.to_string()).map_err(JailError::Cgroup)
     }
 
-    /// Get the cgroup path.
-    #[allow(dead_code)]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Read current memory usage in bytes.
-    #[allow(dead_code)]
     pub fn memory_usage(&self) -> Option<u64> {
         fs::read_to_string(self.path.join("memory.current"))
             .ok()?
@@ -89,7 +82,6 @@ impl Cgroup {
     }
 
     /// Read current number of processes.
-    #[allow(dead_code)]
     pub fn pids_current(&self) -> Option<u64> {
         fs::read_to_string(self.path.join("pids.current"))
             .ok()?
@@ -115,49 +107,10 @@ impl Cgroup {
         false
     }
 
-    /// Get OOM kill count.
-    #[allow(dead_code)]
-    pub fn oom_kill_count(&self) -> u64 {
-        let events = match fs::read_to_string(self.path.join("memory.events")) {
-            Ok(e) => e,
-            Err(_) => return 0,
-        };
-
-        for line in events.lines() {
-            if let Some(val) = line.strip_prefix("oom_kill ") {
-                return val.trim().parse().unwrap_or(0);
-            }
-        }
-        0
-    }
-
-    /// Set I/O bandwidth limits.
-    ///
-    /// Format for io.max: "MAJ:MIN rbps=N wbps=N riops=N wiops=N"
-    /// - rbps/wbps: read/write bytes per second
-    /// - riops/wiops: read/write IOPS
+    /// Set I/O bandwidth limits (bytes per second).
     pub fn set_io_limit(&self, device: &str, read_bps: u64, write_bps: u64) -> Result<()> {
-        // Get device major:minor from path
         let dev_id = get_device_id(device)?;
         let value = format!("{} rbps={} wbps={}", dev_id, read_bps, write_bps);
-        fs::write(self.path.join("io.max"), value).map_err(JailError::Cgroup)
-    }
-
-    /// Set I/O bandwidth limits with IOPS.
-    #[allow(dead_code)]
-    pub fn set_io_limit_full(
-        &self,
-        device: &str,
-        read_bps: u64,
-        write_bps: u64,
-        read_iops: u64,
-        write_iops: u64,
-    ) -> Result<()> {
-        let dev_id = get_device_id(device)?;
-        let value = format!(
-            "{} rbps={} wbps={} riops={} wiops={}",
-            dev_id, read_bps, write_bps, read_iops, write_iops
-        );
         fs::write(self.path.join("io.max"), value).map_err(JailError::Cgroup)
     }
 

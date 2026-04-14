@@ -1,6 +1,7 @@
 FROM rust:1.85-bookworm
 
-# Install dependencies for sandbox testing
+RUN rustup component add clippy
+
 RUN apt-get update && apt-get install -y \
     libseccomp-dev \
     nodejs \

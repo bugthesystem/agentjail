@@ -67,34 +67,11 @@ impl App {
         }
     }
 
-    pub fn add_jail(
-        &mut self,
-        pid: u32,
-        command: String,
-        preset: String,
-        network: String,
-        seccomp: String,
-        timeout_secs: u64,
-        memory_limit_mb: u64,
-    ) -> u32 {
+    pub fn add_jail(&mut self, info: JailInfo) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
 
-        self.jails.insert(id, JailInfo {
-            pid,
-            command,
-            preset,
-            status: JailStatus::Running,
-            started_at: Instant::now(),
-            memory_bytes: 0,
-            network,
-            seccomp,
-            timeout_secs,
-            memory_limit_mb,
-            output: VecDeque::new(),
-            stdout_count: 0,
-            stderr_count: 0,
-        });
+        self.jails.insert(id, info);
 
         if self.selected.is_none() {
             self.selected = Some(id);
@@ -108,7 +85,6 @@ impl App {
         }
     }
 
-    #[allow(dead_code)] // API for future cgroup stats integration
     pub fn update_memory(&mut self, id: u32, bytes: u64) {
         if let Some(jail) = self.jails.get_mut(&id) {
             jail.memory_bytes = bytes;

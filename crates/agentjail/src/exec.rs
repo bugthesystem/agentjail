@@ -171,8 +171,9 @@ fn enter_pid_namespace_and_exec(
 
 /// Remount /proc for the new PID namespace.
 fn remount_proc() -> Result<()> {
-    let proc = CString::new("/proc").unwrap();
-    let procfs = CString::new("proc").unwrap();
+    // SAFETY: These are hardcoded strings with no null bytes.
+    let proc = c"/proc";
+    let procfs = c"proc";
 
     // SAFETY: Unmounting /proc with valid C string.
     unsafe { libc::umount2(proc.as_ptr(), libc::MNT_DETACH) };

@@ -150,11 +150,7 @@ fn ifindex(name: &str) -> std::io::Result<u32> {
     }
 
     let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
-    let name_bytes = name.as_bytes();
-    let copy_len = name_bytes.len().min(libc::IFNAMSIZ - 1);
-    for i in 0..copy_len {
-        ifr.ifr_name[i] = name_bytes[i] as _;
-    }
+    write_ifr_name(&mut ifr, name);
 
     // SAFETY: Valid socket and properly initialized ifreq.
     let ret = unsafe { libc::ioctl(sock, libc::SIOCGIFINDEX as _, &ifr) };
@@ -175,6 +171,13 @@ fn name_nul(name: &str) -> Vec<u8> {
     v
 }
 
+/// Write interface name into ifreq.ifr_name.
+fn write_ifr_name(ifr: &mut libc::ifreq, name: &str) {
+    for (dst, src) in ifr.ifr_name.iter_mut().zip(name.as_bytes()) {
+        *dst = *src as _;
+    }
+}
+
 /// Cast a struct to a byte slice.
 ///
 /// # Safety
@@ -193,7 +196,7 @@ pub fn create_veth_pair(host_name: &str, jail_name: &str) -> Result<()> {
     let mut peer_data = Vec::new();
     let peer_ifinfo: libc::ifinfomsg = unsafe { std::mem::zeroed() };
     peer_data.extend_from_slice(unsafe { as_bytes(&peer_ifinfo) });
-    push_attr(&mut peer_data, libc::IFLA_IFNAME as u16, &name_nul(jail_name));
+    push_attr(&mut peer_data, libc::IFLA_IFNAME, &name_nul(jail_name));
 
     // IFLA_INFO_DATA containing VETH_INFO_PEER
     let mut info_data = Vec::new();
@@ -208,8 +211,8 @@ pub fn create_veth_pair(host_name: &str, jail_name: &str) -> Result<()> {
     let mut payload = Vec::new();
     let ifinfo: libc::ifinfomsg = unsafe { std::mem::zeroed() };
     payload.extend_from_slice(unsafe { as_bytes(&ifinfo) });
-    push_attr(&mut payload, libc::IFLA_IFNAME as u16, &name_nul(host_name));
-    push_attr_nested(&mut payload, libc::IFLA_LINKINFO as u16, &linkinfo);
+    push_attr(&mut payload, libc::IFLA_IFNAME, &name_nul(host_name));
+    push_attr_nested(&mut payload, libc::IFLA_LINKINFO, &linkinfo);
 
     // Assemble full message: nlmsghdr + payload
     let total_len = std::mem::size_of::<libc::nlmsghdr>() + payload.len();
@@ -237,7 +240,7 @@ pub fn move_to_netns(ifname: &str, pid: u32) -> Result<()> {
     let mut ifinfo: libc::ifinfomsg = unsafe { std::mem::zeroed() };
     ifinfo.ifi_index = idx as i32;
     payload.extend_from_slice(unsafe { as_bytes(&ifinfo) });
-    push_attr(&mut payload, libc::IFLA_NET_NS_PID as u16, &pid.to_ne_bytes());
+    push_attr(&mut payload, libc::IFLA_NET_NS_PID, &pid.to_ne_bytes());
 
     let total_len = std::mem::size_of::<libc::nlmsghdr>() + payload.len();
     let hdr = libc::nlmsghdr {
@@ -271,8 +274,8 @@ pub fn add_ipv4_addr(ifname: &str, addr: Ipv4Addr, prefix_len: u8) -> Result<()>
     payload.extend_from_slice(unsafe { as_bytes(&ifa) });
 
     let octets = addr.octets();
-    push_attr(&mut payload, libc::IFA_LOCAL as u16, &octets);
-    push_attr(&mut payload, libc::IFA_ADDRESS as u16, &octets);
+    push_attr(&mut payload, libc::IFA_LOCAL, &octets);
+    push_attr(&mut payload, libc::IFA_ADDRESS, &octets);
 
     let total_len = std::mem::size_of::<libc::nlmsghdr>() + payload.len();
     let hdr = libc::nlmsghdr {
@@ -299,11 +302,7 @@ pub fn set_link_up(ifname: &str) -> Result<()> {
     }
 
     let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
-    let name_bytes = ifname.as_bytes();
-    let copy_len = name_bytes.len().min(libc::IFNAMSIZ - 1);
-    for i in 0..copy_len {
-        ifr.ifr_name[i] = name_bytes[i] as _;
-    }
+    write_ifr_name(&mut ifr, ifname);
     ifr.ifr_ifru.ifru_flags = libc::IFF_UP as i16;
 
     // SAFETY: Valid socket and properly initialized ifreq.
@@ -326,14 +325,14 @@ pub fn add_default_route(gateway: Ipv4Addr) -> Result<()> {
         rtm_dst_len: 0, // default route
         rtm_src_len: 0,
         rtm_tos: 0,
-        rtm_table: libc::RT_TABLE_MAIN as u8,
-        rtm_protocol: libc::RTPROT_BOOT as u8,
-        rtm_scope: libc::RT_SCOPE_UNIVERSE as u8,
-        rtm_type: libc::RTN_UNICAST as u8,
+        rtm_table: libc::RT_TABLE_MAIN,
+        rtm_protocol: libc::RTPROT_BOOT,
+        rtm_scope: libc::RT_SCOPE_UNIVERSE,
+        rtm_type: libc::RTN_UNICAST,
         rtm_flags: 0,
     };
     payload.extend_from_slice(unsafe { as_bytes(&rtm) });
-    push_attr(&mut payload, libc::RTA_GATEWAY as u16, &gateway.octets());
+    push_attr(&mut payload, libc::RTA_GATEWAY, &gateway.octets());
 
     let total_len = std::mem::size_of::<libc::nlmsghdr>() + payload.len();
     let hdr = libc::nlmsghdr {
