@@ -104,8 +104,13 @@ pub(crate) fn setup_child(
         env.extend(gpu::env_vars(&config.gpu));
     }
 
-    // 7. File descriptor limit — prevent child from exhausting system-wide fd table.
+    // 7. Resource limits + privilege hardening.
     set_fd_limit(4096);
+    // Prevent core dumps (could write sensitive memory to output dir).
+    set_core_limit(0);
+    // Prevent privilege escalation via setuid binaries, even if seccomp is disabled.
+    // SAFETY: PR_SET_NO_NEW_PRIVS is always safe to set.
+    unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
 
     // 8. PID namespace double-fork
     if config.pid_namespace {
@@ -239,6 +244,14 @@ fn set_fd_limit(max: u64) {
         rlim_cur: max,
         rlim_max: max,
     };
-    // SAFETY: Valid rlimit struct.
     unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) };
+}
+
+/// Set RLIMIT_CORE to prevent core dumps (sensitive memory to output dir).
+fn set_core_limit(max: u64) {
+    let rlim = libc::rlimit {
+        rlim_cur: max,
+        rlim_max: max,
+    };
+    unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
 }
