@@ -62,5 +62,5 @@ pub use config::{
 pub use error::{JailError, Result};
 pub use events::{EventReceiver, EventSender, JailEvent};
 pub use fork::{CloneMethod, ForkInfo};
-pub use run::{Jail, JailHandle, Output, ResourceStats};
+pub use run::{Jail, JailHandle, Output, ResourceStats, cleanup_stale_veths};
 pub use snapshot::Snapshot;
