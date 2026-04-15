@@ -56,7 +56,7 @@ mod snapshot;
 
 // Public API
 pub use config::{
-    Access, GpuConfig, JailConfig, Mount, Network, SeccompLevel, preset_agent, preset_build,
+    Access, GpuConfig, JailConfig, Network, SeccompLevel, preset_agent, preset_build,
     preset_dev, preset_gpu, preset_install,
 };
 pub use error::{JailError, Result};

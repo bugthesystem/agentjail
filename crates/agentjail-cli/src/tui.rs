@@ -48,8 +48,8 @@ fn restore_terminal(terminal: &mut Tui) -> anyhow::Result<()> {
 async fn event_loop_simple(terminal: &mut Tui, app: &mut App) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, app))?;
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press { continue; }
                 match app.view {
                     View::List => handle_list_key(app, key.code),
@@ -57,7 +57,6 @@ async fn event_loop_simple(terminal: &mut Tui, app: &mut App) -> anyhow::Result<
                 }
                 if app.should_quit { break; }
             }
-        }
     }
     Ok(())
 }
@@ -68,8 +67,8 @@ async fn event_loop_shared(terminal: &mut Tui, app: Arc<Mutex<App>>) -> anyhow::
             let app = app.lock().await;
             terminal.draw(|f| ui::render(f, &app))?;
         }
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press { continue; }
                 let mut app = app.lock().await;
                 match app.view {
@@ -78,7 +77,6 @@ async fn event_loop_shared(terminal: &mut Tui, app: Arc<Mutex<App>>) -> anyhow::
                 }
                 if app.should_quit { break; }
             }
-        }
     }
     Ok(())
 }

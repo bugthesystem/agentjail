@@ -92,8 +92,11 @@ fn nl_exec(sock: &OwnedFd, msg: &[u8]) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
 
-    // Read ACK
-    let mut buf = [0u8; 1024];
+    // Read ACK — use an aligned buffer to avoid UB when casting to nlmsghdr.
+    #[repr(C, align(4))]
+    struct AlignedBuf([u8; 1024]);
+    let mut aligned = AlignedBuf([0u8; 1024]);
+    let buf = &mut aligned.0;
     // SAFETY: Reading into a stack buffer from a valid socket.
     let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0) };
     if n < 0 {
@@ -105,7 +108,7 @@ fn nl_exec(sock: &OwnedFd, msg: &[u8]) -> std::io::Result<()> {
         return Err(std::io::Error::other("netlink: short ACK"));
     }
 
-    // SAFETY: We have enough bytes for the header.
+    // SAFETY: Buffer is 4-byte aligned (AlignedBuf), we have enough bytes.
     let hdr = unsafe { &*(buf.as_ptr() as *const libc::nlmsghdr) };
     if hdr.nlmsg_type == NLMSG_ERROR {
         // Error code is a 4-byte i32 right after the header.

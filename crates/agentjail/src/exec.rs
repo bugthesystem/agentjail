@@ -211,9 +211,12 @@ fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
     let c_cmd =
         CString::new(cmd).map_err(|_| JailError::Exec(std::io::Error::other("invalid command")))?;
 
-    let c_args: Vec<CString> = std::iter::once(c_cmd.clone())
-        .chain(args.iter().filter_map(|a| CString::new(a.as_str()).ok()))
-        .collect();
+    let c_args: Vec<CString> = std::iter::once(Ok(c_cmd.clone()))
+        .chain(args.iter().map(|a| {
+            CString::new(a.as_str())
+                .map_err(|_| JailError::Exec(std::io::Error::other(format!("argument contains null byte: {:?}", a))))
+        }))
+        .collect::<Result<Vec<_>>>()?;
 
     let c_args_ptrs: Vec<*const libc::c_char> = c_args
         .iter()
@@ -223,8 +226,11 @@ fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
 
     let c_env: Vec<CString> = env
         .iter()
-        .filter_map(|(k, v)| CString::new(format!("{}={}", k, v)).ok())
-        .collect();
+        .map(|(k, v)| {
+            CString::new(format!("{}={}", k, v))
+                .map_err(|_| JailError::Exec(std::io::Error::other(format!("env var contains null byte: {}={}", k, v))))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let c_env_ptrs: Vec<*const libc::c_char> = c_env
         .iter()

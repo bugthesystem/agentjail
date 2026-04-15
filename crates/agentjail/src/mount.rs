@@ -23,12 +23,12 @@ fn do_bind_mount(src: &Path, dst: &Path, access: Access, nodev: bool) -> Result<
     }
 
     if src.is_dir() {
-        fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
+        fs::create_dir_all(dst).map_err(JailError::Io)?;
     } else {
         if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent).map_err(JailError::Cgroup)?;
+            fs::create_dir_all(parent).map_err(JailError::Io)?;
         }
-        fs::File::create(dst).map_err(JailError::Cgroup)?;
+        fs::File::create(dst).map_err(JailError::Io)?;
     }
 
     mount(src, dst, "", MountFlags::BIND, "").map_err(JailError::Mount)?;
@@ -48,7 +48,7 @@ fn do_bind_mount(src: &Path, dst: &Path, access: Access, nodev: bool) -> Result<
 
 /// Mount a tmpfs at the given path.
 pub fn mount_tmpfs(dst: &Path, size_mb: u64) -> Result<()> {
-    fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
+    fs::create_dir_all(dst).map_err(JailError::Io)?;
 
     let options = format!("size={}m,mode=1777", size_mb);
     let flags = MountFlags::NOSUID | MountFlags::NODEV;
@@ -60,7 +60,7 @@ pub fn mount_tmpfs(dst: &Path, size_mb: u64) -> Result<()> {
 
 /// Mount a tmpfs with NOEXEC (for /tmp — prevents write+execute bypass).
 pub fn mount_tmpfs_noexec(dst: &Path, size_mb: u64) -> Result<()> {
-    fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
+    fs::create_dir_all(dst).map_err(JailError::Io)?;
 
     let options = format!("size={}m,mode=1777", size_mb);
     let flags = MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
@@ -72,7 +72,7 @@ pub fn mount_tmpfs_noexec(dst: &Path, size_mb: u64) -> Result<()> {
 
 /// Mount /proc inside the jail.
 pub fn mount_proc(dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
+    fs::create_dir_all(dst).map_err(JailError::Io)?;
 
     let flags = MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
     mount("proc", dst, "proc", flags, "").map_err(JailError::Mount)?;
@@ -101,7 +101,7 @@ pub fn make_root_private() -> Result<()> {
 /// - /proc
 /// - /dev (minimal)
 pub fn setup_root(new_root: &Path, source: &Path, output: &Path) -> Result<()> {
-    fs::create_dir_all(new_root).map_err(JailError::Cgroup)?;
+    fs::create_dir_all(new_root).map_err(JailError::Io)?;
 
     // User directories
     let workspace = new_root.join("workspace");
@@ -149,7 +149,7 @@ pub fn setup_root(new_root: &Path, source: &Path, output: &Path) -> Result<()> {
 
     // Minimal /dev
     let dev = new_root.join("dev");
-    fs::create_dir_all(&dev).map_err(JailError::Cgroup)?;
+    fs::create_dir_all(&dev).map_err(JailError::Io)?;
 
     // Device nodes use bind_mount_dev (omits NODEV so the device works).
     // /dev/null needs write (programs redirect to it).

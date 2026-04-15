@@ -85,12 +85,6 @@ impl App {
         }
     }
 
-    pub fn update_memory(&mut self, id: u32, bytes: u64) {
-        if let Some(jail) = self.jails.get_mut(&id) {
-            jail.memory_bytes = bytes;
-        }
-    }
-
     pub fn append_output(&mut self, id: u32, stream: Stream, line: String) {
         if let Some(jail) = self.jails.get_mut(&id) {
             match stream {

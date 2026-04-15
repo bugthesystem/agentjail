@@ -24,7 +24,6 @@ dependencies = [
  "crossterm",
  "libc",
  "ratatui",
- "thiserror",
  "tokio",
 ]
 

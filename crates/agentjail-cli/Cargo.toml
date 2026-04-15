@@ -13,7 +13,6 @@ path = "src/main.rs"
 [dependencies]
 agentjail.workspace = true
 tokio.workspace = true
-thiserror.workspace = true
 ratatui = "0.26"
 crossterm = "0.27"
 clap = { version = "4", features = ["derive"] }

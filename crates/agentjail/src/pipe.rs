@@ -2,7 +2,7 @@
 
 use crate::error::{JailError, Result};
 use rustix::pipe::{PipeFlags, pipe_with};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 /// A pair of pipe file descriptors.
@@ -30,12 +30,10 @@ pub struct OutputStream {
 }
 
 impl OutputStream {
-    /// Create from a raw file descriptor.
-    ///
-    /// # Safety
-    /// The fd must be valid and owned.
-    pub unsafe fn from_raw_fd(fd: i32) -> Self {
-        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    /// Create from an owned file descriptor. Takes ownership — the fd
+    /// will be closed when the `OutputStream` is dropped.
+    pub fn from_owned_fd(fd: OwnedFd) -> Self {
+        let file = std::fs::File::from(fd);
         let async_file = tokio::fs::File::from_std(file);
         Self {
             reader: BufReader::new(async_file),

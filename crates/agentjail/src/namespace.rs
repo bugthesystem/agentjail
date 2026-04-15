@@ -69,17 +69,17 @@ pub fn write_uid_gid_map(child_pid: Pid) -> Result<()> {
 
     // Deny setgroups first (required for unprivileged user namespaces)
     let setgroups_path = format!("/proc/{}/setgroups", child_pid.as_raw_nonzero());
-    fs::write(&setgroups_path, "deny").map_err(JailError::Cgroup)?;
+    fs::write(&setgroups_path, "deny").map_err(JailError::UidMap)?;
 
     // Map current UID to root (0) inside namespace
     let uid_map_path = format!("/proc/{}/uid_map", child_pid.as_raw_nonzero());
     let uid_map = format!("0 {} 1\n", uid.as_raw());
-    fs::write(&uid_map_path, uid_map).map_err(JailError::Cgroup)?;
+    fs::write(&uid_map_path, uid_map).map_err(JailError::UidMap)?;
 
     // Map current GID to root (0) inside namespace
     let gid_map_path = format!("/proc/{}/gid_map", child_pid.as_raw_nonzero());
     let gid_map = format!("0 {} 1\n", gid.as_raw());
-    fs::write(&gid_map_path, gid_map).map_err(JailError::Cgroup)?;
+    fs::write(&gid_map_path, gid_map).map_err(JailError::UidMap)?;
 
     Ok(())
 }

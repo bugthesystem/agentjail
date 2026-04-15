@@ -49,14 +49,6 @@ pub struct GpuConfig {
     pub devices: Vec<u32>,
 }
 
-/// A filesystem mount point.
-#[derive(Debug, Clone)]
-pub struct Mount {
-    pub src: PathBuf,
-    pub dst: PathBuf,
-    pub access: Access,
-}
-
 /// Configuration for a jail instance.
 ///
 /// Use struct syntax with `..Default::default()` for ergonomic construction:
@@ -76,9 +68,6 @@ pub struct JailConfig {
 
     /// Output directory (mounted read-write inside jail).
     pub output: PathBuf,
-
-    /// Additional mounts.
-    pub mounts: Vec<Mount>,
 
     /// Network policy.
     pub network: Network,
@@ -131,7 +120,6 @@ impl Default for JailConfig {
         Self {
             source: PathBuf::new(),
             output: PathBuf::new(),
-            mounts: Vec::new(),
             network: Network::None,
             seccomp: SeccompLevel::Standard,
             landlock: true,

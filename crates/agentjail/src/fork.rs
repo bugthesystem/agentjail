@@ -92,7 +92,7 @@ pub(crate) fn cow_clone(src: &Path, dst: &Path) -> Result<ForkInfo> {
         return Err(JailError::PathNotFound(src.to_path_buf()));
     }
 
-    fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
+    fs::create_dir_all(dst).map_err(JailError::Io)?;
 
     let mut total_files: u64 = 0;
     let mut cow_files: u64 = 0;
@@ -106,7 +106,7 @@ pub(crate) fn cow_clone(src: &Path, dst: &Path) -> Result<ForkInfo> {
         if try_ficlone(src_path, dst_path).is_ok() {
             cow_files += 1;
         } else {
-            fs::copy(src_path, dst_path).map_err(JailError::Cgroup)?;
+            fs::copy(src_path, dst_path).map_err(JailError::Io)?;
         }
         Ok(())
     })?;
