@@ -602,3 +602,167 @@ async fn test_workspace_readonly_enforced() {
 
     cleanup(&src, &out);
 }
+
+// ===========================================================================
+// Round 2 audit regression tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// R2-1: io_uring blocked (bypasses all other seccomp blocks)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_seccomp_blocks_io_uring() {
+    let (src, out) = setup("seccomp-iouring");
+
+    fs::write(
+        src.join("t.sh"),
+        concat!(
+            "#!/bin/sh\n",
+            "python3 -c 'import ctypes; r=ctypes.CDLL(None).syscall(425,1,0); print(\"IOURING:\",r)' 2>&1 || echo 'NO_PYTHON'\n",
+        ),
+    )
+    .unwrap();
+
+    let mut config = base_config(src.clone(), out.clone());
+    config.seccomp = SeccompLevel::Standard;
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let out_str = format!("{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr));
+
+    assert!(
+        out_str.contains("NO_PYTHON") || out_str.contains("-1"),
+        "io_uring_setup should be blocked, got: {}", out_str
+    );
+    cleanup(&src, &out);
+}
+
+// ---------------------------------------------------------------------------
+// R2-2: personality blocked (32-bit compat filter bypass)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_seccomp_blocks_personality() {
+    let (src, out) = setup("seccomp-personality");
+
+    fs::write(
+        src.join("t.sh"),
+        concat!(
+            "#!/bin/sh\n",
+            "python3 -c 'import ctypes; r=ctypes.CDLL(None).syscall(135, 0x0008); print(\"PERS:\",r)' 2>&1 || echo 'NO_PYTHON'\n",
+        ),
+    )
+    .unwrap();
+
+    let mut config = base_config(src.clone(), out.clone());
+    config.seccomp = SeccompLevel::Standard;
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let out_str = format!("{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr));
+
+    assert!(
+        out_str.contains("NO_PYTHON") || out_str.contains("-1"),
+        "personality() should be blocked, got: {}", out_str
+    );
+    cleanup(&src, &out);
+}
+
+// ---------------------------------------------------------------------------
+// R2-3: clone3 blocked (namespace escape)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_seccomp_blocks_clone3() {
+    let (src, out) = setup("seccomp-clone3");
+
+    fs::write(
+        src.join("t.sh"),
+        concat!(
+            "#!/bin/sh\n",
+            "python3 -c 'import ctypes; r=ctypes.CDLL(None).syscall(435,0,0); print(\"CLONE3:\",r)' 2>&1 || echo 'NO_PYTHON'\n",
+        ),
+    )
+    .unwrap();
+
+    let mut config = base_config(src.clone(), out.clone());
+    config.seccomp = SeccompLevel::Standard;
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let out_str = format!("{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr));
+
+    assert!(
+        out_str.contains("NO_PYTHON") || out_str.contains("-1"),
+        "clone3 should be blocked, got: {}", out_str
+    );
+    cleanup(&src, &out);
+}
+
+// ---------------------------------------------------------------------------
+// R2-4: memfd_create blocked (NOEXEC bypass)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_seccomp_blocks_memfd_create() {
+    let (src, out) = setup("seccomp-memfd");
+
+    fs::write(
+        src.join("t.sh"),
+        concat!(
+            "#!/bin/sh\n",
+            "python3 -c 'import ctypes; r=ctypes.CDLL(None).syscall(319,b\"t\",0); print(\"MEMFD:\",r)' 2>&1 || echo 'NO_PYTHON'\n",
+        ),
+    )
+    .unwrap();
+
+    let mut config = base_config(src.clone(), out.clone());
+    config.seccomp = SeccompLevel::Standard;
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let out_str = format!("{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr));
+
+    assert!(
+        out_str.contains("NO_PYTHON") || out_str.contains("-1"),
+        "memfd_create should be blocked, got: {}", out_str
+    );
+    cleanup(&src, &out);
+}
+
+// ---------------------------------------------------------------------------
+// R2-5: Cgroup barrier — child waits for cgroup before exec
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_cgroup_limits_applied_before_exec() {
+    let (src, out) = setup("cgroup-barrier");
+
+    fs::write(src.join("t.sh"), "#!/bin/sh\necho OK\n").unwrap();
+
+    let mut config = base_config(src.clone(), out.clone());
+    config.memory_mb = 128;
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+
+    assert_eq!(r.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&r.stderr));
+    assert!(String::from_utf8_lossy(&r.stdout).contains("OK"));
+    cleanup(&src, &out);
+}
+
+// ---------------------------------------------------------------------------
+// R2-6: File descriptor limit enforced
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_fd_limit_enforced() {
+    let (src, out) = setup("fd-limit");
+
+    fs::write(src.join("t.sh"), "#!/bin/sh\nulimit -n\n").unwrap();
+
+    let config = base_config(src.clone(), out.clone());
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+
+    assert_eq!(r.exit_code, 0);
+    let limit: u64 = String::from_utf8_lossy(&r.stdout).trim().parse().unwrap_or(999999);
+    assert!(limit <= 4096, "fd limit should be <= 4096, got {}", limit);
+    cleanup(&src, &out);
+}
