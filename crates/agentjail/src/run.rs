@@ -193,6 +193,10 @@ impl Jail {
         drop(stdout_pipe.write);
         drop(stderr_pipe.write);
 
+        // Guard: if anything below fails, kill and reap the child so it
+        // doesn't become a zombie leaking PIDs, cgroups and veth interfaces.
+        let child_guard = ChildGuard(child_pid);
+
         // Write UID/GID maps if using user namespace.
         // When running as root, user namespace uid mapping may fail (root
         // already has full capabilities). Only propagate the error for
@@ -253,6 +257,9 @@ impl Jail {
         if let Some(ref cg) = cgroup {
             cg.add_pid(child_pid)?;
         }
+
+        // All setup succeeded — disarm the guard so Drop doesn't kill the child.
+        child_guard.disarm();
 
         // SAFETY: We own these fds from the pipe and transfer ownership to OutputStream.
         let stdout = unsafe { OutputStream::from_raw_fd(stdout_pipe.read.into_raw_fd()) };
@@ -561,7 +568,46 @@ impl JailHandle {
 
 impl Drop for JailHandle {
     fn drop(&mut self) {
+        // Kill the child and its entire process group so nothing leaks.
+        unsafe {
+            libc::kill(-(self.pid as i32), libc::SIGKILL);
+            libc::kill(self.pid as i32, libc::SIGKILL);
+        }
+        // Reap synchronously to avoid zombies. Non-blocking first, then
+        // blocking with a short spin — we just sent SIGKILL so it will
+        // exit almost immediately.
+        let pid = Pid::from_raw(self.pid as i32);
+        if let Some(pid) = pid {
+            for _ in 0..10 {
+                match waitpid(Some(pid), WaitOptions::NOHANG) {
+                    Ok(Some(_)) | Err(_) => break,
+                    Ok(None) => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+        }
         self.cleanup_veth();
+    }
+}
+
+/// RAII guard that kills + reaps a child process on drop. Used to prevent
+/// zombie leaks when parent-side setup fails after fork().
+struct ChildGuard(u32);
+
+impl ChildGuard {
+    /// Disarm the guard — call this when the child has been handed off to
+    /// a JailHandle (which takes over cleanup responsibility).
+    fn disarm(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(-(self.0 as i32), libc::SIGKILL);
+            libc::kill(self.0 as i32, libc::SIGKILL);
+            libc::waitpid(self.0 as i32, std::ptr::null_mut(), 0);
+        }
     }
 }
 

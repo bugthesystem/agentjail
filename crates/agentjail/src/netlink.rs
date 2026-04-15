@@ -141,10 +141,15 @@ fn push_attr_nested(buf: &mut Vec<u8>, rta_type: u16, data: &[u8]) {
     push_attr(buf, rta_type | NLA_F_NESTED, data);
 }
 
+/// Maximum interface name length (including null terminator).
+const IFNAMSIZ: usize = 16;
+
 /// Look up interface index by name via ioctl.
 fn ifindex(name: &str) -> std::io::Result<u32> {
-    // SAFETY: Creating a UDP socket for ioctl only.
-    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    validate_ifname(name)?;
+
+    // SAFETY: Creating a UDP socket for ioctl only. CLOEXEC prevents leak to children.
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
     if sock < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -154,10 +159,12 @@ fn ifindex(name: &str) -> std::io::Result<u32> {
 
     // SAFETY: Valid socket and properly initialized ifreq.
     let ret = unsafe { libc::ioctl(sock, libc::SIOCGIFINDEX as _, &ifr) };
+    // Capture errno before close() can clobber it.
+    let err = std::io::Error::last_os_error();
     unsafe { libc::close(sock) };
 
     if ret < 0 {
-        return Err(std::io::Error::last_os_error());
+        return Err(err);
     }
 
     // SAFETY: ioctl succeeded, ifr_ifindex is populated.
@@ -171,8 +178,22 @@ fn name_nul(name: &str) -> Vec<u8> {
     v
 }
 
-/// Write interface name into ifreq.ifr_name.
+/// Validate interface name fits in IFNAMSIZ (16 bytes including null).
+fn validate_ifname(name: &str) -> std::io::Result<()> {
+    if name.is_empty() || name.len() >= IFNAMSIZ {
+        return Err(std::io::Error::other(format!(
+            "interface name must be 1..{} bytes, got {}",
+            IFNAMSIZ - 1,
+            name.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Write interface name into ifreq.ifr_name with bounds check.
 fn write_ifr_name(ifr: &mut libc::ifreq, name: &str) {
+    // Caller must validate via validate_ifname() first. The zeroed ifr
+    // guarantees null termination as long as name.len() < IFNAMSIZ.
     for (dst, src) in ifr.ifr_name.iter_mut().zip(name.as_bytes()) {
         *dst = *src as _;
     }
@@ -295,8 +316,10 @@ pub fn add_ipv4_addr(ifname: &str, addr: Ipv4Addr, prefix_len: u8) -> Result<()>
 
 /// Bring an interface up via ioctl (same pattern as setup_loopback).
 pub fn set_link_up(ifname: &str) -> Result<()> {
-    // SAFETY: Creating a UDP socket for ioctl only.
-    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    validate_ifname(ifname).map_err(JailError::Network)?;
+
+    // SAFETY: Creating a UDP socket for ioctl only. CLOEXEC prevents leak to children.
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
     if sock < 0 {
         return Err(JailError::Network(std::io::Error::last_os_error()));
     }
@@ -307,10 +330,11 @@ pub fn set_link_up(ifname: &str) -> Result<()> {
 
     // SAFETY: Valid socket and properly initialized ifreq.
     let ret = unsafe { libc::ioctl(sock, libc::SIOCSIFFLAGS as _, &ifr) };
+    let err = std::io::Error::last_os_error();
     unsafe { libc::close(sock) };
 
     if ret < 0 {
-        return Err(JailError::Network(std::io::Error::last_os_error()));
+        return Err(JailError::Network(err));
     }
     Ok(())
 }

@@ -175,9 +175,28 @@ fn get_device_id(path: &str) -> Result<String> {
 
 impl Drop for Cgroup {
     fn drop(&mut self) {
-        // Try to remove the cgroup, ignore errors
-        // (it may still have processes or not exist)
-        let _ = fs::remove_dir(&self.path);
+        // Kill any remaining processes so the cgroup can be removed.
+        if let Ok(procs) = fs::read_to_string(self.path.join("cgroup.procs")) {
+            for line in procs.lines() {
+                if let Ok(pid) = line.trim().parse::<i32>() {
+                    if pid > 0 {
+                        unsafe { libc::kill(pid, libc::SIGKILL) };
+                    }
+                }
+            }
+        }
+        // Brief spin — processes exit almost immediately after SIGKILL.
+        for _ in 0..20 {
+            if fs::remove_dir(&self.path).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Last resort: log and accept the leak.
+        eprintln!(
+            "warning: could not remove cgroup {}, processes may still be running",
+            self.path.display()
+        );
     }
 }
 
