@@ -2,6 +2,7 @@
 //!
 //! Allows callers to receive real-time updates from running jails.
 
+use crate::run::JailPid;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -9,7 +10,7 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub enum JailEvent {
     /// Jail started with given PID.
-    Started { pid: u32 },
+    Started { pid: JailPid },
     /// Line written to stdout.
     Stdout(String),
     /// Line written to stderr.
@@ -23,7 +24,7 @@ pub enum JailEvent {
     /// Jail was killed by OOM killer.
     OomKilled,
     /// A live fork of this jail was created.
-    Forked { fork_pid: u32 },
+    Forked { fork_pid: JailPid },
 }
 
 /// Sender for jail events (held by the jail runner).

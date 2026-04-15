@@ -2,47 +2,26 @@
 //!
 //! Run with: cargo test --test fork_test
 
+mod common;
+
 use agentjail::{CloneMethod, Jail, JailConfig, SeccompLevel};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
 fn setup_dirs(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let source = PathBuf::from(format!("/tmp/agentjail-fork-{}-src", name));
-    let output = PathBuf::from(format!("/tmp/agentjail-fork-{}-out", name));
-    let fork_output = PathBuf::from(format!("/tmp/agentjail-fork-{}-fork", name));
-
-    let _ = fs::remove_dir_all(&source);
-    let _ = fs::remove_dir_all(&output);
-    let _ = fs::remove_dir_all(&fork_output);
-
-    fs::create_dir_all(&source).unwrap();
-    fs::create_dir_all(&output).unwrap();
-
-    (source, output, fork_output)
+    let (src, out) = common::setup("fork", name);
+    let fork_out = PathBuf::from(format!("/tmp/aj-fork-{}-fork", name));
+    let _ = fs::remove_dir_all(&fork_out);
+    (src, out, fork_out)
 }
 
 fn cleanup(source: &PathBuf, output: &PathBuf, fork_output: &PathBuf) {
-    let _ = fs::remove_dir_all(source);
-    let _ = fs::remove_dir_all(output);
+    common::cleanup(source, output);
     let _ = fs::remove_dir_all(fork_output);
 }
 
-fn test_config(source: PathBuf, output: PathBuf) -> JailConfig {
-    JailConfig {
-        source,
-        output,
-        timeout_secs: 10,
-        user_namespace: false,
-        seccomp: SeccompLevel::Disabled,
-        landlock: false,
-        memory_mb: 0,
-        cpu_percent: 0,
-        max_pids: 0,
-        pid_namespace: true,
-        ..Default::default()
-    }
-}
+fn test_config(source: PathBuf, output: PathBuf) -> JailConfig { common::lightweight_config(source, output) }
 
 #[tokio::test]
 async fn test_live_fork_clones_filesystem() {

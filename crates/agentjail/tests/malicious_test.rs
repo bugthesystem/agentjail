@@ -1,23 +1,16 @@
 //! Test that the sandbox blocks malicious behavior
 
+mod common;
+
 use agentjail::{Jail, JailConfig, SeccompLevel};
 use std::fs;
 use std::path::PathBuf;
 
 fn test_config(source: PathBuf, output: PathBuf) -> JailConfig {
-    JailConfig {
-        source,
-        output,
-        timeout_secs: 30,
-        user_namespace: false,
-        seccomp: SeccompLevel::Disabled, // Disable for now - needs tuning
-        landlock: false,
-        memory_mb: 0,
-        cpu_percent: 0,
-        max_pids: 0,
-        env: vec![("PATH".to_string(), "/usr/local/bin:/usr/bin:/bin".to_string())],
-        ..Default::default()
-    }
+    let mut c = common::lightweight_config(source, output);
+    c.timeout_secs = 30;
+    c.env = vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())];
+    c
 }
 
 #[tokio::test]
