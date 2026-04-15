@@ -128,12 +128,17 @@ where
 }
 
 /// Clear directory contents without removing the directory itself.
+/// Symlinks are removed (not followed) to prevent directory traversal attacks.
 fn clear_dir(dir: &Path) -> Result<()> {
     for entry in fs::read_dir(dir).map_err(JailError::Cgroup)? {
         let entry = entry.map_err(JailError::Cgroup)?;
+        let ft = entry.file_type().map_err(JailError::Cgroup)?;
         let path = entry.path();
 
-        if path.is_dir() {
+        if ft.is_symlink() {
+            // Remove the symlink itself — never follow it.
+            fs::remove_file(&path).map_err(JailError::Cgroup)?;
+        } else if ft.is_dir() {
             fs::remove_dir_all(&path).map_err(JailError::Cgroup)?;
         } else {
             fs::remove_file(&path).map_err(JailError::Cgroup)?;
@@ -142,20 +147,20 @@ fn clear_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Calculate directory size recursively.
+/// Calculate directory size recursively (does not follow symlinks).
 fn dir_size(path: &Path) -> std::io::Result<u64> {
     let mut size = 0;
 
-    if path.is_dir() {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let path = entry.path();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
 
-            if path.is_dir() {
-                size += dir_size(&path)?;
-            } else {
-                size += entry.metadata()?.len();
-            }
+        if ft.is_symlink() {
+            continue;
+        } else if ft.is_dir() {
+            size += dir_size(&entry.path())?;
+        } else {
+            size += entry.metadata()?.len();
         }
     }
 

@@ -34,28 +34,51 @@ pub fn apply_filter(level: SeccompLevel) -> Result<()> {
 fn base_blocked_syscalls() -> Vec<i64> {
     #[allow(unused_mut)]
     let mut v = vec![
+        // Module loading
         libc::SYS_init_module,
         libc::SYS_finit_module,
         libc::SYS_delete_module,
+        // Reboot / shutdown
         libc::SYS_reboot,
         libc::SYS_kexec_load,
+        // Process tracing / introspection
         libc::SYS_ptrace,
         libc::SYS_process_vm_readv,
         libc::SYS_process_vm_writev,
+        // Mount (old API)
         libc::SYS_mount,
         libc::SYS_umount2,
         libc::SYS_pivot_root,
+        // Mount (new API, Linux 5.2+) — bypasses SYS_mount block
+        libc::SYS_open_tree,
+        libc::SYS_move_mount,
+        libc::SYS_fsopen,
+        libc::SYS_fsconfig,
+        libc::SYS_fsmount,
+        libc::SYS_fspick,
+        // Namespace escape
+        libc::SYS_unshare,
+        libc::SYS_setns,
+        // Host identity
         libc::SYS_sethostname,
         libc::SYS_setdomainname,
+        // Accounting / swap
         libc::SYS_acct,
         libc::SYS_swapon,
         libc::SYS_swapoff,
+        // Clock manipulation
         libc::SYS_settimeofday,
         libc::SYS_clock_settime,
         libc::SYS_adjtimex,
+        // Keyring
         libc::SYS_add_key,
         libc::SYS_request_key,
         libc::SYS_keyctl,
+        // BPF / perf — information leak and privilege escalation
+        libc::SYS_bpf,
+        libc::SYS_perf_event_open,
+        // Exploitable race condition primitives
+        libc::SYS_userfaultfd,
     ];
 
     // iopl/ioperm are x86-only (hardware port I/O).
@@ -78,6 +101,7 @@ fn build_strict_filter() -> Result<SeccompFilter> {
     let mut blocked = base_blocked_syscalls();
     blocked.extend_from_slice(&[
         libc::SYS_socket,
+        libc::SYS_socketpair,
         libc::SYS_connect,
         libc::SYS_accept,
         libc::SYS_accept4,
@@ -87,6 +111,9 @@ fn build_strict_filter() -> Result<SeccompFilter> {
         libc::SYS_recvfrom,
         libc::SYS_sendmsg,
         libc::SYS_recvmsg,
+        libc::SYS_sendmmsg,
+        libc::SYS_recvmmsg,
+        libc::SYS_shutdown,
     ]);
     build_blocklist_filter(&blocked)
 }
