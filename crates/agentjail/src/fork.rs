@@ -279,4 +279,224 @@ mod tests {
 
         assert!(cow_clone(&src, &dst).is_err());
     }
+
+    #[test]
+    fn test_cow_clone_deep_nesting() {
+        let src = PathBuf::from("/tmp/agentjail-cow-deep-src");
+        let dst = PathBuf::from("/tmp/agentjail-cow-deep-dst");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+
+        // Create 5-level deep directory tree
+        let deep = src.join("a/b/c/d/e");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("leaf.txt"), "deep-value").unwrap();
+        fs::write(src.join("a/b/mid.txt"), "mid-value").unwrap();
+        fs::write(src.join("root.txt"), "root-value").unwrap();
+
+        let info = cow_clone(&src, &dst).unwrap();
+
+        assert_eq!(info.files_cloned, 3);
+        assert_eq!(
+            fs::read_to_string(dst.join("a/b/c/d/e/leaf.txt")).unwrap(),
+            "deep-value"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("a/b/mid.txt")).unwrap(),
+            "mid-value"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("root.txt")).unwrap(),
+            "root-value"
+        );
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn test_cow_clone_preserves_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let src = PathBuf::from("/tmp/agentjail-cow-perm-src");
+        let dst = PathBuf::from("/tmp/agentjail-cow-perm-dst");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+
+        fs::create_dir_all(&src).unwrap();
+
+        // Create a file and make it executable
+        fs::write(src.join("script.sh"), "#!/bin/sh\necho hi\n").unwrap();
+        fs::set_permissions(
+            src.join("script.sh"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        // Create a read-only file
+        fs::write(src.join("readonly.txt"), "protected").unwrap();
+        fs::set_permissions(
+            src.join("readonly.txt"),
+            fs::Permissions::from_mode(0o444),
+        )
+        .unwrap();
+
+        let info = cow_clone(&src, &dst).unwrap();
+        assert_eq!(info.files_cloned, 2);
+
+        // Verify permissions are preserved (either by FICLONE+set_permissions or fs::copy)
+        let script_mode = fs::metadata(dst.join("script.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            script_mode & 0o777,
+            0o755,
+            "Executable permission should be preserved"
+        );
+
+        let ro_mode = fs::metadata(dst.join("readonly.txt"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            ro_mode & 0o777,
+            0o444,
+            "Read-only permission should be preserved"
+        );
+
+        // Cleanup: need write permission to remove
+        let _ = fs::set_permissions(
+            dst.join("readonly.txt"),
+            fs::Permissions::from_mode(0o644),
+        );
+        let _ = fs::set_permissions(
+            src.join("readonly.txt"),
+            fs::Permissions::from_mode(0o644),
+        );
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn test_cow_clone_binary_data() {
+        let src = PathBuf::from("/tmp/agentjail-cow-bin-src");
+        let dst = PathBuf::from("/tmp/agentjail-cow-bin-dst");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+
+        fs::create_dir_all(&src).unwrap();
+
+        // Write binary data (non-UTF8, includes null bytes)
+        let binary_data: Vec<u8> = (0..=255).collect();
+        fs::write(src.join("binary.bin"), &binary_data).unwrap();
+
+        let info = cow_clone(&src, &dst).unwrap();
+
+        assert_eq!(info.files_cloned, 1);
+        assert_eq!(info.bytes_cloned, 256);
+
+        let cloned = fs::read(dst.join("binary.bin")).unwrap();
+        assert_eq!(cloned, binary_data, "Binary data must be bit-identical");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn test_cow_clone_symlinked_directory() {
+        let src = PathBuf::from("/tmp/agentjail-cow-sldir-src");
+        let dst = PathBuf::from("/tmp/agentjail-cow-sldir-dst");
+        let secret_dir = PathBuf::from("/tmp/agentjail-cow-sldir-secret");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+        let _ = fs::remove_dir_all(&secret_dir);
+
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&secret_dir).unwrap();
+        fs::write(secret_dir.join("creds.txt"), "password123").unwrap();
+
+        // Symlink to a directory containing secrets
+        std::os::unix::fs::symlink(&secret_dir, src.join("secrets")).unwrap();
+        fs::write(src.join("safe.txt"), "public").unwrap();
+
+        let info = cow_clone(&src, &dst).unwrap();
+
+        assert_eq!(info.files_cloned, 1); // Only safe.txt
+        assert!(dst.join("safe.txt").exists());
+        assert!(
+            !dst.join("secrets").exists(),
+            "Symlinked directory must not be followed"
+        );
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+        let _ = fs::remove_dir_all(&secret_dir);
+    }
+
+    #[test]
+    fn test_cow_clone_creates_destination() {
+        let src = PathBuf::from("/tmp/agentjail-cow-autocreate-src");
+        let dst = PathBuf::from("/tmp/agentjail-cow-autocreate-dst/nested/deep");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all("/tmp/agentjail-cow-autocreate-dst");
+
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), "data").unwrap();
+
+        // dst and its parents don't exist — cow_clone should create them
+        let info = cow_clone(&src, &dst).unwrap();
+
+        assert_eq!(info.files_cloned, 1);
+        assert_eq!(fs::read_to_string(dst.join("file.txt")).unwrap(), "data");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all("/tmp/agentjail-cow-autocreate-dst");
+    }
+
+    #[test]
+    fn test_cow_clone_many_files() {
+        let src = PathBuf::from("/tmp/agentjail-cow-many-src");
+        let dst = PathBuf::from("/tmp/agentjail-cow-many-dst");
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+
+        fs::create_dir_all(&src).unwrap();
+
+        // Create 50 files across several directories
+        for i in 0..50 {
+            let dir = src.join(format!("dir{}", i % 5));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(format!("file{}.txt", i)), format!("content-{}", i)).unwrap();
+        }
+
+        let info = cow_clone(&src, &dst).unwrap();
+
+        assert_eq!(info.files_cloned, 50);
+        assert!(info.bytes_cloned > 0);
+        assert!(
+            info.clone_duration.as_secs() < 5,
+            "Cloning 50 small files should be fast, took {:?}",
+            info.clone_duration
+        );
+
+        // Spot check a few files
+        assert_eq!(
+            fs::read_to_string(dst.join("dir0/file0.txt")).unwrap(),
+            "content-0"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("dir4/file49.txt")).unwrap(),
+            "content-49"
+        );
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
 }
