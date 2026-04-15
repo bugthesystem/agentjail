@@ -259,13 +259,18 @@ while let Some(event) = rx.recv().await {
 | Attack | Protection |
 |--------|------------|
 | Read ~/.ssh, ~/.aws | Not mounted |
+| Read /etc/shadow, ssh keys | Minimal /etc (only ld.so, resolv.conf, ssl) |
 | Network exfiltration | Network namespace + allowlist proxy |
 | Reverse shells | No network or allowlist only |
 | Fork bombs | PID limit |
 | Memory exhaustion | Memory limit + OOM detection |
 | Disk thrashing | I/O bandwidth limits |
 | Signal host processes | PID namespace |
-| Syscall exploits | Seccomp blocklist |
+| Syscall exploits | Seccomp blocklist (incl. new mount API, bpf, unshare) |
+| Write+execute on /tmp | NOEXEC mount flag |
+| Stdout OOM of parent | Capped at 256 MiB per stream |
+| Symlink traversal | Skipped in snapshots, forks, and cleanup |
+| Zombie/fd leak on crash | `PR_SET_PDEATHSIG` + kill+reap in Drop |
 
 ## CLI
 
