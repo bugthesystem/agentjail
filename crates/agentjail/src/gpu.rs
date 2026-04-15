@@ -29,7 +29,7 @@ pub fn discover(config: &GpuConfig) -> Result<NvidiaResources> {
     // 1. Find control device
     let ctl = PathBuf::from("/dev/nvidiactl");
     if !ctl.exists() {
-        return Err(JailError::Exec(std::io::Error::new(
+        return Err(JailError::Gpu(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no NVIDIA GPU found (/dev/nvidiactl missing)",
         )));
@@ -42,7 +42,7 @@ pub fn discover(config: &GpuConfig) -> Result<NvidiaResources> {
     // 3. Find per-GPU devices, filtered by config.devices
     let gpus = discover_gpu_devices(&config.devices)?;
     if gpus.is_empty() {
-        return Err(JailError::Exec(std::io::Error::new(
+        return Err(JailError::Gpu(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no NVIDIA GPU devices found in /dev",
         )));
@@ -51,7 +51,7 @@ pub fn discover(config: &GpuConfig) -> Result<NvidiaResources> {
     // 4. Find NVIDIA library directories
     let lib_dirs = discover_nvidia_libs();
     if lib_dirs.is_empty() {
-        return Err(JailError::Exec(std::io::Error::new(
+        return Err(JailError::Gpu(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "NVIDIA libraries not found (libcuda.so.1 missing)",
         )));
@@ -69,20 +69,18 @@ pub fn discover(config: &GpuConfig) -> Result<NvidiaResources> {
 fn discover_gpu_devices(filter: &[u32]) -> Result<Vec<PathBuf>> {
     let mut gpus = Vec::new();
 
-    let entries = fs::read_dir("/dev").map_err(JailError::Exec)?;
+    let entries = fs::read_dir("/dev").map_err(JailError::Gpu)?;
     for entry in entries {
-        let entry = entry.map_err(JailError::Exec)?;
+        let entry = entry.map_err(JailError::Gpu)?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
 
         // Match /dev/nvidia0, /dev/nvidia1, etc. (not nvidiactl, nvidia-uvm)
-        if let Some(idx_str) = name.strip_prefix("nvidia") {
-            if let Ok(idx) = idx_str.parse::<u32>() {
-                if filter.is_empty() || filter.contains(&idx) {
+        if let Some(idx_str) = name.strip_prefix("nvidia")
+            && let Ok(idx) = idx_str.parse::<u32>()
+                && (filter.is_empty() || filter.contains(&idx)) {
                     gpus.push(entry.path());
                 }
-            }
-        }
     }
 
     gpus.sort();
@@ -110,11 +108,10 @@ fn discover_nvidia_libs() -> Vec<PathBuf> {
     }
 
     // Also check ldconfig output as a fallback
-    if dirs.is_empty() {
-        if let Some(dir) = find_nvidia_lib_via_ldconfig() {
+    if dirs.is_empty()
+        && let Some(dir) = find_nvidia_lib_via_ldconfig() {
             dirs.push(dir);
         }
-    }
 
     dirs
 }
@@ -144,7 +141,7 @@ fn find_nvidia_lib_via_ldconfig() -> Option<PathBuf> {
 pub fn setup_mounts(new_root: &Path, resources: &NvidiaResources) -> Result<()> {
     // 1. Mount device nodes (read-write, no NODEV flag)
     let dev_dir = new_root.join("dev");
-    fs::create_dir_all(&dev_dir).map_err(JailError::Cgroup)?;
+    fs::create_dir_all(&dev_dir).map_err(JailError::Gpu)?;
 
     // /dev/nvidiactl
     bind_mount_dev(
@@ -167,7 +164,7 @@ pub fn setup_mounts(new_root: &Path, resources: &NvidiaResources) -> Result<()> 
 
     // 2. Mount NVIDIA libraries read-only
     let nvidia_lib_dir = new_root.join("usr/lib/nvidia");
-    fs::create_dir_all(&nvidia_lib_dir).map_err(JailError::Cgroup)?;
+    fs::create_dir_all(&nvidia_lib_dir).map_err(JailError::Gpu)?;
 
     for host_dir in &resources.lib_dirs {
         mount_nvidia_libs_from(host_dir, &nvidia_lib_dir)?;
@@ -237,6 +234,7 @@ pub fn env_vars(config: &GpuConfig) -> Vec<(String, String)> {
 }
 
 /// Check if any NVIDIA GPU is available on the host.
+#[allow(dead_code)]
 pub fn is_available() -> bool {
     Path::new("/dev/nvidiactl").exists()
 }

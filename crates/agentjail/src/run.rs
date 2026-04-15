@@ -12,7 +12,7 @@ use crate::{events, exec, gpu, netlink, proxy};
 
 use rustix::process::{Pid, WaitOptions, WaitStatus, waitpid};
 use std::net::{IpAddr, Ipv4Addr};
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -212,17 +212,15 @@ impl Jail {
         let child_guard = ChildGuard(child_pid);
 
         // Write UID/GID maps if using user namespace.
-        if config.user_namespace {
-            if let Some(pid) = Pid::from_raw(child_pid as i32) {
-                if let Err(e) = write_uid_gid_map(pid) {
+        if config.user_namespace
+            && let Some(pid) = Pid::from_raw(child_pid as i32)
+                && let Err(e) = write_uid_gid_map(pid) {
                     if rustix::process::getuid().is_root() {
                         eprintln!("warning: uid/gid map failed (running as root): {}", e);
                     } else {
                         return Err(e);
                     }
                 }
-            }
-        }
 
         // Create and configure cgroup BEFORE allowing child to proceed.
         let cgroup = self.create_cgroup(child_pid)?;
@@ -277,9 +275,8 @@ impl Jail {
         // All setup succeeded — disarm the guard so Drop doesn't kill the child.
         child_guard.disarm();
 
-        // SAFETY: We own these fds from the pipe and transfer ownership to OutputStream.
-        let stdout = unsafe { OutputStream::from_raw_fd(stdout_pipe.read.into_raw_fd()) };
-        let stderr = unsafe { OutputStream::from_raw_fd(stderr_pipe.read.into_raw_fd()) };
+        let stdout = OutputStream::from_owned_fd(stdout_pipe.read);
+        let stderr = OutputStream::from_owned_fd(stderr_pipe.read);
 
         let timeout = if config.timeout_secs > 0 {
             Duration::from_secs(config.timeout_secs)
@@ -366,11 +363,10 @@ impl Jail {
         let clone_result = fork::cow_clone(&self.config.output, &fork_output);
 
         // Thaw immediately — even if the clone failed.
-        if frozen {
-            if let Some(h) = running {
+        if frozen
+            && let Some(h) = running {
                 let _ = h.thaw();
             }
-        }
 
         let mut fork_info = clone_result?;
         fork_info.was_frozen = frozen;

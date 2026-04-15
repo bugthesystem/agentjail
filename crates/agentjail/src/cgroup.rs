@@ -53,6 +53,7 @@ impl Cgroup {
     }
 
     /// Read current memory usage in bytes.
+    #[allow(dead_code)]
     pub fn memory_usage(&self) -> Option<u64> {
         fs::read_to_string(self.path.join("memory.current"))
             .ok()?
@@ -82,6 +83,7 @@ impl Cgroup {
     }
 
     /// Read current number of processes.
+    #[allow(dead_code)]
     pub fn pids_current(&self) -> Option<u64> {
         fs::read_to_string(self.path.join("pids.current"))
             .ok()?
@@ -98,11 +100,10 @@ impl Cgroup {
         };
 
         for line in events.lines() {
-            if let Some(val) = line.strip_prefix("oom_kill ") {
-                if let Ok(count) = val.trim().parse::<u64>() {
+            if let Some(val) = line.strip_prefix("oom_kill ")
+                && let Ok(count) = val.trim().parse::<u64>() {
                     return count > 0;
                 }
-            }
         }
         false
     }
@@ -178,11 +179,10 @@ impl Drop for Cgroup {
         // Kill any remaining processes so the cgroup can be removed.
         if let Ok(procs) = fs::read_to_string(self.path.join("cgroup.procs")) {
             for line in procs.lines() {
-                if let Ok(pid) = line.trim().parse::<i32>() {
-                    if pid > 0 {
+                if let Ok(pid) = line.trim().parse::<i32>()
+                    && pid > 0 {
                         unsafe { libc::kill(pid, libc::SIGKILL) };
                     }
-                }
             }
         }
         // Brief spin — processes exit almost immediately after SIGKILL.
