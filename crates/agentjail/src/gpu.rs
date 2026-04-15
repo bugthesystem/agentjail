@@ -76,13 +76,11 @@ fn discover_gpu_devices(filter: &[u32]) -> Result<Vec<PathBuf>> {
         let name = name.to_string_lossy();
 
         // Match /dev/nvidia0, /dev/nvidia1, etc. (not nvidiactl, nvidia-uvm)
-        if let Some(idx_str) = name.strip_prefix("nvidia") {
-            if let Ok(idx) = idx_str.parse::<u32>() {
-                if filter.is_empty() || filter.contains(&idx) {
+        if let Some(idx_str) = name.strip_prefix("nvidia")
+            && let Ok(idx) = idx_str.parse::<u32>()
+                && (filter.is_empty() || filter.contains(&idx)) {
                     gpus.push(entry.path());
                 }
-            }
-        }
     }
 
     gpus.sort();
@@ -110,11 +108,10 @@ fn discover_nvidia_libs() -> Vec<PathBuf> {
     }
 
     // Also check ldconfig output as a fallback
-    if dirs.is_empty() {
-        if let Some(dir) = find_nvidia_lib_via_ldconfig() {
+    if dirs.is_empty()
+        && let Some(dir) = find_nvidia_lib_via_ldconfig() {
             dirs.push(dir);
         }
-    }
 
     dirs
 }
@@ -237,6 +234,7 @@ pub fn env_vars(config: &GpuConfig) -> Vec<(String, String)> {
 }
 
 /// Check if any NVIDIA GPU is available on the host.
+#[allow(dead_code)]
 pub fn is_available() -> bool {
     Path::new("/dev/nvidiactl").exists()
 }

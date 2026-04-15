@@ -212,17 +212,15 @@ impl Jail {
         let child_guard = ChildGuard(child_pid);
 
         // Write UID/GID maps if using user namespace.
-        if config.user_namespace {
-            if let Some(pid) = Pid::from_raw(child_pid as i32) {
-                if let Err(e) = write_uid_gid_map(pid) {
+        if config.user_namespace
+            && let Some(pid) = Pid::from_raw(child_pid as i32)
+                && let Err(e) = write_uid_gid_map(pid) {
                     if rustix::process::getuid().is_root() {
                         eprintln!("warning: uid/gid map failed (running as root): {}", e);
                     } else {
                         return Err(e);
                     }
                 }
-            }
-        }
 
         // Create and configure cgroup BEFORE allowing child to proceed.
         let cgroup = self.create_cgroup(child_pid)?;
@@ -365,11 +363,10 @@ impl Jail {
         let clone_result = fork::cow_clone(&self.config.output, &fork_output);
 
         // Thaw immediately — even if the clone failed.
-        if frozen {
-            if let Some(h) = running {
+        if frozen
+            && let Some(h) = running {
                 let _ = h.thaw();
             }
-        }
 
         let mut fork_info = clone_result?;
         fork_info.was_frozen = frozen;
