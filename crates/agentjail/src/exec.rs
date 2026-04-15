@@ -137,6 +137,11 @@ fn enter_pid_namespace_and_exec(
             std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
         ))),
         0 => {
+            // Re-arm parent-death signal (cleared by fork). If the
+            // intermediate process dies we should die too, keeping the
+            // chain: parent → child → grandchild all linked.
+            unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
+
             let _ = remount_proc();
 
             if let Err(e) = apply_filter(config.seccomp) {

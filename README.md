@@ -291,7 +291,7 @@ agentjail demo  # Demo mode
 - **Not a VM** — Kernel exploits could escape
 - **GPU requires trust** — GPU passthrough exposes the NVIDIA kernel driver attack surface
 - **Cgroups v2 only** — Won't work with cgroups v1
-- **Allowlist proxy** — Uses veth pairs (one per jail). Veth interfaces leak if the parent is SIGKILLed without cleanup.
+- **Allowlist proxy** — Uses veth pairs (one per jail). Jailed processes die automatically if the parent is killed (`PR_SET_PDEATHSIG`), which destroys both veth ends. Call `cleanup_stale_veths()` at startup for extra safety.
 
 For stronger isolation: [gVisor](https://gvisor.dev) or [Firecracker](https://firecracker-microvm.github.io).
 

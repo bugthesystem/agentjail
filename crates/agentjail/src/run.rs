@@ -164,6 +164,11 @@ impl Jail {
                 }
                 0 => {
                     // Child process
+                    // Die if parent is killed — prevents veth interface leaks.
+                    // When the child dies its network namespace is destroyed,
+                    // which makes the kernel auto-remove both veth ends.
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+
                     // Create new session and process group so we can kill all descendants.
                     if libc::setsid() == -1 {
                         libc::_exit(127);
@@ -580,6 +585,35 @@ fn extract_exit_code(status: WaitStatus) -> i32 {
             .unwrap_or(-1)
     } else {
         -1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stale veth cleanup
+// ---------------------------------------------------------------------------
+
+/// Remove leftover `aj-h*` veth interfaces from previous runs.
+///
+/// Normally veths are cleaned up automatically: `PR_SET_PDEATHSIG` ensures
+/// the jailed child dies when the parent is killed, destroying the network
+/// namespace and both veth ends.  This function handles the edge case where
+/// that mechanism failed (e.g. parent killed between fork and prctl, or
+/// kernel bug).
+///
+/// Safe to call at any time — only touches interfaces whose name starts
+/// with `aj-h`.
+pub fn cleanup_stale_veths() {
+    let net_dir = std::path::Path::new("/sys/class/net");
+    let entries = match std::fs::read_dir(net_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("aj-h") {
+            let _ = netlink::delete_link(&name);
+        }
     }
 }
 
