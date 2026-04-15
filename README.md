@@ -266,11 +266,17 @@ while let Some(event) = rx.recv().await {
 | Memory exhaustion | Memory limit + OOM detection |
 | Disk thrashing | I/O bandwidth limits |
 | Signal host processes | PID namespace |
-| Syscall exploits | Seccomp blocklist (incl. new mount API, bpf, unshare) |
+| Syscall exploits | Seccomp blocklist (mount API, bpf, unshare, io_uring, personality) |
+| io_uring bypass | `io_uring_setup`/`enter`/`register` blocked |
+| 32-bit compat escape | `personality()` blocked — can't switch to ia32 mode |
+| Namespace escape | `clone3`, `unshare`, `setns` blocked |
+| Executable memory | `memfd_create` blocked — can't bypass NOEXEC |
 | Write+execute on /tmp | NOEXEC mount flag |
 | Stdout OOM of parent | Capped at 256 MiB per stream |
+| File descriptor exhaustion | RLIMIT_NOFILE capped at 4096 |
 | Symlink traversal | Skipped in snapshots, forks, and cleanup |
 | Zombie/fd leak on crash | `PR_SET_PDEATHSIG` + kill+reap in Drop |
+| Unconstrained child | Cgroup assigned before child proceeds (barrier pipe) |
 
 ## CLI
 
