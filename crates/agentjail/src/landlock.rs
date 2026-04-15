@@ -24,6 +24,7 @@ pub fn apply_rules(rules: &[(impl AsRef<Path>, Access)]) -> Result<()> {
     for (path, access) in rules {
         let path = path.as_ref();
         if !path.exists() {
+            eprintln!("landlock: skipping non-existent path: {}", path.display());
             continue;
         }
 
@@ -31,7 +32,10 @@ pub fn apply_rules(rules: &[(impl AsRef<Path>, Access)]) -> Result<()> {
 
         let path_fd = match PathFd::new(path) {
             Ok(fd) => fd,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("landlock: cannot open {}: {}", path.display(), e);
+                continue;
+            }
         };
 
         ruleset = ruleset

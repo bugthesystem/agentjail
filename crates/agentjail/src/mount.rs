@@ -58,6 +58,18 @@ pub fn mount_tmpfs(dst: &Path, size_mb: u64) -> Result<()> {
     Ok(())
 }
 
+/// Mount a tmpfs with NOEXEC (for /tmp — prevents write+execute bypass).
+pub fn mount_tmpfs_noexec(dst: &Path, size_mb: u64) -> Result<()> {
+    fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
+
+    let options = format!("size={}m,mode=1777", size_mb);
+    let flags = MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
+
+    mount("tmpfs", dst, "tmpfs", flags, &options).map_err(JailError::Mount)?;
+
+    Ok(())
+}
+
 /// Mount /proc inside the jail.
 pub fn mount_proc(dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
@@ -98,16 +110,41 @@ pub fn setup_root(new_root: &Path, source: &Path, output: &Path) -> Result<()> {
     bind_mount(source, &workspace, Access::ReadOnly)?;
     bind_mount(output, &output_dir, Access::ReadWrite)?;
 
-    // System directories (read-only)
-    let system_dirs = ["/bin", "/lib", "/lib64", "/usr", "/etc"];
+    // System directories (read-only). Warn on missing so operators notice
+    // broken jails instead of getting cryptic "command not found" errors.
+    let system_dirs = ["/bin", "/lib", "/lib64", "/usr"];
     for dir in &system_dirs {
         let src = Path::new(dir);
+        if !src.exists() {
+            eprintln!("warning: system directory {} does not exist, skipping mount", dir);
+            continue;
+        }
         let dst = new_root.join(dir.trim_start_matches('/'));
         bind_mount(src, &dst, Access::ReadOnly)?;
     }
 
-    // Temp and proc
-    mount_tmpfs(&new_root.join("tmp"), 100)?;
+    // Mount a minimal /etc — only files needed for dynamic linking and DNS.
+    // Full /etc would leak host secrets (shadow, ssh keys, machine-id).
+    let etc_dst = new_root.join("etc");
+    mount_tmpfs(&etc_dst, 1)?;
+    let safe_etc_files = [
+        "ld.so.cache",
+        "ld.so.conf",
+        "resolv.conf",
+        "nsswitch.conf",
+        "passwd",
+        "group",
+        "ssl",
+        "alternatives",
+    ];
+    for name in &safe_etc_files {
+        let src = Path::new("/etc").join(name);
+        let dst = etc_dst.join(name);
+        bind_mount(&src, &dst, Access::ReadOnly)?;
+    }
+
+    // Temp and proc — NOEXEC on /tmp to prevent write+execute bypass.
+    mount_tmpfs_noexec(&new_root.join("tmp"), 100)?;
     mount_proc(&new_root.join("proc"))?;
 
     // Minimal /dev
