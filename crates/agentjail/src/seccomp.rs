@@ -93,6 +93,9 @@ fn base_blocked_syscalls() -> Vec<i64> {
         // memfd_create — creates anonymous executable memory regions,
         // bypassing NOEXEC mount flags.
         libc::SYS_memfd_create,
+        // mount_setattr (Linux 5.12+) — can strip RDONLY, NOEXEC, NOSUID
+        // from existing mounts, defeating bind-mount protections.
+        libc::SYS_mount_setattr,
     ];
 
     // iopl/ioperm are x86-only (hardware port I/O).
