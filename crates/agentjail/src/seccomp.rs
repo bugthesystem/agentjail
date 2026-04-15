@@ -79,6 +79,20 @@ fn base_blocked_syscalls() -> Vec<i64> {
         libc::SYS_perf_event_open,
         // Exploitable race condition primitives
         libc::SYS_userfaultfd,
+        // io_uring — bypasses ALL other seccomp-blocked syscalls because
+        // the kernel performs operations on behalf of the process.
+        libc::SYS_io_uring_setup,
+        libc::SYS_io_uring_enter,
+        libc::SYS_io_uring_register,
+        // Personality — PER_LINUX32 switches to 32-bit compat mode where
+        // syscall numbers differ, defeating the entire filter.
+        libc::SYS_personality,
+        // clone3 — can pass namespace flags to create new namespaces,
+        // bypassing the unshare/setns block.
+        libc::SYS_clone3,
+        // memfd_create — creates anonymous executable memory regions,
+        // bypassing NOEXEC mount flags.
+        libc::SYS_memfd_create,
     ];
 
     // iopl/ioperm are x86-only (hardware port I/O).

@@ -135,6 +135,11 @@ impl Jail {
         let stdout_pipe = Pipe::new()?;
         let stderr_pipe = Pipe::new()?;
 
+        // Barrier pipe: child blocks until parent has assigned the cgroup.
+        // Without this, the child runs unconstrained (no memory/CPU/PID limits)
+        // during the entire parent-side setup phase.
+        let barrier_pipe = Pipe::new()?;
+
         // For Allowlist mode, we need a sync channel so the child can signal
         // "I've entered my network namespace" and the parent can reply with
         // the veth ID after setting up the network bridge.
@@ -152,6 +157,7 @@ impl Jail {
 
         // Extract child-side fd before fork (child gets fds[0])
         let child_sync_fd = sync_pair.as_ref().map(|(child_fd, _)| child_fd.as_raw_fd());
+        let barrier_read_fd = barrier_pipe.read.as_raw_fd();
 
         // SAFETY: fork() is safe when we immediately either _exit() or exec() in child.
         // Parent continues normally after fork returns.
@@ -165,8 +171,6 @@ impl Jail {
                 0 => {
                     // Child process
                     // Die if parent is killed — prevents veth interface leaks.
-                    // When the child dies its network namespace is destroyed,
-                    // which makes the kernel auto-remove both veth ends.
                     libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
 
                     // Create new session and process group so we can kill all descendants.
@@ -179,6 +183,12 @@ impl Jail {
                     drop(stdout_pipe);
                     drop(stderr_pipe);
 
+                    // Block until parent signals that the cgroup is assigned.
+                    // This closes the resource-limit bypass window.
+                    let mut go = [0u8; 1];
+                    let _ = libc::read(barrier_read_fd, go.as_mut_ptr() as *mut _, 1);
+                    drop(barrier_pipe);
+
                     if let Err(e) = exec::setup_child(&config, &gpu_resources, &cmd, &args, child_sync_fd) {
                         eprintln!("jail setup failed: {}", e);
                         libc::_exit(127);
@@ -189,18 +199,16 @@ impl Jail {
             }
         };
 
-        // Parent: close write ends of stdout/stderr
+        // Parent: close write ends of stdout/stderr, read end of barrier
         drop(stdout_pipe.write);
         drop(stderr_pipe.write);
+        drop(barrier_pipe.read);
 
         // Guard: if anything below fails, kill and reap the child so it
         // doesn't become a zombie leaking PIDs, cgroups and veth interfaces.
         let child_guard = ChildGuard(child_pid);
 
         // Write UID/GID maps if using user namespace.
-        // When running as root, user namespace uid mapping may fail (root
-        // already has full capabilities). Only propagate the error for
-        // unprivileged users where the mapping is required.
         if config.user_namespace {
             if let Some(pid) = Pid::from_raw(child_pid as i32) {
                 if let Err(e) = write_uid_gid_map(pid) {
@@ -212,6 +220,17 @@ impl Jail {
                 }
             }
         }
+
+        // Create and configure cgroup BEFORE allowing child to proceed.
+        let cgroup = self.create_cgroup(child_pid)?;
+        if let Some(ref cg) = cgroup {
+            cg.add_pid(child_pid)?;
+        }
+
+        // Signal child: cgroup is assigned, proceed with setup_child.
+        // SAFETY: Valid fd from pipe, writing 1 byte.
+        unsafe { libc::write(barrier_pipe.write.as_raw_fd(), [1u8].as_ptr() as *const _, 1) };
+        drop(barrier_pipe.write);
 
         // For Allowlist mode: wait for child to enter netns, then set up veth + proxy
         let mut proxy_shutdown = None;
@@ -250,12 +269,6 @@ impl Jail {
             }
 
             veth_iface_name = Some(host_if);
-        }
-
-        // Create and configure cgroup for this process
-        let cgroup = self.create_cgroup(child_pid)?;
-        if let Some(ref cg) = cgroup {
-            cg.add_pid(child_pid)?;
         }
 
         // All setup succeeded — disarm the guard so Drop doesn't kill the child.
@@ -576,15 +589,24 @@ impl Drop for JailHandle {
         // Reap synchronously to avoid zombies. Non-blocking first, then
         // blocking with a short spin — we just sent SIGKILL so it will
         // exit almost immediately.
-        let pid = Pid::from_raw(self.pid as i32);
+        // Reap: non-blocking spin first (avoids blocking tokio), then a
+        // final blocking waitpid to guarantee no zombie under memory pressure.
+        // SIGKILL is guaranteed to terminate, so the blocking wait is bounded.
+        let raw_pid = self.pid as i32;
+        let pid = Pid::from_raw(raw_pid);
         if let Some(pid) = pid {
             for _ in 0..10 {
                 match waitpid(Some(pid), WaitOptions::NOHANG) {
-                    Ok(Some(_)) | Err(_) => break,
+                    Ok(Some(_)) | Err(_) => {
+                        self.cleanup_veth();
+                        return;
+                    }
                     Ok(None) => std::thread::sleep(Duration::from_millis(1)),
                 }
             }
         }
+        // Final blocking reap — process MUST exit after SIGKILL.
+        unsafe { libc::waitpid(raw_pid, std::ptr::null_mut(), 0) };
         self.cleanup_veth();
     }
 }
