@@ -89,8 +89,8 @@ pub fn write_uid_gid_map(child_pid: Pid) -> Result<()> {
 /// Uses ioctl(SIOCSIFFLAGS) directly instead of shelling out to `ip`,
 /// so this works in minimal containers without iproute2.
 pub fn setup_loopback() -> Result<()> {
-    // SAFETY: Creating a UDP socket just for the ioctl. Never used for traffic.
-    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    // SAFETY: Creating a UDP socket just for the ioctl. CLOEXEC prevents leak to exec'd child.
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
     if sock < 0 {
         return Err(JailError::Exec(std::io::Error::last_os_error()));
     }

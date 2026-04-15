@@ -102,16 +102,19 @@ pub(crate) fn setup_child(
         env.extend(gpu::env_vars(&config.gpu));
     }
 
-    // 7. PID namespace double-fork
+    // 7. File descriptor limit — prevent child from exhausting system-wide fd table.
+    set_fd_limit(4096);
+
+    // 8. PID namespace double-fork
     if config.pid_namespace {
         enter_pid_namespace_and_exec(config, cmd, args, &env)?;
         unreachable!()
     }
 
-    // 8. Seccomp (must be last before exec)
+    // 9. Seccomp (must be last before exec)
     apply_filter(config.seccomp)?;
 
-    // 9. Exec
+    // 10. Exec
     do_exec(cmd, args, &env)
 }
 
@@ -142,7 +145,12 @@ fn enter_pid_namespace_and_exec(
             // chain: parent → child → grandchild all linked.
             unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
 
-            let _ = remount_proc();
+            // Remount /proc for the new PID namespace. This MUST succeed
+            // or the child sees the host process tree (critical info leak).
+            if let Err(e) = remount_proc() {
+                eprintln!("/proc remount failed (host PID leak): {}", e);
+                unsafe { libc::_exit(127) };
+            }
 
             if let Err(e) = apply_filter(config.seccomp) {
                 eprintln!("seccomp failed: {}", e);
@@ -221,4 +229,14 @@ fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
     unsafe { libc::execve(c_cmd.as_ptr(), c_args_ptrs.as_ptr(), c_env_ptrs.as_ptr()) };
 
     Err(JailError::Exec(std::io::Error::last_os_error()))
+}
+
+/// Set RLIMIT_NOFILE to prevent child from exhausting system-wide fds.
+fn set_fd_limit(max: u64) {
+    let rlim = libc::rlimit {
+        rlim_cur: max,
+        rlim_max: max,
+    };
+    // SAFETY: Valid rlimit struct.
+    unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) };
 }
