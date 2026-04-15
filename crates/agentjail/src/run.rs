@@ -4,6 +4,7 @@ use crate::cgroup::Cgroup;
 use crate::config::{JailConfig, Network};
 use crate::error::{JailError, Result};
 use crate::events::{EventReceiver, EventSender, JailEvent};
+use crate::fork::{self, ForkInfo};
 use crate::namespace::write_uid_gid_map;
 use crate::pipe::{OutputStream, Pipe};
 use crate::proxy::ProxyConfig;
@@ -12,6 +13,7 @@ use crate::{events, exec, gpu, netlink, proxy};
 use rustix::process::{Pid, WaitOptions, WaitStatus, waitpid};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -289,6 +291,79 @@ impl Jail {
 
         Ok((handle, rx))
     }
+
+    /// Fork a running jail by cloning its filesystem state.
+    ///
+    /// Creates a copy-on-write clone of the output directory and spawns a
+    /// new jail with the same configuration. The original jail continues
+    /// running uninterrupted (it is frozen for sub-millisecond during the
+    /// clone for consistency, then immediately thawed).
+    ///
+    /// On COW-capable filesystems (btrfs, xfs with reflink) the clone is
+    /// nearly instant — data blocks are shared and only diverge on write.
+    /// On other filesystems a regular copy is used as fallback.
+    ///
+    /// # Arguments
+    ///
+    /// * `running` — Handle to the running jail whose output directory will
+    ///   be cloned. If `Some`, the jail's cgroup is frozen for a consistent
+    ///   snapshot. Pass `None` to skip freezing (snapshot may be
+    ///   inconsistent if the jail is actively writing).
+    /// * `fork_output` — Output directory for the forked jail. Created if
+    ///   it does not exist.
+    /// * `cmd` / `args` — Command to execute inside the forked jail.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let (fork_handle, info) = jail.live_fork(
+    ///     Some(&handle),
+    ///     "/tmp/fork-output",
+    ///     "python", &["evaluate.py"],
+    /// )?;
+    /// println!("cloned in {:?}", info.clone_duration);
+    /// let result = fork_handle.wait().await?;
+    /// ```
+    pub fn live_fork(
+        &self,
+        running: Option<&JailHandle>,
+        fork_output: impl Into<PathBuf>,
+        cmd: &str,
+        args: &[&str],
+    ) -> Result<(JailHandle, ForkInfo)> {
+        let fork_output = fork_output.into();
+
+        // Freeze the running jail for a consistent snapshot.
+        let frozen = running
+            .map(|h| h.freeze().is_ok())
+            .unwrap_or(false);
+
+        // COW-clone the output directory.
+        let clone_result = fork::cow_clone(&self.config.output, &fork_output);
+
+        // Thaw immediately — even if the clone failed.
+        if frozen {
+            if let Some(h) = running {
+                let _ = h.thaw();
+            }
+        }
+
+        let mut fork_info = clone_result?;
+        fork_info.was_frozen = frozen;
+
+        // Build a forked Jail that shares everything except the output dir.
+        let mut fork_config = self.config.clone();
+        fork_config.output = fork_output;
+
+        let fork_jail = Jail {
+            config: fork_config,
+            gpu_resources: self.gpu_resources.clone(),
+        };
+
+        let handle = fork_jail.spawn(cmd, args)?;
+
+        Ok((handle, fork_info))
+    }
 }
 
 impl JailHandle {
@@ -345,6 +420,28 @@ impl JailHandle {
         // SAFETY: Sending SIGKILL to a process we spawned.
         unsafe {
             libc::kill(self.pid as i32, libc::SIGKILL);
+        }
+    }
+
+    /// Freeze all processes in this jail (via the cgroup freezer).
+    ///
+    /// Used during live forking to get a consistent filesystem snapshot.
+    /// The freeze is sub-millisecond. Returns `Ok(())` even if no cgroup
+    /// is configured (no-op in that case).
+    pub fn freeze(&self) -> Result<()> {
+        if let Some(ref cg) = self.cgroup {
+            cg.freeze()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Thaw (resume) all processes in this jail.
+    pub fn thaw(&self) -> Result<()> {
+        if let Some(ref cg) = self.cgroup {
+            cg.thaw()
+        } else {
+            Ok(())
         }
     }
 

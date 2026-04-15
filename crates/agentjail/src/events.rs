@@ -22,6 +22,8 @@ pub enum JailEvent {
     TimedOut,
     /// Jail was killed by OOM killer.
     OomKilled,
+    /// A live fork of this jail was created.
+    Forked { fork_pid: u32 },
 }
 
 /// Sender for jail events (held by the jail runner).
