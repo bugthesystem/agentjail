@@ -333,5 +333,15 @@ fn status_label(s: &JailStatus) -> (&'static str, Color, &'static str) {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() } else { format!("{}…", &s[..max - 1]) }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        // Use char_indices to avoid panicking on multi-byte UTF-8.
+        let end = s.char_indices()
+            .take_while(|(i, _)| *i < max.saturating_sub(1))
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}…", &s[..end])
+    }
 }

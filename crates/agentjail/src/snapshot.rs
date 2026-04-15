@@ -23,7 +23,7 @@ impl Snapshot {
         }
 
         // Create snapshot directory
-        fs::create_dir_all(snapshot_dir).map_err(JailError::Cgroup)?;
+        fs::create_dir_all(snapshot_dir).map_err(JailError::Snapshot)?;
 
         // Copy contents
         copy_dir_recursive(output_dir, snapshot_dir)?;
@@ -49,7 +49,7 @@ impl Snapshot {
         if target.exists() {
             clear_dir(target)?;
         } else {
-            fs::create_dir_all(target).map_err(JailError::Cgroup)?;
+            fs::create_dir_all(target).map_err(JailError::Snapshot)?;
         }
 
         // Copy snapshot contents
@@ -73,7 +73,7 @@ impl Snapshot {
     /// Delete the snapshot.
     pub fn delete(self) -> Result<()> {
         if self.path.exists() {
-            fs::remove_dir_all(&self.path).map_err(JailError::Cgroup)?;
+            fs::remove_dir_all(&self.path).map_err(JailError::Snapshot)?;
         }
         Ok(())
     }
@@ -92,7 +92,7 @@ impl Snapshot {
 /// Copy directory recursively. Symlinks are skipped to prevent traversal attacks.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     copy_dir_with(src, dst, &mut |s, d| {
-        fs::copy(s, d).map_err(JailError::Cgroup)?;
+        fs::copy(s, d).map_err(JailError::Snapshot)?;
         Ok(())
     })
 }
@@ -105,12 +105,12 @@ where
     F: FnMut(&Path, &Path) -> Result<()>,
 {
     if !dst.exists() {
-        fs::create_dir_all(dst).map_err(JailError::Cgroup)?;
+        fs::create_dir_all(dst).map_err(JailError::Snapshot)?;
     }
 
-    for entry in fs::read_dir(src).map_err(JailError::Cgroup)? {
-        let entry = entry.map_err(JailError::Cgroup)?;
-        let ft = entry.file_type().map_err(JailError::Cgroup)?;
+    for entry in fs::read_dir(src).map_err(JailError::Snapshot)? {
+        let entry = entry.map_err(JailError::Snapshot)?;
+        let ft = entry.file_type().map_err(JailError::Snapshot)?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
@@ -130,18 +130,18 @@ where
 /// Clear directory contents without removing the directory itself.
 /// Symlinks are removed (not followed) to prevent directory traversal attacks.
 fn clear_dir(dir: &Path) -> Result<()> {
-    for entry in fs::read_dir(dir).map_err(JailError::Cgroup)? {
-        let entry = entry.map_err(JailError::Cgroup)?;
-        let ft = entry.file_type().map_err(JailError::Cgroup)?;
+    for entry in fs::read_dir(dir).map_err(JailError::Snapshot)? {
+        let entry = entry.map_err(JailError::Snapshot)?;
+        let ft = entry.file_type().map_err(JailError::Snapshot)?;
         let path = entry.path();
 
         if ft.is_symlink() {
             // Remove the symlink itself — never follow it.
-            fs::remove_file(&path).map_err(JailError::Cgroup)?;
+            fs::remove_file(&path).map_err(JailError::Snapshot)?;
         } else if ft.is_dir() {
-            fs::remove_dir_all(&path).map_err(JailError::Cgroup)?;
+            fs::remove_dir_all(&path).map_err(JailError::Snapshot)?;
         } else {
-            fs::remove_file(&path).map_err(JailError::Cgroup)?;
+            fs::remove_file(&path).map_err(JailError::Snapshot)?;
         }
     }
     Ok(())
