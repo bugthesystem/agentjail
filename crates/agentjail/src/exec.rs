@@ -85,7 +85,9 @@ pub(crate) fn setup_child(
             (config.source.as_path(), crate::config::Access::ReadOnly),
             (config.output.as_path(), crate::config::Access::ReadWrite),
         ];
-        let _ = landlock::apply_rules(&rules);
+        if let Err(e) = landlock::apply_rules(&rules) {
+            eprintln!("warning: landlock enforcement failed: {}", e);
+        }
     }
 
     // 5. Chroot

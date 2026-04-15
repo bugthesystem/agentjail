@@ -27,6 +27,9 @@ pub struct Jail {
 /// Handle to a running jailed process.
 pub struct JailHandle {
     pid: u32,
+    /// Set to true after the child has been waited on. Prevents Drop from
+    /// killing a recycled PID at high concurrency.
+    reaped: bool,
     pub stdout: OutputStream,
     pub stderr: OutputStream,
     start_time: Instant,
@@ -286,6 +289,7 @@ impl Jail {
 
         Ok(JailHandle {
             pid: child_pid,
+            reaped: false,
             stdout,
             stderr,
             start_time: Instant::now(),
@@ -415,6 +419,9 @@ impl JailHandle {
         // Read output (process is dead, pipes will EOF)
         let stdout = self.stdout.read_all().await;
         let stderr = self.stderr.read_all().await;
+
+        // Mark as reaped so Drop doesn't kill a recycled PID.
+        self.reaped = true;
 
         // Clean up veth interface (removes both ends + stops proxy bind)
         self.cleanup_veth();
@@ -564,6 +571,9 @@ impl JailHandle {
             let _ = tx.send(JailEvent::OomKilled);
         }
 
+        // Mark as reaped so Drop doesn't kill a recycled PID.
+        self.reaped = true;
+
         // Clean up veth interface
         self.cleanup_veth();
 
@@ -581,6 +591,10 @@ impl JailHandle {
 
 impl Drop for JailHandle {
     fn drop(&mut self) {
+        if self.reaped {
+            self.cleanup_veth();
+            return;
+        }
         // Kill the child and its entire process group so nothing leaks.
         unsafe {
             libc::kill(-(self.pid as i32), libc::SIGKILL);
