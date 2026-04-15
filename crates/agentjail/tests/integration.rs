@@ -3,45 +3,15 @@
 //! These tests require Linux with namespace support.
 //! Run with: cargo test --test integration
 
+mod common;
+
 use agentjail::{Jail, JailConfig, SeccompLevel};
 use std::fs;
 use std::path::PathBuf;
 
-fn setup_test_dirs(name: &str) -> (PathBuf, PathBuf) {
-    let source = PathBuf::from(format!("/tmp/agentjail-test-{}-src", name));
-    let output = PathBuf::from(format!("/tmp/agentjail-test-{}-out", name));
-
-    let _ = fs::remove_dir_all(&source);
-    let _ = fs::remove_dir_all(&output);
-
-    fs::create_dir_all(&source).unwrap();
-    fs::create_dir_all(&output).unwrap();
-
-    (source, output)
-}
-
-fn cleanup_test_dirs(source: &PathBuf, output: &PathBuf) {
-    let _ = fs::remove_dir_all(source);
-    let _ = fs::remove_dir_all(output);
-}
-
-/// Minimal config that works without root
-fn test_config(source: PathBuf, output: PathBuf) -> JailConfig {
-    JailConfig {
-        source,
-        output,
-        timeout_secs: 10,
-        // Disable features that need special setup in test environment
-        user_namespace: false,
-        seccomp: SeccompLevel::Disabled,
-        landlock: false,
-        memory_mb: 0,
-        cpu_percent: 0,
-        max_pids: 0,
-        pid_namespace: true, // Test with PID namespace enabled
-        ..Default::default()
-    }
-}
+fn setup_test_dirs(name: &str) -> (PathBuf, PathBuf) { common::setup("int", name) }
+fn cleanup_test_dirs(source: &PathBuf, output: &PathBuf) { common::cleanup(source, output) }
+fn test_config(source: PathBuf, output: PathBuf) -> JailConfig { common::lightweight_config(source, output) }
 
 #[tokio::test]
 async fn test_basic_execution() {
@@ -246,6 +216,50 @@ async fn test_pid_namespace() {
         "Process should see itself as PID 1, got: {}",
         stdout
     );
+
+    cleanup_test_dirs(&source, &output);
+}
+
+#[tokio::test]
+async fn test_wait_with_events_streams_stdout_stderr_completion() {
+    use agentjail::JailEvent;
+
+    let (source, output) = setup_test_dirs("events-stream");
+
+    fs::write(
+        source.join("multi.sh"),
+        "#!/bin/sh\necho 'stdout-msg'\necho 'stderr-msg' >&2\n",
+    )
+    .unwrap();
+
+    let config = test_config(source.clone(), output.clone());
+    let jail = Jail::new(config).unwrap();
+    let handle = jail.spawn("/bin/sh", &["/workspace/multi.sh"]).unwrap();
+
+    let (tx, mut rx) = agentjail::events::channel();
+    let result = handle.wait_with_events(tx).await.unwrap();
+
+    assert_eq!(result.exit_code, 0);
+
+    // Collect all events
+    let mut saw_stdout = false;
+    let mut saw_stderr = false;
+    let mut saw_completed = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            JailEvent::Stdout(line) if line.contains("stdout-msg") => saw_stdout = true,
+            JailEvent::Stderr(line) if line.contains("stderr-msg") => saw_stderr = true,
+            JailEvent::Completed { exit_code, .. } => {
+                assert_eq!(exit_code, 0);
+                saw_completed = true;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_stdout, "Should have received Stdout event");
+    assert!(saw_stderr, "Should have received Stderr event");
+    assert!(saw_completed, "Should have received Completed event");
 
     cleanup_test_dirs(&source, &output);
 }

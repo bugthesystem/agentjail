@@ -79,11 +79,13 @@ impl Snapshot {
     }
 
     /// Get snapshot path.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Get snapshot size in bytes.
+    #[must_use]
     pub fn size_bytes(&self) -> u64 {
         dir_size(&self.path).unwrap_or(0)
     }

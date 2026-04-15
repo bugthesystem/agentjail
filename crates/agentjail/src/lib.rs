@@ -59,8 +59,9 @@ pub use config::{
     Access, GpuConfig, JailConfig, Network, SeccompLevel, preset_agent, preset_build,
     preset_dev, preset_gpu, preset_install,
 };
+pub use proxy::DomainPattern;
 pub use error::{JailError, Result};
 pub use events::{EventReceiver, EventSender, JailEvent};
 pub use fork::{CloneMethod, ForkInfo};
-pub use run::{Jail, JailHandle, Output, ResourceStats, cleanup_stale_veths};
+pub use run::{Jail, JailHandle, JailPid, Output, ResourceStats, cleanup_stale_veths};
 pub use snapshot::Snapshot;
