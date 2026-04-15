@@ -107,6 +107,20 @@ impl Cgroup {
         false
     }
 
+    /// Freeze all processes in this cgroup.
+    ///
+    /// Pauses every process so it makes no progress. Used during live
+    /// forking to get a consistent filesystem snapshot. The freeze is
+    /// typically sub-millisecond.
+    pub fn freeze(&self) -> Result<()> {
+        fs::write(self.path.join("cgroup.freeze"), "1").map_err(JailError::Cgroup)
+    }
+
+    /// Thaw (resume) all processes in this cgroup.
+    pub fn thaw(&self) -> Result<()> {
+        fs::write(self.path.join("cgroup.freeze"), "0").map_err(JailError::Cgroup)
+    }
+
     /// Set I/O bandwidth limits (bytes per second).
     pub fn set_io_limit(&self, device: &str, read_bps: u64, write_bps: u64) -> Result<()> {
         let dev_id = get_device_id(device)?;
