@@ -17,6 +17,35 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+/// Process ID for a jailed process. Prevents accidentally mixing up PIDs
+/// with file descriptors, signal numbers, or other integer types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct JailPid(u32);
+
+impl JailPid {
+    /// Raw PID value for display/logging.
+    #[must_use]
+    pub fn as_raw(self) -> u32 {
+        self.0
+    }
+
+    /// Convert to `i32` for syscalls (`kill`, `waitpid`, etc.).
+    fn as_i32(self) -> i32 {
+        self.0 as i32
+    }
+
+    /// Convert to rustix `Pid` for `waitpid`.
+    fn to_rustix(self) -> Option<Pid> {
+        Pid::from_raw(self.as_i32())
+    }
+}
+
+impl std::fmt::Display for JailPid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// A configured jail ready to execute commands.
 pub struct Jail {
     config: JailConfig,
@@ -26,7 +55,7 @@ pub struct Jail {
 
 /// Handle to a running jailed process.
 pub struct JailHandle {
-    pid: u32,
+    pid: JailPid,
     /// Set to true after the child has been waited on. Prevents Drop from
     /// killing a recycled PID at high concurrency.
     reaped: bool,
@@ -94,7 +123,7 @@ impl Jail {
     }
 
     /// Create cgroup for a new spawn.
-    fn create_cgroup(&self, pid: u32) -> Result<Option<Cgroup>> {
+    fn create_cgroup(&self, pid: JailPid) -> Result<Option<Cgroup>> {
         let config = &self.config;
         let has_limits = config.memory_mb > 0
             || config.cpu_percent > 0
@@ -106,7 +135,7 @@ impl Jail {
             return Ok(None);
         }
 
-        let name = format!("{}-{}", std::process::id(), pid);
+        let name = format!("{}-{}", std::process::id(), pid.as_raw());
         let cg = Cgroup::create(&name)?;
 
         if config.memory_mb > 0 {
@@ -198,7 +227,7 @@ impl Jail {
                     }
                     unreachable!()
                 }
-                pid => pid as u32,
+                pid => JailPid(pid as u32),
             }
         };
 
@@ -213,7 +242,7 @@ impl Jail {
 
         // Write UID/GID maps if using user namespace.
         if config.user_namespace
-            && let Some(pid) = Pid::from_raw(child_pid as i32)
+            && let Some(pid) = child_pid.to_rustix()
                 && let Err(e) = write_uid_gid_map(pid) {
                     if rustix::process::getuid().is_root() {
                         eprintln!("warning: uid/gid map failed (running as root): {}", e);
@@ -225,7 +254,7 @@ impl Jail {
         // Create and configure cgroup BEFORE allowing child to proceed.
         let cgroup = self.create_cgroup(child_pid)?;
         if let Some(ref cg) = cgroup {
-            cg.add_pid(child_pid)?;
+            cg.add_pid(child_pid.as_raw())?;
         }
 
         // Signal child: cgroup is assigned, proceed with setup_child.
@@ -254,7 +283,7 @@ impl Jail {
 
             // Create veth pair, move jail end into child netns, configure host end
             netlink::create_veth_pair(&host_if, &jail_if)?;
-            netlink::move_to_netns(&jail_if, child_pid)?;
+            netlink::move_to_netns(&jail_if, child_pid.as_raw())?;
             netlink::add_ipv4_addr(&host_if, host_ip, 30)?;
             netlink::set_link_up(&host_if)?;
 
@@ -398,12 +427,8 @@ impl JailHandle {
         let exit_code = match wait_result {
             Ok(code) => code,
             Err(_) => {
-                // Timeout - kill the entire process group
                 timed_out = true;
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
+                kill_tree(pid);
                 wait_for_pid(pid).await
             }
         };
@@ -434,15 +459,12 @@ impl JailHandle {
     }
 
     #[must_use]
-    pub fn pid(&self) -> u32 {
+    pub fn pid(&self) -> JailPid {
         self.pid
     }
 
     pub fn kill(&self) {
-        // SAFETY: Sending SIGKILL to a process we spawned.
-        unsafe {
-            libc::kill(self.pid as i32, libc::SIGKILL);
-        }
+        kill_tree(self.pid);
     }
 
     /// Freeze all processes in this jail (via the cgroup freezer).
@@ -535,7 +557,7 @@ impl JailHandle {
                     }
                     _ = tokio::time::sleep(Duration::from_millis(50)), if stdout_done && stderr_done => {
                         // Both streams closed, check if process exited
-                        if let Ok(Some(status)) = waitpid(Pid::from_raw(pid as i32), WaitOptions::NOHANG) {
+                        if let Ok(Some(status)) = waitpid(pid.to_rustix(), WaitOptions::NOHANG) {
                             return extract_exit_code(status);
                         }
                     }
@@ -549,10 +571,7 @@ impl JailHandle {
             Err(_) => {
                 timed_out = true;
                 let _ = tx.send(JailEvent::TimedOut);
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
+                kill_tree(pid);
                 wait_for_pid(pid).await
             }
         };
@@ -593,22 +612,12 @@ impl Drop for JailHandle {
             self.cleanup_veth();
             return;
         }
-        // Kill the child and its entire process group so nothing leaks.
-        unsafe {
-            libc::kill(-(self.pid as i32), libc::SIGKILL);
-            libc::kill(self.pid as i32, libc::SIGKILL);
-        }
-        // Reap synchronously to avoid zombies. Non-blocking first, then
-        // blocking with a short spin — we just sent SIGKILL so it will
-        // exit almost immediately.
-        // Reap: non-blocking spin first (avoids blocking tokio), then a
-        // final blocking waitpid to guarantee no zombie under memory pressure.
-        // SIGKILL is guaranteed to terminate, so the blocking wait is bounded.
-        let raw_pid = self.pid as i32;
-        let pid = Pid::from_raw(raw_pid);
-        if let Some(pid) = pid {
+        kill_tree(self.pid);
+        // Non-blocking spin first (avoids blocking tokio), then final
+        // blocking waitpid to guarantee no zombie under memory pressure.
+        if let Some(rpid) = self.pid.to_rustix() {
             for _ in 0..10 {
-                match waitpid(Some(pid), WaitOptions::NOHANG) {
+                match waitpid(Some(rpid), WaitOptions::NOHANG) {
                     Ok(Some(_)) | Err(_) => {
                         self.cleanup_veth();
                         return;
@@ -617,37 +626,36 @@ impl Drop for JailHandle {
                 }
             }
         }
-        // Final blocking reap — process MUST exit after SIGKILL.
-        unsafe { libc::waitpid(raw_pid, std::ptr::null_mut(), 0) };
+        unsafe { libc::waitpid(self.pid.as_i32(), std::ptr::null_mut(), 0) };
         self.cleanup_veth();
     }
 }
 
-/// RAII guard that kills + reaps a child process on drop. Used to prevent
-/// zombie leaks when parent-side setup fails after fork().
-struct ChildGuard(u32);
+/// RAII guard that kills + reaps a child on drop (error paths after fork).
+struct ChildGuard(JailPid);
 
 impl ChildGuard {
-    /// Disarm the guard — call this when the child has been handed off to
-    /// a JailHandle (which takes over cleanup responsibility).
-    fn disarm(self) {
-        std::mem::forget(self);
-    }
+    fn disarm(self) { std::mem::forget(self); }
 }
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        unsafe {
-            libc::kill(-(self.0 as i32), libc::SIGKILL);
-            libc::kill(self.0 as i32, libc::SIGKILL);
-            libc::waitpid(self.0 as i32, std::ptr::null_mut(), 0);
-        }
+        kill_tree(self.0);
+        unsafe { libc::waitpid(self.0.as_i32(), std::ptr::null_mut(), 0) };
     }
 }
 
-async fn wait_for_pid(pid: u32) -> i32 {
+/// Kill a process and its entire process group.
+fn kill_tree(pid: JailPid) {
+    unsafe {
+        libc::kill(-pid.as_i32(), libc::SIGKILL);
+        libc::kill(pid.as_i32(), libc::SIGKILL);
+    }
+}
+
+async fn wait_for_pid(pid: JailPid) -> i32 {
     loop {
-        match waitpid(Pid::from_raw(pid as i32), WaitOptions::NOHANG) {
+        match waitpid(pid.to_rustix(), WaitOptions::NOHANG) {
             Ok(Some(status)) => return extract_exit_code(status),
             Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
             Err(_) => return -1,
@@ -730,7 +738,7 @@ fn sync_socketpair() -> Result<(OwnedFd, OwnedFd)> {
 
 /// Spawn the allowlist proxy in a background thread (parent process).
 fn spawn_allowlist_proxy(
-    allowlist: Vec<String>,
+    domains: Vec<String>,
     bind_ip: Ipv4Addr,
 ) -> tokio::sync::watch::Sender<bool> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<(), String>>(1);
@@ -743,7 +751,7 @@ fn spawn_allowlist_proxy(
             .expect("proxy runtime");
 
         let config = ProxyConfig {
-            allowlist,
+            allowlist: domains.iter().map(|d| proxy::DomainPattern::parse(d)).collect(),
             port: PROXY_PORT,
             bind_ip: IpAddr::V4(bind_ip),
         };

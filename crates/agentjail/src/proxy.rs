@@ -13,11 +13,48 @@ const MAX_LINE_BYTES: usize = 8192;
 /// Maximum number of header lines to consume before giving up.
 const MAX_HEADER_LINES: usize = 64;
 
+/// A parsed domain allowlist pattern. Pre-parsed at construction time
+/// so `is_allowed` doesn't re-parse on every connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DomainPattern {
+    /// Exact match (case-insensitive): "api.anthropic.com"
+    Exact(String),
+    /// Wildcard: "*.example.com" matches any subdomain and the base domain.
+    /// Stores the lowercased base (e.g., "example.com") and suffix (".example.com").
+    Wildcard { base: String, suffix: String },
+}
+
+impl DomainPattern {
+    /// Parse a domain pattern string.
+    pub fn parse(pattern: &str) -> Self {
+        let lower = pattern.to_lowercase();
+        if let Some(base) = lower.strip_prefix("*.") {
+            DomainPattern::Wildcard {
+                suffix: format!(".{}", base),
+                base: base.to_string(),
+            }
+        } else {
+            DomainPattern::Exact(lower)
+        }
+    }
+
+    /// Check if a host matches this pattern.
+    pub fn matches(&self, host: &str) -> bool {
+        let host_lower = host.to_lowercase();
+        match self {
+            DomainPattern::Exact(domain) => host_lower == *domain,
+            DomainPattern::Wildcard { base, suffix } => {
+                host_lower.ends_with(suffix.as_str()) || host_lower == *base
+            }
+        }
+    }
+}
+
 /// Proxy configuration.
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
-    /// Allowed domain patterns (e.g., "api.anthropic.com", "*.openai.com").
-    pub allowlist: Vec<String>,
+    /// Allowed domain patterns (pre-parsed).
+    pub allowlist: Vec<DomainPattern>,
     /// Port to listen on (default: 8080).
     pub port: u16,
     /// IP address to bind to (default: localhost).
@@ -78,7 +115,7 @@ pub async fn run_proxy(
 /// Handle a single client connection.
 async fn handle_connection(
     mut client: TcpStream,
-    allowlist: &[String],
+    allowlist: &[DomainPattern],
 ) -> std::io::Result<()> {
     // Phase 1: parse CONNECT request and validate against allowlist.
     let target_stream = {
@@ -167,33 +204,21 @@ fn parse_host_port(s: &str) -> std::io::Result<(String, u16)> {
 }
 
 /// Check if host matches any pattern in allowlist.
-fn is_allowed(host: &str, allowlist: &[String]) -> bool {
-    let host_lower = host.to_lowercase();
-
-    for pattern in allowlist {
-        let pattern_lower = pattern.to_lowercase();
-
-        if let Some(base) = pattern_lower.strip_prefix("*.") {
-            // Wildcard: *.example.com matches foo.example.com and example.com
-            let suffix = &pattern_lower[1..]; // ".example.com"
-            if host_lower.ends_with(suffix) || host_lower == base {
-                return true;
-            }
-        } else if host_lower == pattern_lower {
-            return true;
-        }
-    }
-
-    false
+fn is_allowed(host: &str, allowlist: &[DomainPattern]) -> bool {
+    allowlist.iter().any(|p| p.matches(host))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn parse_list(patterns: &[&str]) -> Vec<DomainPattern> {
+        patterns.iter().map(|p| DomainPattern::parse(p)).collect()
+    }
+
     #[test]
     fn test_is_allowed_empty_blocks_everything() {
-        let allowlist: Vec<String> = vec![];
+        let allowlist = parse_list(&[]);
         assert!(!is_allowed("api.anthropic.com", &allowlist));
         assert!(!is_allowed("google.com", &allowlist));
         assert!(!is_allowed("localhost", &allowlist));
@@ -202,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_is_allowed_exact() {
-        let allowlist = vec!["api.anthropic.com".into()];
+        let allowlist = parse_list(&["api.anthropic.com"]);
         assert!(is_allowed("api.anthropic.com", &allowlist));
         assert!(is_allowed("API.ANTHROPIC.COM", &allowlist));
         assert!(!is_allowed("evil.com", &allowlist));
@@ -212,12 +237,24 @@ mod tests {
 
     #[test]
     fn test_is_allowed_wildcard() {
-        let allowlist = vec!["*.openai.com".into()];
+        let allowlist = parse_list(&["*.openai.com"]);
         assert!(is_allowed("api.openai.com", &allowlist));
         assert!(is_allowed("chat.openai.com", &allowlist));
         assert!(is_allowed("openai.com", &allowlist));
         assert!(!is_allowed("openai.com.evil.com", &allowlist));
         assert!(!is_allowed("notopenai.com", &allowlist));
+    }
+
+    #[test]
+    fn test_domain_pattern_parse() {
+        assert_eq!(
+            DomainPattern::parse("api.example.com"),
+            DomainPattern::Exact("api.example.com".into())
+        );
+        assert!(matches!(
+            DomainPattern::parse("*.example.com"),
+            DomainPattern::Wildcard { .. }
+        ));
     }
 
     #[test]
@@ -282,7 +319,7 @@ mod tests {
         // Bind to a random port
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let allowlist = Arc::new(vec!["allowed.example.com".into()]);
+        let allowlist = Arc::new(parse_list(&["allowed.example.com"]));
 
         // Spawn proxy handler for one connection
         let al = allowlist.clone();
@@ -304,7 +341,7 @@ mod tests {
     async fn test_proxy_blocks_everything_when_empty_allowlist() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let allowlist: Arc<Vec<String>> = Arc::new(vec![]);
+        let allowlist: Arc<Vec<DomainPattern>> = Arc::new(vec![]);
 
         let al = allowlist.clone();
         let handle = tokio::spawn(async move {
@@ -325,7 +362,7 @@ mod tests {
     async fn test_proxy_rejects_non_connect_method() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let allowlist = Arc::new(vec!["anything.com".into()]);
+        let allowlist = Arc::new(parse_list(&["anything.com"]));
 
         let al = allowlist.clone();
         let handle = tokio::spawn(async move {

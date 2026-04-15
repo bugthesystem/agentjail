@@ -39,7 +39,7 @@ async fn test_drop_handle_kills_child() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // The process should be gone (kill with signal 0 = check existence).
-    let alive = unsafe { libc::kill(pid as i32, 0) };
+    let alive = unsafe { libc::kill(pid.as_raw() as i32, 0) };
     assert_eq!(
         alive, -1,
         "Child should be dead after JailHandle drop, but kill(0) succeeded"
@@ -443,7 +443,7 @@ async fn test_cgroup_cleaned_up_after_drop() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // After drop, cgroup should be removed (or at least the process killed)
-    let alive = unsafe { libc::kill(pid as i32, 0) };
+    let alive = unsafe { libc::kill(pid.as_raw() as i32, 0) };
     assert_eq!(alive, -1, "Process should be dead after handle drop");
 
     cleanup(&src, &out);
@@ -484,7 +484,7 @@ async fn test_rapid_spawn_drop_no_leak() {
 
     // All should be dead.
     for pid in &pids {
-        let alive = unsafe { libc::kill(*pid as i32, 0) };
+        let alive = unsafe { libc::kill(pid.as_raw() as i32, 0) };
         assert_eq!(
             alive, -1,
             "PID {} should be dead after handle drop",

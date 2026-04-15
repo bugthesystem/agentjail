@@ -193,7 +193,7 @@ async fn spawn_demo(
     let id = {
         let mut a = app.lock().await;
         a.add_jail(JailInfo {
-            pid: handle.pid(),
+            pid: handle.pid().as_raw(),
             command: spec.label.into(),
             preset: spec.preset.into(),
             status: JailStatus::Running,
