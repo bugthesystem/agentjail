@@ -5,47 +5,15 @@
 //!
 //! Run with: docker compose run --rm dev cargo test --test gpu_test
 
+mod common;
+
 use agentjail::{GpuConfig, Jail, JailConfig, Network, SeccompLevel};
 use std::fs;
 use std::path::PathBuf;
 
-fn is_root() -> bool {
-    unsafe { libc::getuid() == 0 }
-}
-
-fn setup(name: &str) -> (PathBuf, PathBuf) {
-    let src = PathBuf::from(format!("/tmp/aj-gpu-{}-src", name));
-    let out = PathBuf::from(format!("/tmp/aj-gpu-{}-out", name));
-    let _ = fs::remove_dir_all(&src);
-    let _ = fs::remove_dir_all(&out);
-    fs::create_dir_all(&src).unwrap();
-    fs::create_dir_all(&out).unwrap();
-    (src, out)
-}
-
-fn cleanup(src: &PathBuf, out: &PathBuf) {
-    let _ = fs::remove_dir_all(src);
-    let _ = fs::remove_dir_all(out);
-}
-
-fn base_config(src: PathBuf, out: PathBuf) -> JailConfig {
-    JailConfig {
-        source: src,
-        output: out,
-        user_namespace: !is_root(),
-        pid_namespace: true,
-        ipc_namespace: true,
-        network: Network::None,
-        seccomp: SeccompLevel::Standard,
-        landlock: false,
-        timeout_secs: 15,
-        memory_mb: 0,
-        cpu_percent: 0,
-        max_pids: 0,
-        env: vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())],
-        ..Default::default()
-    }
-}
+fn setup(name: &str) -> (PathBuf, PathBuf) { common::setup("gpu", name) }
+fn cleanup(src: &PathBuf, out: &PathBuf) { common::cleanup(src, out) }
+fn base_config(src: PathBuf, out: PathBuf) -> JailConfig { common::full_sandbox_config(src, out) }
 
 fn has_nvidia_gpu() -> bool {
     PathBuf::from("/dev/nvidiactl").exists()

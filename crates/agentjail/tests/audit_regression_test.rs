@@ -6,41 +6,16 @@
 //!
 //! Run with: cargo test --test audit_regression_test
 
+mod common;
+
 use agentjail::{Jail, JailConfig, SeccompLevel, Snapshot};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-fn setup(name: &str) -> (PathBuf, PathBuf) {
-    let src = PathBuf::from(format!("/tmp/aj-audit-{}-src", name));
-    let out = PathBuf::from(format!("/tmp/aj-audit-{}-out", name));
-    let _ = fs::remove_dir_all(&src);
-    let _ = fs::remove_dir_all(&out);
-    fs::create_dir_all(&src).unwrap();
-    fs::create_dir_all(&out).unwrap();
-    (src, out)
-}
-
-fn cleanup(src: &PathBuf, out: &PathBuf) {
-    let _ = fs::remove_dir_all(src);
-    let _ = fs::remove_dir_all(out);
-}
-
-fn base_config(src: PathBuf, out: PathBuf) -> JailConfig {
-    JailConfig {
-        source: src,
-        output: out,
-        timeout_secs: 10,
-        user_namespace: false,
-        seccomp: SeccompLevel::Disabled,
-        landlock: false,
-        memory_mb: 0,
-        cpu_percent: 0,
-        max_pids: 0,
-        pid_namespace: true,
-        ..Default::default()
-    }
-}
+fn setup(name: &str) -> (PathBuf, PathBuf) { common::setup("audit", name) }
+fn cleanup(src: &PathBuf, out: &PathBuf) { common::cleanup(src, out) }
+fn base_config(src: PathBuf, out: PathBuf) -> JailConfig { common::lightweight_config(src, out) }
 
 // ---------------------------------------------------------------------------
 // AUDIT #1/2: Zombie leak — Drop kills+reaps, ChildGuard on error paths

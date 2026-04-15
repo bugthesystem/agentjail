@@ -433,6 +433,7 @@ impl JailHandle {
         })
     }
 
+    #[must_use]
     pub fn pid(&self) -> u32 {
         self.pid
     }
@@ -467,6 +468,7 @@ impl JailHandle {
     }
 
     /// Get current resource usage (live monitoring).
+    #[must_use]
     pub fn stats(&self) -> Option<ResourceStats> {
         self.collect_stats()
     }
