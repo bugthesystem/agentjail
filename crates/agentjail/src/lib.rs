@@ -42,6 +42,7 @@ mod config;
 mod error;
 mod exec;
 pub mod events;
+mod fork;
 mod gpu;
 mod landlock;
 mod mount;
@@ -60,5 +61,6 @@ pub use config::{
 };
 pub use error::{JailError, Result};
 pub use events::{EventReceiver, EventSender, JailEvent};
+pub use fork::{CloneMethod, ForkInfo};
 pub use run::{Jail, JailHandle, Output, ResourceStats};
 pub use snapshot::Snapshot;
