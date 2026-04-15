@@ -22,6 +22,7 @@ Built for AI agents, build systems, and any scenario where you need to execute c
 - **GPU passthrough** _(experimental)_ — NVIDIA CUDA/PyTorch with per-GPU isolation
 - **OOM detection** — Know when builds fail due to memory limits
 - **Snapshotting** — Save/restore output directory for faster rebuilds
+- **Live forking** — Clone a running jail in milliseconds via COW filesystem cloning
 - **Event streaming** — Real-time stdout/stderr for build servers
 
 ## Installation
@@ -193,6 +194,39 @@ snap.restore()?;
 // Check size
 println!("Snapshot: {} MB", snap.size_bytes() / 1024 / 1024);
 ```
+
+## Live Forking
+
+Clone a running jail without pausing it — get full copies in milliseconds:
+
+```rust
+let jail = Jail::new(config)?;
+let handle = jail.spawn("python", &["train.py"])?;
+
+// Fork while running. Filesystem state is COW-cloned instantly.
+let (forked, info) = jail.live_fork(Some(&handle), "/tmp/fork-output")?;
+println!("Forked in {:?} ({:?})", info.clone_duration, info.clone_method);
+
+// Use the normal spawn/run API on the forked jail.
+let result = forked.run("python", &["evaluate.py"]).await?;
+```
+
+The original jail is frozen for sub-millisecond (cgroup freezer) while the
+output directory is cloned, then immediately resumed. On COW-capable
+filesystems (btrfs, xfs with reflink) the clone uses `FICLONE` — data
+blocks are shared and only diverge on write, so disk usage stays near zero
+until the fork actually modifies files. Falls back to regular copy on
+other filesystems.
+
+Fork without freezing (best-effort snapshot) by passing `None`:
+
+```rust
+let (forked, _) = jail.live_fork(None, "/tmp/fork-output")?;
+let result = forked.run("python", &["evaluate.py"]).await?;
+```
+
+Multiple forks from the same running jail work — each gets an independent
+copy of the filesystem state.
 
 ## Event Streaming
 

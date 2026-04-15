@@ -294,43 +294,38 @@ impl Jail {
 
     /// Fork a running jail by cloning its filesystem state.
     ///
-    /// Creates a copy-on-write clone of the output directory and spawns a
-    /// new jail with the same configuration. The original jail continues
-    /// running uninterrupted (it is frozen for sub-millisecond during the
-    /// clone for consistency, then immediately thawed).
+    /// Returns a new [`Jail`] with an identical configuration but pointing
+    /// at the cloned output directory. Use the normal [`spawn`](Jail::spawn),
+    /// [`run`](Jail::run), or [`spawn_with_events`](Jail::spawn_with_events)
+    /// methods on the returned jail to execute commands inside the fork.
+    ///
+    /// The original jail continues running uninterrupted. If a running
+    /// handle is provided, the jail is frozen for sub-millisecond during
+    /// the clone for a consistent snapshot, then immediately thawed.
     ///
     /// On COW-capable filesystems (btrfs, xfs with reflink) the clone is
     /// nearly instant — data blocks are shared and only diverge on write.
-    /// On other filesystems a regular copy is used as fallback.
     ///
     /// # Arguments
     ///
     /// * `running` — Handle to the running jail whose output directory will
     ///   be cloned. If `Some`, the jail's cgroup is frozen for a consistent
-    ///   snapshot. Pass `None` to skip freezing (snapshot may be
-    ///   inconsistent if the jail is actively writing).
+    ///   snapshot. Pass `None` to skip freezing.
     /// * `fork_output` — Output directory for the forked jail. Created if
     ///   it does not exist.
-    /// * `cmd` / `args` — Command to execute inside the forked jail.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let (fork_handle, info) = jail.live_fork(
-    ///     Some(&handle),
-    ///     "/tmp/fork-output",
-    ///     "python", &["evaluate.py"],
-    /// )?;
-    /// println!("cloned in {:?}", info.clone_duration);
-    /// let result = fork_handle.wait().await?;
+    /// let (forked, info) = jail.live_fork(Some(&handle), "/tmp/fork-output")?;
+    /// let result = forked.run("python", &["evaluate.py"]).await?;
+    /// // or: let handle = forked.spawn("python", &["evaluate.py"])?;
     /// ```
     pub fn live_fork(
         &self,
         running: Option<&JailHandle>,
         fork_output: impl Into<PathBuf>,
-        cmd: &str,
-        args: &[&str],
-    ) -> Result<(JailHandle, ForkInfo)> {
+    ) -> Result<(Jail, ForkInfo)> {
         let fork_output = fork_output.into();
 
         // Freeze the running jail for a consistent snapshot.
@@ -360,9 +355,7 @@ impl Jail {
             gpu_resources: self.gpu_resources.clone(),
         };
 
-        let handle = fork_jail.spawn(cmd, args)?;
-
-        Ok((handle, fork_info))
+        Ok((fork_jail, fork_info))
     }
 }
 
