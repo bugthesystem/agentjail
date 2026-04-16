@@ -1,11 +1,10 @@
-# agentjail-cloud — Open-Source Freestyle Competitor
+# agentjail platform — open-source phantom-token sandbox
 
 Design doc for turning the existing `agentjail` sandbox crate into a hosted,
-multi-tenant platform that competes with [freestyle.sh] in the *pen* (sandbox
-+ agent runtime) area. The unique angle is a **phantom-token egress proxy**:
-no real API credentials ever reach the jail.
-
-[freestyle.sh]: https://www.freestyle.sh
+multi-tenant platform for running untrusted AI-agent code. The core angle
+is a **phantom-token egress proxy**: no real API credentials ever reach
+the jail, so prompt injection, compromised packages, or generated code
+cannot exfiltrate them.
 
 ---
 
@@ -30,10 +29,10 @@ without breaking one, it doesn't ship.
   audit finding gets a regression test, same discipline as today's
   `agentjail` (72 tests, 4 audit rounds). CI runs on every PR.
 - **Beautiful devex.** `curl | sh` → `agentjail up` → working dashboard
-  in under 60 seconds. The TS SDK matches `freestyle-sandboxes` shape
-  so migration is one import change. Error messages name the file and
-  the fix. `--help` output is usable; `--json` is the default for
-  anything a tool would parse. Web UI is keyboard-first.
+  in under 60 seconds. The TS SDK is idiomatic and typed — one import
+  change to integrate. Error messages name the file and the fix.
+  `--help` output is usable; `--json` is the default for anything a
+  tool would parse. Web UI is keyboard-first.
 - **Lean docs.** One page per concept, code first, prose second. No
   marketing copy, no duplicated content across pages. If the SDK type
   signature says it, the doc doesn't repeat it. Docs live in
@@ -42,17 +41,21 @@ without breaking one, it doesn't ship.
 
 ---
 
-## 1. What freestyle sells today
+## 1. Shape of a hosted sandbox platform
 
-| Product       | What it is                                              |
+A full-featured hosted sandbox product typically bundles:
+
+| Piece         | What it does                                            |
 |---------------|---------------------------------------------------------|
-| Runs          | V8 isolate, per-ms billed, `code` in request            |
-| VMs           | Full Linux KVM, root, Docker-in-VM, fork in ms          |
-| Dev Server    | (Deprecated Mar 2026, folded into VMs)                  |
-| Deployments   | Ship agent-built apps from a VM                         |
-| Git Identity  | Managed git per-session                                 |
+| Runs          | Short-lived isolate, code in request, ms billing        |
+| VMs           | Full Linux VM with root, Docker-in-VM, fork in ms       |
+| Dev server    | Long-lived VM with HMR, VSCode web, managed git         |
+| Deployments   | Ship agent-built apps to a durable URL                  |
+| Git identity  | Managed git user per session                            |
 
-Pricing: $500/mo Pro + usage (vCPU-hour, GiB-hour, storage-GiB-hour).
+This doc focuses on the parts we need for v0.1: phantom-token credential
+brokerage, sessions, and the sandbox engine we already have. The rest is
+layered on later.
 
 ## 2. What we already have (this repo)
 
@@ -60,7 +63,7 @@ Pricing: $500/mo Pro + usage (vCPU-hour, GiB-hour, storage-GiB-hour).
 - Network isolation: `None | Loopback | Allowlist(Vec<DomainPattern>)`
 - Built-in CONNECT proxy in parent netns (`src/proxy.rs`)
 - Seccomp, cgroups v2, landlock, no-new-privs, RLIMIT_CORE=0
-- **Live forking** via `FICLONE` (the exact freestyle-style "fork in ms")
+- **Live forking** via `FICLONE` — clone a running jail in milliseconds
 - Snapshotting, event streaming, GPU passthrough, TUI, CLI
 
 Gap to ship a platform: HTTP API, auth, multi-tenant scheduler, web UI, SDK,
@@ -209,8 +212,9 @@ consumed by `<LogStream>` and `<LiveMetrics>`. No WebSocket bus.
 
 ### 4.4 TypeScript SDK (new `packages/sdk-node`)
 
-Mirror freestyle's shape so migration is a one-line change. `tsup`-built
-ESM+CJS, ships types, zero runtime deps except `undici`.
+Idiomatic, typed, zero runtime deps beyond `fetch`. `tsup`-built
+ESM+CJS, ships types. Credentials / sessions / audit namespaces each
+instantiable standalone so the SDK itself is composable.
 
 ## 5. Public API
 
@@ -231,7 +235,7 @@ POST   /v1/sessions/:id/fs/read        {path} → bytes
 POST   /v1/sessions/:id/fs/write       {path, content}
 POST   /v1/sessions/:id/fs/ls          {path}
 
-POST   /v1/runs                        freestyle-compatible one-shot run
+POST   /v1/runs                        one-shot run in a jail
                                        {code, nodeModules, env, timeoutMs}
 
 POST   /v1/credentials                 attach real key for a service
@@ -280,7 +284,7 @@ import { Agentjail } from "@agentjail/sdk";
 
 const aj = new Agentjail({ apiKey: process.env.AGENTJAIL_KEY });
 
-// freestyle-compatible: one-shot run
+// one-shot run
 const { stdout } = await aj.runs.create({
   code: `console.log(await (await fetch(process.env.OPENAI_BASE_URL +
     "/chat/completions", { method:"POST", headers:{Authorization:
@@ -304,18 +308,18 @@ await session.close();
 
 Types are generated from an OpenAPI spec checked into `api/openapi.yaml`.
 
-## 7. Why this wins in "the pen area"
+## 7. Why this wins
 
-| Capability                      | freestyle | agentjail-cloud |
-|---------------------------------|:---------:|:---------------:|
-| Rootless Linux namespaces       |    ✅    |       ✅        |
-| Live fork (ms, COW)             |    ✅    |       ✅        |
-| Phantom-token egress proxy      |    ❌    |       ✅        |
-| Network allowlist (domain/path) |   part.  |       ✅        |
-| Per-path scope on creds         |    ❌    |       ✅        |
-| Self-hostable / on-prem         |    ❌    |       ✅        |
-| Open source (MIT)               |    ❌    |       ✅        |
-| GPU passthrough                 |    ?     |       ✅        |
+| Capability                      | typical hosted sandbox | agentjail |
+|---------------------------------|:----------------------:|:---------:|
+| Rootless Linux namespaces       |          ✅           |    ✅     |
+| Live fork (ms, COW)             |          ✅           |    ✅     |
+| Phantom-token egress proxy      |          ❌           |    ✅     |
+| Network allowlist (domain/path) |         part.         |    ✅     |
+| Per-path scope on creds         |          ❌           |    ✅     |
+| Self-hostable / on-prem         |          ❌           |    ✅     |
+| Open source (MIT)               |          ❌           |    ✅     |
+| GPU passthrough                 |           ?           |    ✅     |
 
 The phantom proxy is the headline. The rest is parity we mostly already have.
 
@@ -401,7 +405,7 @@ Total: ~23 engineer-days for a shippable v0.1.
 
 ## 11. Non-goals (v0.1)
 
-- Deployments / custom domains (freestyle has this; we won't yet)
+- Deployments / custom domains (out of scope for v0.1)
 - V8-isolate Runs backend (our Runs will be agentjail-backed Node runs)
 - Hosted control plane at a .com domain — self-host first
 - Windows / macOS jails (Linux-only, same as today)
