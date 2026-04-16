@@ -9,6 +9,39 @@ no real API credentials ever reach the jail.
 
 ---
 
+## 0. Principles
+
+Every decision downstream defers to these. If a feature can't be built
+without breaking one, it doesn't ship.
+
+- **Composable.** Every layer is a crate/package with a narrow API and
+  no hidden globals. `agentjail-phantom` runs standalone (no control
+  plane). `agentjail-ctl` runs without the web UI. The TS SDK has zero
+  SDK-level state. Users should be able to take *one piece* and drop
+  it into their stack — e.g. just the phantom proxy in front of an
+  existing sandbox they already trust.
+- **Reliable.** No feature ships without: graceful shutdown, bounded
+  memory/FD/conn limits, explicit timeouts on every I/O path, and a
+  documented failure mode for every external dependency. Retries have
+  budgets. Background tasks are supervised. No `unwrap()` outside tests.
+- **Well tested.** Every crate has unit + integration tests; the
+  phantom proxy additionally has a fuzz target (header injection,
+  token parsing) and a property test suite for scope matching. Every
+  audit finding gets a regression test, same discipline as today's
+  `agentjail` (72 tests, 4 audit rounds). CI runs on every PR.
+- **Beautiful devex.** `curl | sh` → `agentjail up` → working dashboard
+  in under 60 seconds. The TS SDK matches `freestyle-sandboxes` shape
+  so migration is one import change. Error messages name the file and
+  the fix. `--help` output is usable; `--json` is the default for
+  anything a tool would parse. Web UI is keyboard-first.
+- **Lean docs.** One page per concept, code first, prose second. No
+  marketing copy, no duplicated content across pages. If the SDK type
+  signature says it, the doc doesn't repeat it. Docs live in
+  `docs/<topic>.md`, render as a static site, grep-friendly in the
+  repo. Target total doc length for v0.1: ≤ 2,000 lines.
+
+---
+
 ## 1. What freestyle sells today
 
 | Product       | What it is                                              |
@@ -273,6 +306,9 @@ agentjail/
 
 ## 9. Milestones
 
+Each milestone has a definition-of-done that enforces the §0 principles.
+No milestone is "complete" until every DoD line is checked.
+
 | M  | Scope                                                             | Days |
 |----|-------------------------------------------------------------------|-----:|
 | M1 | `agentjail-phantom` crate: OpenAI + Anthropic reverse proxy, unit + integration tests, fuzz on header stripping | 3 |
@@ -284,6 +320,35 @@ agentjail/
 | M7 | Docs site, `docker compose up` one-shot, Helm chart               | 3 |
 
 Total: ~23 engineer-days for a shippable v0.1.
+
+### Per-milestone definition of done
+
+- **Composable:** crate compiles and runs in isolation (no hard deps on
+  other crates in this plan); public API documented with `#![warn(
+  missing_docs)]`.
+- **Reliable:** no `unwrap()` in non-test code; every public async fn
+  has a timeout param or doc-comment naming the default; graceful
+  shutdown on SIGTERM with a test that proves in-flight requests drain.
+- **Tested:** ≥ 80% line coverage on new code; one integration test per
+  happy path and per documented failure mode; fuzz target where the
+  crate parses untrusted input; CI green on Linux + (where relevant)
+  macOS for SDK/UI.
+- **DevEx:** one copy-pasteable example in the README that runs
+  end-to-end; error types implement `Display` with the fix in the
+  message; `--help` / TypeDoc output reviewed by a second pair of eyes.
+- **Docs:** ≤ 1 page per concept in `docs/`, code-first, links green,
+  no duplicated prose from the SDK types or OpenAPI spec.
+
+## 9a. Quality gates (apply to every PR)
+
+- `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test
+  --workspace`, `cargo deny check` — all green.
+- `pnpm -r typecheck && pnpm -r test && pnpm -r lint` — all green.
+- `cargo audit` clean; no new transitive deps without a one-line
+  justification in the PR.
+- For `agentjail-phantom`: `cargo fuzz run` smoke run (60s) must not
+  find a new crash.
+- Docs touched iff behavior changed; no drift allowed.
 
 ## 10. Open questions
 
