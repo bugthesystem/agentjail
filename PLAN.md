@@ -166,14 +166,46 @@ event streams.
 
 ### 4.3 Web UI (new `web/` directory)
 
-Next.js 15 + React 19 + tRPC (or just fetch). Pages:
-- `/` dashboard (live sessions, live CPU/mem bars from cgroup stats)
-- `/sessions/[id]` logs, event stream, fs browser (via `vm.fs.*`)
+Next.js 15 App Router + React 19 Server Components + Tailwind + shadcn/ui
++ `lucide-react`. Data fetching via server actions and the SDK directly
+(no separate tRPC layer). Streaming UI for live events via RSC
+`Suspense` + Server-Sent Events.
+
+**Composable, not page-heavy.** Every page is a thin assembly of small
+components from `web/components/`. No component larger than ~120 LOC;
+no page does data fetching or state management itself. A session
+detail page is a grid of:
+`<SessionHeader/>`, `<LiveMetrics/>`, `<LogStream/>`, `<FsBrowser/>`,
+`<PhantomAuditTable/>` — each one usable standalone on any other page
+or even embedded into an external app via a future `@agentjail/ui`
+package.
+
+Design: elegant, restrained — Vercel / Linear / shadcn aesthetic.
+Monospaced for data, sans for chrome. No gradients, no shadows beyond
+`shadow-sm`, no glow. Dark-first, light-theme supported. Keyboard-first
+nav (`g s` for sessions, `g c` for credentials, `/` to search).
+Motion only where it conveys state transitions (≤150ms,
+`ease-in-out`). Accessibility: every interactive element hits WCAG AA
+contrast + has a visible focus ring.
+
+Pages (each one a ≤50-LOC composition of the components below):
+- `/` dashboard (live sessions, CPU/mem sparklines from cgroup stats)
+- `/sessions/[id]` logs, event stream, fs browser
 - `/credentials` add/rotate real keys, see scope + usage
 - `/audit` phantom-proxy request log (redactable)
 - `/playground` run code right from the browser
 
-All WebSocket streams multiplexed over one `/ws` channel.
+Component inventory (target):
+`Button`, `Input`, `Sheet`, `Dialog`, `Tabs`, `Table`, `Badge`,
+`Sparkline`, `LogStream`, `EventBadge`, `KeyValue`, `CodeBlock`,
+`CopyButton`, `KbdHint`, `Toast`, `CommandPalette`,
+`SessionHeader`, `LiveMetrics`, `FsBrowser`, `PhantomAuditTable`,
+`CredentialCard`, `ScopeEditor`. That's it — ~24 primitives, every
+page a composition. Anything not on the list gets pushed back into
+this list before a page uses it.
+
+Event plumbing: one `useSessionEvents(id)` hook, SSE under the hood,
+consumed by `<LogStream>` and `<LiveMetrics>`. No WebSocket bus.
 
 ### 4.4 TypeScript SDK (new `packages/sdk-node`)
 
