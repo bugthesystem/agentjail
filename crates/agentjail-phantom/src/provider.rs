@@ -14,7 +14,7 @@ use crate::keys::SecretString;
 
 /// Stable string identifier for a service. Part of public config / API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "lowercase")]
 pub enum ServiceId {
     /// OpenAI (api.openai.com).
     OpenAi,

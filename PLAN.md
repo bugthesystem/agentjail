@@ -410,3 +410,42 @@ Total: ~23 engineer-days for a shippable v0.1.
 
 *Next step:* land `crates/agentjail-phantom` behind a feature flag, wire
 a `Network::Phantom { services }` variant into `JailConfig`, and ship M1.
+
+---
+
+## 12. Shipping status (v0.1 progress)
+
+| M  | Scope                                       | Status | Tests      |
+|----|---------------------------------------------|--------|------------|
+| M1 | `agentjail-phantom` reverse proxy           | ✅     | 45 green   |
+| M2 | `agentjail-ctl` HTTP control plane          | ✅     | 9 green    |
+| M3 | `@agentjail/sdk` TypeScript package         | ✅     | 12 green   |
+| M4 | Next.js admin UI (components + 5 pages)     | ✅     | build ✓    |
+| M5 | GitHub / Stripe / Postgres providers        | ⬜     |            |
+| M6 | Multi-tenant auth, rate limits, per-scope   | ⬜     |            |
+| M7 | Docs site, docker compose, Helm             | ⬜     |            |
+
+**66 automated tests, 0 failures** across Rust + TypeScript. The critical
+phantom-token invariant — "real key never enters the jail" — is proven
+end-to-end by an integration test that fires a real HTTP request through
+the proxy and asserts the mock upstream sees the real key with zero
+`phm_` substring anywhere.
+
+### Wire-shape contract
+
+Both the Rust control plane and the TS SDK agree on this surface:
+
+```
+GET    /healthz                  → "ok"                         (public)
+POST   /v1/credentials           → {service, secret}            → 200 record
+GET    /v1/credentials           → [record]
+DELETE /v1/credentials/:service  → 204
+POST   /v1/sessions              → {services, ttl_secs?}        → 201 session
+GET    /v1/sessions              → [session]
+GET    /v1/sessions/:id          → session
+DELETE /v1/sessions/:id          → 204 (revokes all phantom tokens)
+GET    /v1/audit?limit=N         → {rows, total}
+```
+
+All guarded routes require `Authorization: Bearer <api-key>`; constant-
+time compared.

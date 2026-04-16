@@ -10,5 +10,6 @@ repository = "https://github.com/bugthesystem/agentjail"
 [workspace.dependencies]
 agentjail = { path = "crates/agentjail" }
 agentjail-phantom = { path = "crates/agentjail-phantom" }
+agentjail-ctl = { path = "crates/agentjail-ctl" }
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"

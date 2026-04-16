@@ -1,0 +1,32 @@
+[package]
+name = "agentjail-ctl"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Control plane: HTTP API in front of agentjail + agentjail-phantom"
+keywords = ["sandbox", "api", "control-plane", "ai-agents"]
+categories = ["web-programming::http-server"]
+
+[dependencies]
+agentjail-phantom.workspace = true
+axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "json", "matched-path", "query"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "signal"] }
+tower = { version = "0.5", default-features = false }
+tower-http = { version = "0.6", default-features = false, features = ["cors", "trace"] }
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+http = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+hex = "0.4"
+subtle = "2"
+thiserror.workspace = true
+tracing = "0.1"
+async-trait = "0.1"
+time = { version = "0.3", default-features = false, features = ["std", "serde", "formatting", "parsing", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
