@@ -101,7 +101,7 @@ async fn attach_list_delete_credential() {
     assert_eq!(r.status(), 200);
     let body: Value = r.json().await.unwrap();
     assert_eq!(body["service"], "openai");
-    assert!(body["fingerprint"].as_str().unwrap().len() > 0);
+    assert!(!body["fingerprint"].as_str().unwrap().is_empty());
     assert!(body["added_at"].as_str().is_some());
 
     // Rotate: updated_at should change, added_at should not.
@@ -274,17 +274,57 @@ async fn session_lifecycle() {
 }
 
 #[tokio::test]
-async fn unknown_service_400() {
+async fn unknown_service_4xx() {
     let h = Harness::start(vec!["aj_test".into()]).await;
     let r = client()
         .post(format!("{}/v1/credentials", h.base))
         .bearer_auth("aj_test")
-        .json(&json!({ "service": "stripe", "secret": "sk-live" }))
+        .json(&json!({ "service": "not-a-real-service", "secret": "sk" }))
         .send()
         .await
         .unwrap();
-    // Serde rejects unknown service as deserialization error -> 422/400 range.
+    // Serde rejects the unknown variant -> 422 from axum's Json extractor.
     assert!(r.status().is_client_error());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn session_with_scopes_reaches_through_to_token() {
+    let h = Harness::start(vec!["aj_test".into()]).await;
+    let c = client();
+    c.post(format!("{}/v1/credentials", h.base))
+        .bearer_auth("aj_test")
+        .json(&json!({ "service": "github", "secret": "ghp_x" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Happy path: valid scope.
+    let r = c
+        .post(format!("{}/v1/sessions", h.base))
+        .bearer_auth("aj_test")
+        .json(&json!({
+            "services": ["github"],
+            "scopes": { "github": ["/repos/foo/*"] }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+
+    // Scope keyed by a service not in `services` -> 400.
+    let r = c
+        .post(format!("{}/v1/sessions", h.base))
+        .bearer_auth("aj_test")
+        .json(&json!({
+            "services": ["github"],
+            "scopes": { "openai": ["/v1/*"] }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+
     h.stop().await;
 }
 

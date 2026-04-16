@@ -7,6 +7,8 @@ import { RelativeTime } from "./RelativeTime";
 const SERVICE_LABEL: Record<string, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
+  github: "GitHub",
+  stripe: "Stripe",
 };
 
 /** Single-service credential summary. */

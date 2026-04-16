@@ -4,7 +4,7 @@
  */
 
 /** Stable string identifiers for upstream services. */
-export type ServiceId = "openai" | "anthropic";
+export type ServiceId = "openai" | "anthropic" | "github" | "stripe";
 
 /** Public credential metadata. Never carries the secret. */
 export interface CredentialRecord {

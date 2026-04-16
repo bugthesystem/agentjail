@@ -12,11 +12,16 @@ export class Sessions {
   async create(params: {
     services: ServiceId[];
     ttlSecs?: number;
+    /** Per-service allow-list of path globs (`*` only supported as trailing wildcard). */
+    scopes?: Partial<Record<ServiceId, string[]>>;
   }): Promise<Session> {
-    const body: { services: ServiceId[]; ttl_secs?: number } = {
-      services: params.services,
-    };
+    const body: {
+      services: ServiceId[];
+      ttl_secs?: number;
+      scopes?: Partial<Record<ServiceId, string[]>>;
+    } = { services: params.services };
     if (params.ttlSecs !== undefined) body.ttl_secs = params.ttlSecs;
+    if (params.scopes !== undefined) body.scopes = params.scopes;
     return this.http.request<Session>({
       method: "POST",
       path: "/v1/sessions",

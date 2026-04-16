@@ -83,11 +83,10 @@ impl CredentialStore for InMemoryCredentialStore {
 
 /// Short, deterministic, non-reversible fingerprint of a secret.
 ///
-/// Uses the first 8 bytes of a single-pass FNV-1a hash, rendered hex.
-/// Good enough to distinguish rotations without linking credentials across
-/// installs (we're not using a keyed MAC; this isn't a privacy primitive).
+/// Single-pass FNV-1a hash rendered as 16 hex chars. Good enough to show
+/// rotation visually in the UI; not a cryptographic primitive.
 #[must_use]
-pub fn fingerprint(secret: &str) -> String {
+pub(crate) fn fingerprint(secret: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in secret.as_bytes() {
         hash ^= u64::from(*byte);

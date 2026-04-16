@@ -78,7 +78,7 @@ impl AuditSink for TracingAudit {
             path = %entry.path,
             status = entry.status,
             reject = entry.reject_reason.unwrap_or(""),
-            upstream_ms = entry.upstream_latency.map(|d| d.as_millis() as u64).unwrap_or(0),
+            upstream_ms = entry.upstream_latency.map_or(0, |d| d.as_millis() as u64),
             "phantom-proxy"
         );
     }
@@ -168,23 +168,22 @@ async fn handle(State(state): State<Arc<PhantomProxy>>, req: Request) -> Respons
     let uri = req.uri().clone();
     let path = uri.path().to_string();
 
-    let (service_seg, upstream_path) = match split_service_path(&path) {
-        Some(p) => (p.0.to_string(), p.1.to_string()),
-        None => {
-            state
-                .audit
-                .record(AuditEntry {
-                    session_id: String::new(),
-                    service: None,
-                    path: path.clone(),
-                    method: method.to_string(),
-                    status: 404,
-                    reject_reason: Some("bad_path"),
-                    upstream_latency: None,
-                })
-                .await;
-            return (StatusCode::NOT_FOUND, "unknown service path").into_response();
-        }
+    let Some((service_seg, upstream_path)) =
+        split_service_path(&path).map(|(s, p)| (s.to_string(), p.to_string()))
+    else {
+        state
+            .audit
+            .record(AuditEntry {
+                session_id: String::new(),
+                service: None,
+                path: path.clone(),
+                method: method.to_string(),
+                status: 404,
+                reject_reason: Some("bad_path"),
+                upstream_latency: None,
+            })
+            .await;
+        return (StatusCode::NOT_FOUND, "unknown service path").into_response();
     };
 
     // Resolve phantom token.
@@ -399,7 +398,7 @@ async fn forward(
     let mut builder = Response::builder().status(status);
     // Copy upstream headers (minus hop-by-hop).
     if let Some(h) = builder.headers_mut() {
-        for (k, v) in resp.headers().iter() {
+        for (k, v) in resp.headers() {
             if is_hop_by_hop(k.as_str()) {
                 continue;
             }

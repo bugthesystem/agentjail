@@ -179,6 +179,32 @@ describe("Sessions", () => {
     expect(Object.keys(JSON.parse(bodyText))).toEqual(["services"]);
   });
 
+  it("passes scopes through", async () => {
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ init }) => {
+        bodyText = init.body as string;
+        return json({
+          id: "sess_abc",
+          created_at: "2026-04-16T00:00:00Z",
+          expires_at: null,
+          services: ["github"],
+          env: {},
+        });
+      }),
+    });
+    await aj.sessions.create({
+      services: ["github"],
+      scopes: { github: ["/repos/foo/*"] },
+    });
+    expect(JSON.parse(bodyText)).toEqual({
+      services: ["github"],
+      scopes: { github: ["/repos/foo/*"] },
+    });
+  });
+
   it("close sends DELETE", async () => {
     let seenMethod = "";
     let seenUrl = "";

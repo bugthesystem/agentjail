@@ -132,9 +132,9 @@ impl<S: AuditStore> AuditSink for AuditStoreSink<S> {
             path: entry.path,
             status: entry.status,
             reject_reason: entry.reject_reason.map(str::to_string),
-            upstream_ms: entry.upstream_latency.map(|d| {
-                u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
-            }),
+            upstream_ms: entry
+                .upstream_latency
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
         };
         self.store.push(row).await;
     }

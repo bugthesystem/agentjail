@@ -20,6 +20,10 @@ pub enum ServiceId {
     OpenAi,
     /// Anthropic (api.anthropic.com).
     Anthropic,
+    /// GitHub (api.github.com).
+    GitHub,
+    /// Stripe (api.stripe.com).
+    Stripe,
 }
 
 impl ServiceId {
@@ -29,6 +33,8 @@ impl ServiceId {
         match self {
             ServiceId::OpenAi => "openai",
             ServiceId::Anthropic => "anthropic",
+            ServiceId::GitHub => "github",
+            ServiceId::Stripe => "stripe",
         }
     }
 }
@@ -153,7 +159,7 @@ mod tests {
         fn id(&self) -> ServiceId {
             self.0
         }
-        fn upstream_base(&self) -> &str {
+        fn upstream_base(&self) -> &'static str {
             "https://example.com"
         }
         fn inject_auth(&self, _headers: &mut HeaderMap, _s: &SecretString) -> Result<()> {

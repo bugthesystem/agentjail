@@ -24,12 +24,6 @@ impl ApiKeys {
         }
     }
 
-    /// No keys configured — all requests accepted. Use only in tests.
-    #[must_use]
-    pub fn disabled() -> Self {
-        Self::default()
-    }
-
     /// Whether any key is configured.
     #[must_use]
     pub fn is_enforced(&self) -> bool {

@@ -29,8 +29,21 @@ spawn("node", ["my-agent.js"], { env: { ...process.env, ...session.env } });
 ## API
 
 - `credentials.list()` / `put({service, secret})` / `delete(service)`
-- `sessions.create({services, ttlSecs?})` / `list()` / `get(id)` / `close(id)`
+- `sessions.create({services, scopes?, ttlSecs?})` / `list()` / `get(id)` / `close(id)`
 - `audit.recent(limit?)`
+
+Supported services: `openai`, `anthropic`, `github`, `stripe`.
+
+**Scopes** are a per-service allow-list of path globs (trailing `*`
+supported). Requests outside the scope get rejected at the proxy with
+a 403 — the upstream is never contacted.
+
+```ts
+await aj.sessions.create({
+  services: ["github"],
+  scopes:   { github: ["/repos/my-org/*/issues*"] },
+});
+```
 
 Zero runtime dependencies. Works on Node ≥ 18 and any runtime that
 exposes a global `fetch`.

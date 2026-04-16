@@ -421,19 +421,24 @@ a `Network::Phantom { services }` variant into `JailConfig`, and ship M1.
 
 | M  | Scope                                       | Status | Tests      |
 |----|---------------------------------------------|--------|------------|
-| M1 | `agentjail-phantom` reverse proxy           | ✅     | 45 green   |
-| M2 | `agentjail-ctl` HTTP control plane          | ✅     | 9 green    |
-| M3 | `@agentjail/sdk` TypeScript package         | ✅     | 12 green   |
+| M1 | `agentjail-phantom` reverse proxy           | ✅     | 49 green   |
+| M2 | `agentjail-ctl` HTTP control plane          | ✅     | 10 green   |
+| M3 | `@agentjail/sdk` TypeScript package         | ✅     | 13 green   |
 | M4 | Next.js admin UI (components + 5 pages)     | ✅     | build ✓    |
-| M5 | GitHub / Stripe / Postgres providers        | ⬜     |            |
-| M6 | Multi-tenant auth, rate limits, per-scope   | ⬜     |            |
-| M7 | Docs site, docker compose, Helm             | ⬜     |            |
+| M5 | GitHub + Stripe providers (HTTP services)   | ✅     | +4 unit    |
+| M6 | Per-service `Scope` in session API          | ✅     | +1 integ   |
+| M7 | `agentjail-server` bin + Docker Compose     | ✅     | +1 wire    |
+| —  | Postgres wire-proxy                          | ⬜     | deferred  |
+| —  | Rate limits, durable stores                 | ⬜     | deferred  |
+| —  | Helm chart                                  | ⬜     | deferred  |
 
-**66 automated tests, 0 failures** across Rust + TypeScript. The critical
+**73 automated tests, 0 failures** across Rust + TypeScript. The critical
 phantom-token invariant — "real key never enters the jail" — is proven
-end-to-end by an integration test that fires a real HTTP request through
-the proxy and asserts the mock upstream sees the real key with zero
-`phm_` substring anywhere.
+end-to-end by a wire test (`crates/agentjail-server/tests/wire.rs`) that
+boots ctl + phantom proxy together, creates a session via the ctl HTTP
+API, fires a request at the proxy with the returned phantom, and asserts
+the mock upstream saw the *real* key (no `phm_` substring anywhere) while
+the ctl audit feed recorded the request.
 
 ### Wire-shape contract
 

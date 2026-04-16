@@ -89,7 +89,7 @@ impl SessionStore for InMemorySessionStore {
 
 /// Random 12-byte session id rendered as `sess_<24hex>`.
 #[must_use]
-pub fn new_session_id() -> String {
+pub(crate) fn new_session_id() -> String {
     use rand::RngCore;
     let mut b = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut b);

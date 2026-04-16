@@ -185,18 +185,6 @@ impl InMemoryTokenStore {
     pub fn new() -> Self {
         Self::default()
     }
-
-    /// Current number of live (non-expired) tokens. For metrics/tests.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.inner.read().map(|g| g.len()).unwrap_or(0)
-    }
-
-    /// Whether the store is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 #[async_trait::async_trait]

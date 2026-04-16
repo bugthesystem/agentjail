@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { cn } from "@/lib/cn";
 
 interface NavItem {
@@ -15,7 +18,8 @@ const NAV: NavItem[] = [
 ];
 
 /** Primary navigation on the left. */
-export function Sidebar({ active }: { active: string }) {
+export function Sidebar() {
+  const active = usePathname() ?? "/";
   return (
     <aside className="flex w-52 shrink-0 flex-col gap-1 border-r border-border px-3 py-4">
       <div className="mb-4 flex items-center gap-2 px-2">

@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentjail_phantom::{InMemoryKeyStore, KeyStore, Scope, SecretString, ServiceId, TokenStore};
+use agentjail_phantom::{
+    InMemoryKeyStore, KeyStore, PathGlob, Scope, SecretString, ServiceId, TokenStore,
+};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -19,19 +21,13 @@ use crate::session::{Session, SessionStore, new_session_id};
 
 /// Shared service state passed to every handler.
 #[derive(Clone)]
-pub struct AppState {
-    /// Underlying phantom token store.
-    pub tokens: Arc<dyn TokenStore>,
-    /// Real upstream keys. Shared with the phantom proxy.
-    pub keys: Arc<InMemoryKeyStore>,
-    /// Session records.
-    pub sessions: Arc<dyn SessionStore>,
-    /// Credential metadata.
-    pub credentials: Arc<dyn CredentialStore>,
-    /// Audit trail.
-    pub audit: Arc<dyn AuditStore>,
-    /// Base URL that the sandbox uses to reach the phantom proxy.
-    pub proxy_base_url: String,
+pub(crate) struct AppState {
+    pub(crate) tokens: Arc<dyn TokenStore>,
+    pub(crate) keys: Arc<InMemoryKeyStore>,
+    pub(crate) sessions: Arc<dyn SessionStore>,
+    pub(crate) credentials: Arc<dyn CredentialStore>,
+    pub(crate) audit: Arc<dyn AuditStore>,
+    pub(crate) proxy_base_url: String,
 }
 
 // ---------- health ----------
@@ -69,9 +65,7 @@ pub(crate) async fn put_credential(
     Ok(Json(rec))
 }
 
-pub(crate) async fn list_credentials(
-    State(state): State<AppState>,
-) -> Json<Vec<CredentialRecord>> {
+pub(crate) async fn list_credentials(State(state): State<AppState>) -> Json<Vec<CredentialRecord>> {
     Json(state.credentials.list().await)
 }
 
@@ -90,6 +84,8 @@ fn parse_service(s: &str) -> Result<ServiceId> {
     match s {
         "openai" => Ok(ServiceId::OpenAi),
         "anthropic" => Ok(ServiceId::Anthropic),
+        "github" => Ok(ServiceId::GitHub),
+        "stripe" => Ok(ServiceId::Stripe),
         other => Err(CtlError::BadRequest(format!("unknown service {other}"))),
     }
 }
@@ -103,6 +99,16 @@ pub(crate) struct CreateSessionRequest {
     /// Optional TTL in seconds.
     #[serde(default)]
     ttl_secs: Option<u64>,
+    /// Optional per-service allow-list of path globs. Keys must be a subset
+    /// of `services`. Missing entries mean unrestricted scope.
+    ///
+    /// Example:
+    /// ```json
+    /// { "services": ["openai", "github"],
+    ///   "scopes":   { "github": ["/repos/my-org/*/issues*"] } }
+    /// ```
+    #[serde(default)]
+    scopes: HashMap<ServiceId, Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -156,13 +162,26 @@ pub(crate) async fn create_session(
     let ttl = req.ttl_secs.map(Duration::from_secs);
     let expires_at = ttl.map(|d| OffsetDateTime::now_utc() + d);
 
+    // Validate scopes: every key must be in services.
+    for svc in req.scopes.keys() {
+        if !req.services.contains(svc) {
+            return Err(CtlError::BadRequest(format!(
+                "scope for service {svc} but it is not in services"
+            )));
+        }
+    }
+
     let mut env = HashMap::new();
 
     for svc in &req.services {
-        let token = state
-            .tokens
-            .issue(id.clone(), *svc, Scope::any(), ttl)
-            .await;
+        let scope = req
+            .scopes
+            .get(svc)
+            .map(|paths| Scope {
+                allowed_paths: paths.iter().map(|p| PathGlob::new(p.clone())).collect(),
+            })
+            .unwrap_or_else(Scope::any);
+        let token = state.tokens.issue(id.clone(), *svc, scope, ttl).await;
         let token_str = token.to_string();
         match svc {
             ServiceId::OpenAi => {
@@ -173,11 +192,24 @@ pub(crate) async fn create_session(
                 );
             }
             ServiceId::Anthropic => {
-                let t = token_str;
-                env.insert("ANTHROPIC_API_KEY".into(), t);
+                env.insert("ANTHROPIC_API_KEY".into(), token_str);
                 env.insert(
                     "ANTHROPIC_BASE_URL".into(),
                     format!("{}/v1/anthropic", state.proxy_base_url),
+                );
+            }
+            ServiceId::GitHub => {
+                env.insert("GITHUB_TOKEN".into(), token_str);
+                env.insert(
+                    "GITHUB_API_URL".into(),
+                    format!("{}/v1/github", state.proxy_base_url),
+                );
+            }
+            ServiceId::Stripe => {
+                env.insert("STRIPE_API_KEY".into(), token_str);
+                env.insert(
+                    "STRIPE_API_BASE".into(),
+                    format!("{}/v1/stripe", state.proxy_base_url),
                 );
             }
         }
@@ -200,9 +232,7 @@ pub(crate) async fn create_session(
     ))
 }
 
-pub(crate) async fn list_sessions(
-    State(state): State<AppState>,
-) -> Json<Vec<SessionView>> {
+pub(crate) async fn list_sessions(State(state): State<AppState>) -> Json<Vec<SessionView>> {
     Json(
         state
             .sessions

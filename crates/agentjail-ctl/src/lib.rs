@@ -49,14 +49,14 @@ use std::sync::Arc;
 use agentjail_phantom::{InMemoryKeyStore, TokenStore};
 use axum::routing::{delete, get, post};
 use axum::{Router, middleware};
+use routes::AppState;
 use tower_http::trace::TraceLayer;
 
 pub use audit::{AuditRow, AuditStore, AuditStoreSink, InMemoryAuditStore};
 pub use auth::ApiKeys;
-pub use credential::{CredentialRecord, CredentialStore, InMemoryCredentialStore, fingerprint};
+pub use credential::{CredentialRecord, CredentialStore, InMemoryCredentialStore};
 pub use error::{CtlError, Result};
-pub use routes::AppState;
-pub use session::{InMemorySessionStore, Session, SessionStore, new_session_id};
+pub use session::{InMemorySessionStore, Session, SessionStore};
 
 /// Configuration for a [`ControlPlane`].
 pub struct ControlPlaneConfig {
@@ -101,13 +101,14 @@ impl ControlPlane {
         credentials: Arc<dyn CredentialStore>,
         audit: Arc<dyn AuditStore>,
     ) -> Self {
+        let proxy_base_url = config.proxy_base_url.trim_end_matches('/').to_string();
         let state = AppState {
             tokens: config.tokens,
             keys: config.keys,
             sessions,
             credentials,
             audit,
-            proxy_base_url: config.proxy_base_url,
+            proxy_base_url,
         };
         Self {
             state,
@@ -115,20 +116,7 @@ impl ControlPlane {
         }
     }
 
-    /// Access the audit store (so you can wire it into the phantom proxy).
-    #[must_use]
-    pub fn audit(&self) -> Arc<dyn AuditStore> {
-        self.state.audit.clone()
-    }
-
-    /// Access the raw app state. Use in tests.
-    #[must_use]
-    pub fn state(&self) -> AppState {
-        self.state.clone()
-    }
-
     /// Build the axum router.
-    #[must_use]
     pub fn router(self) -> Router {
         let public = Router::new().route("/healthz", get(routes::healthz));
 
@@ -137,7 +125,10 @@ impl ControlPlane {
                 "/v1/credentials",
                 post(routes::put_credential).get(routes::list_credentials),
             )
-            .route("/v1/credentials/:service", delete(routes::delete_credential))
+            .route(
+                "/v1/credentials/:service",
+                delete(routes::delete_credential),
+            )
             .route(
                 "/v1/sessions",
                 post(routes::create_session).get(routes::list_sessions),

@@ -37,7 +37,7 @@ async function call<T>(
   return parsed as T;
 }
 
-export type ServiceId = "openai" | "anthropic";
+export type ServiceId = "openai" | "anthropic" | "github" | "stripe";
 
 export interface CredentialRecord {
   service: ServiceId;
