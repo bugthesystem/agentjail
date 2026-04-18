@@ -17,8 +17,9 @@ impl Cgroup {
     /// The cgroup is created under the current user's cgroup (for rootless)
     /// or under the system cgroup root.
     pub fn create(name: &str) -> Result<Self> {
-        let path = find_cgroup_base()?.join(format!("agentjail-{}", name));
+        let base = ensure_cgroup_base()?;
 
+        let path = base.join(format!("agentjail-{}", name));
         if !path.exists() {
             fs::create_dir(&path).map_err(JailError::Cgroup)?;
         }
@@ -200,18 +201,54 @@ impl Drop for Cgroup {
     }
 }
 
-/// Find the base cgroup path for the current user.
-fn find_cgroup_base() -> Result<PathBuf> {
-    // Read /proc/self/cgroup to find our cgroup
-    let cgroup_info = fs::read_to_string("/proc/self/cgroup").map_err(JailError::Cgroup)?;
+/// Find the cgroup base and ensure controllers are enabled.
+///
+/// Cgroup v2 "no internal process" rule: controllers can only be enabled
+/// on a cgroup that has no processes. On first call, we migrate all
+/// processes into `agentjail-init` and enable controllers. Subsequent
+/// calls return the cached base path.
+fn ensure_cgroup_base() -> Result<PathBuf> {
+    use std::sync::OnceLock;
+    static BASE: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
 
-    // Format: "0::/path/to/cgroup"
-    for line in cgroup_info.lines() {
-        if let Some(path) = line.strip_prefix("0::") {
-            return Ok(PathBuf::from(CGROUP_ROOT).join(path.trim_start_matches('/')));
+    let result = BASE.get_or_init(|| init_cgroup_base().map_err(|e| e.to_string()));
+    match result {
+        Ok(p) => Ok(p.clone()),
+        Err(e) => Err(JailError::Cgroup(std::io::Error::other(e.clone()))),
+    }
+}
+
+fn init_cgroup_base() -> Result<PathBuf> {
+    let info = fs::read_to_string("/proc/self/cgroup").map_err(JailError::Cgroup)?;
+    let our_path = info.lines()
+        .find_map(|l| l.strip_prefix("0::"))
+        .unwrap_or("/");
+
+    let base = if our_path == "/" || our_path == "/agentjail-init" {
+        PathBuf::from(CGROUP_ROOT)
+    } else {
+        PathBuf::from(CGROUP_ROOT).join(our_path.trim_start_matches('/'))
+    };
+
+    // Enable controllers. If we can't, drain root cgroup first.
+    let subtree_ctl = base.join("cgroup.subtree_control");
+    if fs::write(&subtree_ctl, "+memory").is_err() {
+        let init_cg = base.join("agentjail-init");
+        let _ = fs::create_dir(&init_cg);
+        // Move ALL processes out of root. Retry for stragglers.
+        for _ in 0..20 {
+            if let Ok(procs) = fs::read_to_string(base.join("cgroup.procs")) {
+                for pid in procs.lines().filter(|l| !l.is_empty()) {
+                    let _ = fs::write(init_cg.join("cgroup.procs"), pid);
+                }
+            }
+            if fs::write(&subtree_ctl, "+memory").is_ok() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
+    for ctrl in ["+cpu", "+pids", "+io"] {
+        let _ = fs::write(&subtree_ctl, ctrl);
+    }
 
-    // Fallback to root cgroup
-    Ok(PathBuf::from(CGROUP_ROOT))
+    Ok(base)
 }

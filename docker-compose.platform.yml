@@ -1,0 +1,50 @@
+# One-shot bring-up for the agentjail platform (control plane + phantom
+# proxy + admin UI). The sandbox engine itself is not in this compose file —
+# this stack is the credential broker and dashboard; pair it with the
+# agentjail engine or any sandbox you already trust.
+#
+# Usage:
+#   export OPENAI_API_KEY=sk-...
+#   export AGENTJAIL_API_KEY=aj_local_secret
+#   docker compose -f docker-compose.platform.yml up --build
+#
+# Then:
+#   open http://localhost:3000     # admin UI
+#   curl http://localhost:7000/healthz
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      # Control plane API key. Leave empty to disable auth (dev only).
+      AGENTJAIL_API_KEY: ${AGENTJAIL_API_KEY:-}
+      # Upstream keys — never forwarded to sandboxes. Only these set below
+      # will actually be available to session-creation requests.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      STRIPE_API_KEY: ${STRIPE_API_KEY:-}
+      # Base URL the sandbox uses to reach the phantom proxy. Inside the
+      # docker network that's `http://server:8443`; override if you're
+      # connecting from the host or a veth peer.
+      PROXY_BASE_URL: ${PROXY_BASE_URL:-http://server:8443}
+      RUST_LOG: info,agentjail_phantom=debug,agentjail_ctl=debug
+    ports:
+      - "7000:7000"   # control plane
+      - "8443:8443"   # phantom proxy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    environment:
+      AGENTJAIL_BASE_URL: http://server:7000
+      AGENTJAIL_API_KEY: ${AGENTJAIL_API_KEY:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server
+    restart: unless-stopped

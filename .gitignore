@@ -1,21 +1,6 @@
-# Build
-/target/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# OS
+target/
+**/node_modules
+**/.next
+**/dist
+**/*.tsbuildinfo
 .DS_Store
-Thumbs.db
-
-# Test artifacts
-*.log
-
-# Coverage
-*.profraw
-*.profdata
-coverage/

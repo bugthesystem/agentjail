@@ -308,7 +308,7 @@ async fn test_dev_urandom_readable() {
 /// In production (user_namespace=true, non-root), the RDONLY mount is enforced.
 #[tokio::test]
 async fn test_dev_urandom_not_writable() {
-    if is_root() {
+    if common::is_root() {
         eprintln!("SKIP: root bypasses RDONLY mount on device nodes (test valid only for non-root)");
         return;
     }
@@ -337,7 +337,7 @@ async fn test_dev_urandom_not_writable() {
 /// Skipped when running as root: root bypasses VFS read-only with CAP_DAC_OVERRIDE.
 #[tokio::test]
 async fn test_dev_zero_not_writable() {
-    if is_root() {
+    if common::is_root() {
         eprintln!("SKIP: root bypasses RDONLY mount on device nodes (test valid only for non-root)");
         return;
     }

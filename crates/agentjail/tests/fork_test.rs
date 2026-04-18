@@ -10,8 +10,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 fn setup_dirs(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let (src, out) = common::setup("fork", name);
-    let fork_out = PathBuf::from(format!("/tmp/aj-fork-{}-fork", name));
+    // Use thread ID to avoid collisions between parallel tests
+    let tid = std::thread::current().id();
+    let unique = format!("{name}-{tid:?}").replace(|c: char| !c.is_alphanumeric(), "_");
+    let (src, out) = common::setup("fork", &unique);
+    let fork_out = PathBuf::from(format!("/tmp/aj-fork-{unique}-fork"));
     let _ = fs::remove_dir_all(&fork_out);
     (src, out, fork_out)
 }

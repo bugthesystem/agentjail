@@ -1,0 +1,39 @@
+# Multi-stage build for the agentjail-server binary (phantom proxy + ctl).
+# Sandbox execution is *not* in this image — this is the credential-broker
+# service. Pair it with the agentjail engine or any sandbox you already trust.
+
+FROM rust:1.85-slim-bookworm AS build
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/agentjail-phantom crates/agentjail-phantom
+COPY crates/agentjail-ctl crates/agentjail-ctl
+COPY crates/agentjail-server crates/agentjail-server
+# The sandbox-engine crate lives alongside in the workspace but we don't
+# need it in this image. Stub it so cargo accepts the workspace.
+RUN mkdir -p crates/agentjail/src crates/agentjail-cli/src \
+  && echo 'fn main() {}' > crates/agentjail-cli/src/main.rs \
+  && echo '' > crates/agentjail/src/lib.rs
+COPY crates/agentjail/Cargo.toml crates/agentjail/Cargo.toml
+COPY crates/agentjail-cli/Cargo.toml crates/agentjail-cli/Cargo.toml
+
+RUN cargo build --release -p agentjail-server
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd -r -u 10001 -m agentjail
+USER agentjail
+WORKDIR /home/agentjail
+
+COPY --from=build /src/target/release/agentjail-server /usr/local/bin/agentjail-server
+
+ENV CTL_ADDR=0.0.0.0:7000
+ENV PROXY_ADDR=0.0.0.0:8443
+EXPOSE 7000 8443
+
+ENTRYPOINT ["/usr/local/bin/agentjail-server"]
