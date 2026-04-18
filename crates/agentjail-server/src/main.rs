@@ -86,6 +86,7 @@ async fn main() -> Result<()> {
             keys: stores.keys.clone(),
             proxy_base_url: config.proxy_base_url.clone(),
             api_keys: config.api_keys.clone(),
+            exec: Some(agentjail_ctl::ExecConfig::default()),
         },
         Arc::new(agentjail_ctl::InMemorySessionStore::new()),
         Arc::new(agentjail_ctl::InMemoryCredentialStore::new()),

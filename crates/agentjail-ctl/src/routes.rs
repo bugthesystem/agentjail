@@ -28,6 +28,7 @@ pub(crate) struct AppState {
     pub(crate) credentials: Arc<dyn CredentialStore>,
     pub(crate) audit: Arc<dyn AuditStore>,
     pub(crate) proxy_base_url: String,
+    pub(crate) exec_config: Option<crate::exec::ExecConfig>,
 }
 
 // ---------- health ----------
@@ -291,6 +292,155 @@ pub(crate) async fn list_audit(
 pub(crate) struct AuditListResponse {
     rows: Vec<AuditRow>,
     total: u64,
+}
+
+// ---------- exec ----------
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ExecRequest {
+    cmd: String,
+    #[serde(default)]
+    args: Vec<String>,
+    timeout_secs: Option<u64>,
+    memory_mb: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RunRequest {
+    code: String,
+    #[serde(default = "default_language")]
+    language: String,
+    timeout_secs: Option<u64>,
+    memory_mb: Option<u64>,
+}
+
+fn default_language() -> String {
+    "javascript".into()
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ExecResponse {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    duration_ms: u64,
+    timed_out: bool,
+    oom_killed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stats: Option<StatsResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct StatsResponse {
+    memory_peak_bytes: u64,
+    cpu_usage_usec: u64,
+    io_read_bytes: u64,
+    io_write_bytes: u64,
+}
+
+fn output_to_response(output: agentjail::Output) -> ExecResponse {
+    ExecResponse {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.exit_code,
+        duration_ms: output.duration.as_millis() as u64,
+        timed_out: output.timed_out,
+        oom_killed: output.oom_killed,
+        stats: output.stats.map(|s| StatsResponse {
+            memory_peak_bytes: s.memory_peak_bytes,
+            cpu_usage_usec: s.cpu_usage_usec,
+            io_read_bytes: s.io_read_bytes,
+            io_write_bytes: s.io_write_bytes,
+        }),
+    }
+}
+
+/// `POST /v1/sessions/:id/exec` — run a command in a session's jail.
+pub(crate) async fn exec_in_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ExecRequest>,
+) -> Result<Json<ExecResponse>> {
+    let exec_cfg = state.exec_config.as_ref()
+        .ok_or_else(|| CtlError::Internal("exec not enabled".into()))?;
+
+    let session = state.sessions.get(&id).await
+        .ok_or_else(|| CtlError::NotFound(format!("session {id}")))?;
+
+    // Inject session's phantom env vars into the jail
+    let env: Vec<(String, String)> = std::iter::once(("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()))
+        .chain(session.env.iter().map(|(k, v)| (k.clone(), v.clone())))
+        .collect();
+
+    let timeout = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs);
+    let memory = req.memory_mb.unwrap_or(exec_cfg.default_memory_mb);
+
+    let source = tempfile::tempdir().map_err(CtlError::Io)?;
+    let output = tempfile::tempdir().map_err(CtlError::Io)?;
+
+    let config = jail_config(source.path(), output.path(), memory, timeout, env);
+
+    let jail = agentjail::Jail::new(config)?;
+    let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
+    let result = jail.run(&req.cmd, &args_refs).await?;
+
+    Ok(Json(output_to_response(result)))
+}
+
+/// `POST /v1/runs` — one-shot code execution.
+pub(crate) async fn create_run(
+    State(state): State<AppState>,
+    Json(req): Json<RunRequest>,
+) -> Result<(StatusCode, Json<ExecResponse>)> {
+    let exec_cfg = state.exec_config.as_ref()
+        .ok_or_else(|| CtlError::Internal("exec not enabled".into()))?;
+
+    let source = tempfile::tempdir().map_err(CtlError::Io)?;
+    let output_dir = tempfile::tempdir().map_err(CtlError::Io)?;
+
+    let (filename, cmd) = match req.language.as_str() {
+        "javascript" | "js" => ("main.js", "node"),
+        "python" | "py" => ("main.py", "python3"),
+        "bash" | "sh" => ("main.sh", "/bin/sh"),
+        other => return Err(CtlError::BadRequest(format!("unsupported language: {other}"))),
+    };
+
+    std::fs::write(source.path().join(filename), &req.code).map_err(CtlError::Io)?;
+
+    let timeout = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs);
+    let memory = req.memory_mb.unwrap_or(exec_cfg.default_memory_mb);
+
+    let run_env = vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())];
+    let config = jail_config(source.path(), output_dir.path(), memory, timeout, run_env);
+
+    let jail = agentjail::Jail::new(config)?;
+    let result = jail.run(cmd, &[&format!("/workspace/{filename}")]).await?;
+
+    Ok((StatusCode::CREATED, Json(output_to_response(result))))
+}
+
+/// Build a JailConfig with sensible defaults for API-driven execution.
+fn jail_config(
+    source: &std::path::Path,
+    output: &std::path::Path,
+    memory_mb: u64,
+    timeout_secs: u64,
+    env: Vec<(String, String)>,
+) -> agentjail::JailConfig {
+    let is_root = unsafe { libc::getuid() == 0 };
+    agentjail::JailConfig {
+        source: source.into(),
+        output: output.into(),
+        network: agentjail::Network::None,
+        seccomp: agentjail::SeccompLevel::Standard,
+        landlock: false,
+        memory_mb,
+        timeout_secs,
+        user_namespace: !is_root,
+        pid_namespace: true,
+        env,
+        ..Default::default()
+    }
 }
 
 // ---------- error conversion ----------

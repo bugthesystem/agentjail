@@ -44,9 +44,18 @@ pub struct Stack {
 }
 
 impl Stack {
+    /// Boot the full stack with exec enabled (for jail tests).
+    pub async fn boot_with_exec(initial_keys: &[&str]) -> Self {
+        Self::boot_inner(initial_keys, Some(agentjail_ctl::ExecConfig::default())).await
+    }
+
     /// Boot the full stack. `initial_keys` lists services to pre-seed with
     /// real credentials (e.g. `&["openai", "anthropic"]`).
     pub async fn boot(initial_keys: &[&str]) -> Self {
+        Self::boot_inner(initial_keys, None).await
+    }
+
+    async fn boot_inner(initial_keys: &[&str], exec: Option<agentjail_ctl::ExecConfig>) -> Self {
         let last = LastHeaders::default();
 
         // 1. Mock upstream that captures headers.
@@ -116,6 +125,7 @@ impl Stack {
                 keys: keys.clone(),
                 proxy_base_url: format!("http://{proxy_addr}"),
                 api_keys: vec![api_key.clone()],
+                exec,
             },
             Arc::new(InMemorySessionStore::new()),
             Arc::new(InMemoryCredentialStore::new()),

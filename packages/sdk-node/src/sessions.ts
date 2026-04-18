@@ -1,5 +1,5 @@
 import type { HttpClient } from "./http.js";
-import type { ServiceId, Session } from "./types.js";
+import type { ExecResult, ServiceId, Session } from "./types.js";
 
 /**
  * Sessions bundle a set of phantom tokens that can be handed to a sandbox.
@@ -42,6 +42,22 @@ export class Sessions {
     return this.http.request<Session>({
       method: "GET",
       path: `/v1/sessions/${encodeURIComponent(id)}`,
+    });
+  }
+
+  /** Execute a command inside this session's jail. */
+  async exec(
+    id: string,
+    params: { cmd: string; args?: string[]; timeoutSecs?: number; memoryMb?: number },
+  ): Promise<ExecResult> {
+    const body: Record<string, unknown> = { cmd: params.cmd };
+    if (params.args) body.args = params.args;
+    if (params.timeoutSecs !== undefined) body.timeout_secs = params.timeoutSecs;
+    if (params.memoryMb !== undefined) body.memory_mb = params.memoryMb;
+    return this.http.request<ExecResult>({
+      method: "POST",
+      path: `/v1/sessions/${encodeURIComponent(id)}/exec`,
+      body,
     });
   }
 

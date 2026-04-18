@@ -22,6 +22,10 @@ pub enum CtlError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    /// Jail execution failed.
+    #[error("jail: {0}")]
+    Jail(#[from] agentjail::JailError),
+
     /// Wraps phantom-layer error.
     #[error("phantom: {0}")]
     Phantom(#[from] agentjail_phantom::PhantomError),
@@ -43,7 +47,10 @@ impl CtlError {
             CtlError::NotFound(_) => StatusCode::NOT_FOUND,
             CtlError::Unauthorized => StatusCode::UNAUTHORIZED,
             CtlError::Conflict(_) => StatusCode::CONFLICT,
-            CtlError::Phantom(_) | CtlError::Io(_) | CtlError::Internal(_) => {
+            CtlError::Jail(_)
+            | CtlError::Phantom(_)
+            | CtlError::Io(_)
+            | CtlError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         }

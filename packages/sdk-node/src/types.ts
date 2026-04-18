@@ -52,3 +52,30 @@ export interface AuditList {
   rows: AuditRow[];
   total: number;
 }
+
+/** Result of executing a command in a session's jail. */
+export interface ExecResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  duration_ms: number;
+  timed_out: boolean;
+  oom_killed: boolean;
+  stats?: ResourceStats;
+}
+
+/** Jail resource usage statistics. */
+export interface ResourceStats {
+  memory_peak_bytes: number;
+  cpu_usage_usec: number;
+  io_read_bytes: number;
+  io_write_bytes: number;
+}
+
+/** Parameters for a one-shot run. */
+export interface RunRequest {
+  code: string;
+  language?: "javascript" | "python" | "bash";
+  timeoutSecs?: number;
+  memoryMb?: number;
+}

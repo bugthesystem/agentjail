@@ -221,6 +221,75 @@ describe("Sessions", () => {
     expect(seenMethod).toBe("DELETE");
     expect(seenUrl).toBe("http://api/v1/sessions/sess_abc");
   });
+
+  it("exec sends POST with cmd and args", async () => {
+    let seenUrl = "";
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url, init }) => {
+        seenUrl = url;
+        bodyText = init.body as string;
+        return json({
+          stdout: "hi\n",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 42,
+          timed_out: false,
+          oom_killed: false,
+        });
+      }),
+    });
+    const r = await aj.sessions.exec("sess_1", {
+      cmd: "echo",
+      args: ["hi"],
+      timeoutSecs: 10,
+    });
+    expect(seenUrl).toBe("http://api/v1/sessions/sess_1/exec");
+    expect(JSON.parse(bodyText)).toEqual({
+      cmd: "echo",
+      args: ["hi"],
+      timeout_secs: 10,
+    });
+    expect(r.stdout).toBe("hi\n");
+    expect(r.exit_code).toBe(0);
+  });
+});
+
+describe("Runs", () => {
+  it("create sends POST /v1/runs with code", async () => {
+    let seenUrl = "";
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url, init }) => {
+        seenUrl = url;
+        bodyText = init.body as string;
+        return json({
+          stdout: "hello\n",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 100,
+          timed_out: false,
+          oom_killed: false,
+        });
+      }),
+    });
+    const r = await aj.runs.create({
+      code: "console.log('hello')",
+      language: "javascript",
+      timeoutSecs: 30,
+    });
+    expect(seenUrl).toBe("http://api/v1/runs");
+    expect(JSON.parse(bodyText)).toEqual({
+      code: "console.log('hello')",
+      language: "javascript",
+      timeout_secs: 30,
+    });
+    expect(r.stdout).toBe("hello\n");
+  });
 });
 
 describe("Audit", () => {

@@ -202,3 +202,95 @@ async fn e2e_credential_lifecycle() {
 
     s.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// 7. Exec: run a command in a session's jail
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_exec_returns_stdout() {
+    let s = Stack::boot_with_exec(&["openai"]).await;
+
+    let session = s.create_session(&["openai"]).await;
+    let sid = session["id"].as_str().unwrap();
+
+    // Run echo inside a real jail
+    let http_resp = s.http.post(format!("{}/v1/sessions/{sid}/exec", s.ctl_base()))
+        .bearer_auth(&s.api_key)
+        .json(&json!({"cmd": "/bin/sh", "args": ["-c", "echo hello-from-jail"]}))
+        .send().await.unwrap();
+    let status = http_resp.status();
+    let body = http_resp.text().await.unwrap();
+    assert_eq!(status, 200, "exec failed: {body}");
+    let resp: Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(resp["exit_code"], 0, "stderr: {}", resp["stderr"]);
+    assert!(resp["stdout"].as_str().unwrap().contains("hello-from-jail"));
+    assert!(!resp["timed_out"].as_bool().unwrap());
+
+    s.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 8. Exec: session env is injected into jail
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_exec_injects_phantom_env() {
+    let s = Stack::boot_with_exec(&["openai"]).await;
+
+    let session = s.create_session(&["openai"]).await;
+    let sid = session["id"].as_str().unwrap();
+
+    // Print the phantom env var from inside the jail
+    let resp: Value = s.http.post(format!("{}/v1/sessions/{sid}/exec", s.ctl_base()))
+        .bearer_auth(&s.api_key)
+        .json(&json!({"cmd": "/bin/sh", "args": ["-c", "echo $OPENAI_API_KEY"]}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+
+    assert_eq!(resp["exit_code"], 0);
+    let stdout = resp["stdout"].as_str().unwrap();
+    assert!(stdout.trim().starts_with("phm_"), "jail should see phantom token, got: {stdout}");
+
+    s.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 9. Runs: one-shot code execution
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_run_executes_code() {
+    let s = Stack::boot_with_exec(&[]).await;
+
+    let resp: Value = s.http.post(format!("{}/v1/runs", s.ctl_base()))
+        .bearer_auth(&s.api_key)
+        .json(&json!({"code": "echo run-output", "language": "bash"}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+
+    assert_eq!(resp["exit_code"], 0);
+    assert!(resp["stdout"].as_str().unwrap().contains("run-output"));
+
+    s.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 10. Exec: timeout enforced
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_run_timeout() {
+    let s = Stack::boot_with_exec(&[]).await;
+
+    let resp: Value = s.http.post(format!("{}/v1/runs", s.ctl_base()))
+        .bearer_auth(&s.api_key)
+        .json(&json!({"code": "sleep 60", "language": "bash", "timeout_secs": 2}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+
+    assert!(resp["timed_out"].as_bool().unwrap(), "should have timed out");
+
+    s.shutdown().await;
+}

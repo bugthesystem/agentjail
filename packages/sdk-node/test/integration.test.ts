@@ -262,4 +262,57 @@ describe("SDK integration (real server)", () => {
     expect(audit.rows[0]).toHaveProperty("method");
     expect(audit.rows[0]).toHaveProperty("status");
   });
+
+  // --- Exec & Runs (require Linux, skip on macOS) ---
+
+  const IS_LINUX = process.platform === "linux";
+
+  it.skipIf(!IS_LINUX)("exec runs a command in a jail", async () => {
+    const session = await aj.sessions.create({ services: ["openai"] });
+    const result = await aj.sessions.exec(session.id, {
+      cmd: "/bin/sh",
+      args: ["-c", "echo hello-from-sdk"],
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(result.stdout).toContain("hello-from-sdk");
+    expect(result.timed_out).toBe(false);
+    expect(result.oom_killed).toBe(false);
+    expect(result.duration_ms).toBeGreaterThan(0);
+
+    await aj.sessions.close(session.id);
+  });
+
+  it.skipIf(!IS_LINUX)("exec injects phantom env into jail", async () => {
+    const session = await aj.sessions.create({ services: ["openai"] });
+    const result = await aj.sessions.exec(session.id, {
+      cmd: "/bin/sh",
+      args: ["-c", "echo $OPENAI_API_KEY"],
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^phm_/);
+
+    await aj.sessions.close(session.id);
+  });
+
+  it.skipIf(!IS_LINUX)("runs.create executes code", async () => {
+    const result = await aj.runs.create({
+      code: "echo run-from-sdk",
+      language: "bash",
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(result.stdout).toContain("run-from-sdk");
+  });
+
+  it.skipIf(!IS_LINUX)("runs.create respects timeout", async () => {
+    const result = await aj.runs.create({
+      code: "sleep 60",
+      language: "bash",
+      timeoutSecs: 2,
+    });
+
+    expect(result.timed_out).toBe(true);
+  });
 });

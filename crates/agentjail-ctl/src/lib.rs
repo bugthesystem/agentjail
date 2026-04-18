@@ -28,6 +28,7 @@
 //!     keys,
 //!     proxy_base_url: "http://10.0.0.1:8443".into(),
 //!     api_keys: vec![],
+//!     exec: None,
 //! });
 //! let router = ctl.router();
 //! let listener = tokio::net::TcpListener::bind("0.0.0.0:7000").await?;
@@ -41,6 +42,7 @@ mod audit;
 mod auth;
 mod credential;
 mod error;
+mod exec;
 mod routes;
 mod session;
 
@@ -56,6 +58,7 @@ pub use audit::{AuditRow, AuditStore, AuditStoreSink, InMemoryAuditStore};
 pub use auth::ApiKeys;
 pub use credential::{CredentialRecord, CredentialStore, InMemoryCredentialStore};
 pub use error::{CtlError, Result};
+pub use exec::ExecConfig;
 pub use session::{InMemorySessionStore, Session, SessionStore};
 
 /// Configuration for a [`ControlPlane`].
@@ -71,6 +74,9 @@ pub struct ControlPlaneConfig {
     /// API keys accepted by the control plane. Empty list disables auth
     /// (useful only for dev and tests).
     pub api_keys: Vec<String>,
+    /// Jail execution config. When set, enables `/v1/sessions/:id/exec`
+    /// and `/v1/runs`. When `None`, those endpoints return 501.
+    pub exec: Option<ExecConfig>,
 }
 
 /// Assembled control plane. Call [`Self::router`] for the axum router.
@@ -109,6 +115,7 @@ impl ControlPlane {
             credentials,
             audit,
             proxy_base_url,
+            exec_config: config.exec,
         };
         Self {
             state,
@@ -137,6 +144,8 @@ impl ControlPlane {
                 "/v1/sessions/:id",
                 get(routes::get_session).delete(routes::delete_session),
             )
+            .route("/v1/sessions/:id/exec", post(routes::exec_in_session))
+            .route("/v1/runs", post(routes::create_run))
             .route("/v1/audit", get(routes::list_audit))
             .layer(middleware::from_fn_with_state(
                 self.api_keys.clone(),

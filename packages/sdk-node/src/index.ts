@@ -23,6 +23,7 @@
 import { Audit } from "./audit.js";
 import { Credentials } from "./credentials.js";
 import { HttpClient, type HttpConfig } from "./http.js";
+import { Runs } from "./runs.js";
 import { Sessions } from "./sessions.js";
 
 export { AgentjailError } from "./http.js";
@@ -30,6 +31,9 @@ export type {
   AuditList,
   AuditRow,
   CredentialRecord,
+  ExecResult,
+  ResourceStats,
+  RunRequest,
   ServiceId,
   Session,
 } from "./types.js";
@@ -38,8 +42,10 @@ export type {
 export class Agentjail {
   /** Credentials sub-API. */
   public readonly credentials: Credentials;
-  /** Sessions sub-API. */
+  /** Sessions sub-API (create, exec, close). */
   public readonly sessions: Sessions;
+  /** One-shot code execution. */
+  public readonly runs: Runs;
   /** Audit sub-API. */
   public readonly audit: Audit;
 
@@ -47,6 +53,7 @@ export class Agentjail {
     const http = new HttpClient(config);
     this.credentials = new Credentials(http);
     this.sessions = new Sessions(http);
+    this.runs = new Runs(http);
     this.audit = new Audit(http);
   }
 }
