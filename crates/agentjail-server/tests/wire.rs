@@ -1,176 +1,204 @@
-//! End-to-end wire test: boot the same stack as `main.rs` in-process,
-//! create a session via the control plane, and hit the phantom proxy with
-//! the returned token. Proves that ctl → phantom → upstream wiring works.
+//! End-to-end wire tests: boot ctl + phantom proxy + mock upstream in-process
+//! and drive the full API contract. Proves the phantom-token invariant from
+//! every angle: happy path, revocation, multi-service, isolation, audit.
 
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+mod harness;
 
-use agentjail_ctl::{
-    AuditStoreSink, ControlPlane, ControlPlaneConfig, InMemoryAuditStore, InMemoryCredentialStore,
-    InMemorySessionStore,
-};
-use agentjail_phantom::providers::OpenAiProvider;
-use agentjail_phantom::{InMemoryKeyStore, InMemoryTokenStore, PhantomProxy};
-use axum::Router;
-use axum::body::Body;
-use axum::extract::State;
-use axum::http::{HeaderMap, Request, StatusCode};
-use axum::response::IntoResponse;
-use axum::routing::any;
+use harness::Stack;
 use serde_json::{Value, json};
-use tokio::net::TcpListener;
-use tokio::sync::oneshot;
 
-#[derive(Default, Clone)]
-struct Last(Arc<Mutex<Option<HeaderMap>>>);
-
-async fn echo(State(last): State<Last>, req: Request<Body>) -> impl IntoResponse {
-    *last.0.lock().unwrap() = Some(req.headers().clone());
-    (
-        StatusCode::OK,
-        [("content-type", "application/json")],
-        r#"{"ok":true}"#,
-    )
-}
+// ---------------------------------------------------------------------------
+// 1. Happy path: phantom → real key swap, audit recorded
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn server_stack_forwards_phantom_to_real_upstream() {
-    // 1. Mock upstream.
-    let last = Last::default();
-    let app = Router::new()
-        .route("/v1/chat/completions", any(echo))
-        .with_state(last.clone());
-    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let upstream_addr = upstream.local_addr().unwrap();
-    let (upstream_stop, upstream_stop_rx) = oneshot::channel::<()>();
-    let upstream_task = tokio::spawn(async move {
-        axum::serve(upstream, app)
-            .with_graceful_shutdown(async move {
-                let _ = upstream_stop_rx.await;
-            })
-            .await
-            .unwrap();
-    });
+async fn e2e_openai_phantom_swaps_to_real_key() {
+    let s = Stack::boot(&["openai"]).await;
 
-    // 2. Shared stores.
-    let tokens = Arc::new(InMemoryTokenStore::new());
-    let keys = Arc::new(InMemoryKeyStore::new());
-    keys.set(
-        agentjail_phantom::ServiceId::OpenAi,
-        agentjail_phantom::SecretString::new("sk-real"),
-    );
-    let audit = Arc::new(InMemoryAuditStore::new());
+    let session = s.create_session(&["openai"]).await;
+    let phantom = session["env"]["OPENAI_API_KEY"].as_str().unwrap();
+    let base = session["env"]["OPENAI_BASE_URL"].as_str().unwrap();
+    assert!(phantom.starts_with("phm_"));
 
-    // 3. Phantom proxy (points at the mock upstream).
-    let proxy = PhantomProxy::builder()
-        .provider(Arc::new(OpenAiProvider::with_base(format!(
-            "http://{upstream_addr}"
-        ))))
-        .unwrap()
-        .tokens(tokens.clone())
-        .keys(keys.clone())
-        .audit(Arc::new(AuditStoreSink::new(audit.clone())))
-        .build()
-        .unwrap();
-    let (proxy_addr_tx, proxy_addr_rx) = oneshot::channel::<SocketAddr>();
-    let (proxy_stop, proxy_stop_rx) = oneshot::channel::<()>();
-    let proxy_task = tokio::spawn({
-        let p = proxy.clone();
-        async move {
-            p.serve_with_bound_addr("127.0.0.1:0".parse().unwrap(), proxy_addr_tx, async move {
-                let _ = proxy_stop_rx.await;
-            })
-            .await
-            .unwrap();
-        }
-    });
-    let proxy_addr = proxy_addr_rx.await.unwrap();
-
-    // 4. Control plane, same stores.
-    let ctl = ControlPlane::with_stores(
-        ControlPlaneConfig {
-            tokens: tokens.clone(),
-            keys: keys.clone(),
-            proxy_base_url: format!("http://{proxy_addr}"),
-            api_keys: vec!["aj_k".into()],
-        },
-        Arc::new(InMemorySessionStore::new()),
-        Arc::new(InMemoryCredentialStore::new()),
-        audit.clone(),
-    );
-    let ctl_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let ctl_addr = ctl_listener.local_addr().unwrap();
-    let (ctl_stop, ctl_stop_rx) = oneshot::channel::<()>();
-    let router = ctl.router();
-    let ctl_task = tokio::spawn(async move {
-        axum::serve(ctl_listener, router)
-            .with_graceful_shutdown(async move {
-                let _ = ctl_stop_rx.await;
-            })
-            .await
-            .unwrap();
-    });
-
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    // 5. Create a session via the control plane.
-    let session: Value = http
-        .post(format!("http://{ctl_addr}/v1/sessions"))
-        .bearer_auth("aj_k")
-        .json(&json!({ "services": ["openai"] }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let env = session["env"].as_object().unwrap();
-    let phantom = env["OPENAI_API_KEY"].as_str().unwrap();
-    let base = env["OPENAI_BASE_URL"].as_str().unwrap();
-    assert!(phantom.starts_with("phm_"), "got {phantom}");
-    // The SDK / raw consumer calls <base>/chat/completions.
-    let url = format!("{base}/chat/completions");
-
-    // 6. Hit the proxy like a sandbox would.
-    let resp = http
-        .post(url)
-        .bearer_auth(phantom)
-        .json(&json!({"model": "x"}))
-        .send()
-        .await
-        .unwrap();
+    let resp = s.post_with_bearer(&format!("{base}/chat/completions"), phantom, json!({"model":"x"})).await;
     assert_eq!(resp.status(), 200);
 
-    // 7. Upstream saw the real key, not the phantom.
-    let h = last.0.lock().unwrap().clone().expect("upstream hit");
-    let auth = h.get("authorization").unwrap().to_str().unwrap();
-    assert_eq!(auth, "Bearer sk-real");
-    assert!(!auth.contains("phm_"));
+    // Upstream received real key, never the phantom.
+    let upstream_auth = s.last_upstream_auth();
+    assert_eq!(upstream_auth, "Bearer sk-real-openai");
+    assert!(!upstream_auth.contains("phm_"));
 
-    // 8. The control plane's audit feed recorded the request.
-    let audit_resp: Value = http
-        .get(format!("http://{ctl_addr}/v1/audit"))
-        .bearer_auth("aj_k")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(audit_resp["total"].as_u64().unwrap(), 1);
-    let rows = audit_resp["rows"].as_array().unwrap();
-    assert_eq!(rows[0]["service"].as_str().unwrap(), "openai");
-    assert_eq!(rows[0]["status"].as_u64().unwrap(), 200);
+    // Audit has one entry.
+    let audit = s.get_audit().await;
+    assert_eq!(audit["total"].as_u64().unwrap(), 1);
+    assert_eq!(audit["rows"][0]["service"], "openai");
 
-    // Cleanup.
-    let _ = ctl_stop.send(());
-    let _ = proxy_stop.send(());
-    let _ = upstream_stop.send(());
-    let _ = ctl_task.await;
-    let _ = proxy_task.await;
-    let _ = upstream_task.await;
+    s.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 2. Session deletion revokes phantom tokens instantly
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_delete_session_revokes_tokens() {
+    let s = Stack::boot(&["openai"]).await;
+
+    let session = s.create_session(&["openai"]).await;
+    let sid = session["id"].as_str().unwrap();
+    let phantom = session["env"]["OPENAI_API_KEY"].as_str().unwrap();
+    let base = session["env"]["OPENAI_BASE_URL"].as_str().unwrap();
+    let url = format!("{base}/chat/completions");
+
+    // Works before deletion.
+    let resp = s.post_with_bearer(&url, phantom, json!({"model":"x"})).await;
+    assert_eq!(resp.status(), 200);
+
+    // Delete the session.
+    let del = s.http.delete(format!("{}/v1/sessions/{}", s.ctl_base(), sid))
+        .bearer_auth(&s.api_key)
+        .send().await.unwrap();
+    assert_eq!(del.status(), 204);
+
+    // Phantom token is now dead.
+    let resp = s.post_with_bearer(&url, phantom, json!({"model":"x"})).await;
+    assert_eq!(resp.status(), 401, "revoked token should be rejected");
+
+    s.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 3. Multi-service session: openai + anthropic
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_multi_service_session() {
+    let s = Stack::boot(&["openai", "anthropic"]).await;
+
+    let session = s.create_session(&["openai", "anthropic"]).await;
+    let env = session["env"].as_object().unwrap();
+
+    // Both services have phantom tokens.
+    let oai_phm = env["OPENAI_API_KEY"].as_str().unwrap();
+    let ant_phm = env["ANTHROPIC_API_KEY"].as_str().unwrap();
+    assert!(oai_phm.starts_with("phm_"));
+    assert!(ant_phm.starts_with("phm_"));
+    assert_ne!(oai_phm, ant_phm, "different tokens per service");
+
+    // OpenAI call works.
+    let oai_base = env["OPENAI_BASE_URL"].as_str().unwrap();
+    let resp = s.post_with_bearer(
+        &format!("{oai_base}/chat/completions"), oai_phm, json!({"model":"x"}),
+    ).await;
+    assert_eq!(resp.status(), 200);
+
+    // Anthropic call works.
+    let ant_base = env["ANTHROPIC_BASE_URL"].as_str().unwrap();
+    let resp = s.post_with_key(
+        &format!("{ant_base}/messages"), ant_phm, json!({"model":"x"}),
+    ).await;
+    assert_eq!(resp.status(), 200);
+
+    // Cross-service: anthropic token on openai path → 403.
+    let resp = s.post_with_bearer(
+        &format!("{oai_base}/chat/completions"), ant_phm, json!({"model":"x"}),
+    ).await;
+    assert_eq!(resp.status(), 403, "cross-service token should be rejected");
+
+    // Audit has 2 successful entries.
+    let audit = s.get_audit().await;
+    assert_eq!(audit["total"].as_u64().unwrap(), 3); // 2 ok + 1 rejected (403 still logged)
+
+    s.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 4. Unknown / garbage token → 401
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_garbage_token_rejected() {
+    let s = Stack::boot(&["openai"]).await;
+    let _ = s.create_session(&["openai"]).await;
+
+    let resp = s.post_with_bearer(
+        &format!("{}/v1/openai/chat/completions", s.proxy_base()),
+        "phm_0000000000000000000000000000000000000000000000000000000000000000",
+        json!({"model":"x"}),
+    ).await;
+    assert_eq!(resp.status(), 401);
+
+    s.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 5. Two sessions are isolated — tokens don't cross
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_sessions_are_isolated() {
+    let s = Stack::boot(&["openai"]).await;
+
+    let s1 = s.create_session(&["openai"]).await;
+    let s2 = s.create_session(&["openai"]).await;
+
+    let phm1 = s1["env"]["OPENAI_API_KEY"].as_str().unwrap();
+    let phm2 = s2["env"]["OPENAI_API_KEY"].as_str().unwrap();
+    assert_ne!(phm1, phm2, "each session gets a unique token");
+
+    let base = s1["env"]["OPENAI_BASE_URL"].as_str().unwrap();
+    let url = format!("{base}/chat/completions");
+
+    // Both work.
+    assert_eq!(s.post_with_bearer(&url, phm1, json!({})).await.status(), 200);
+    assert_eq!(s.post_with_bearer(&url, phm2, json!({})).await.status(), 200);
+
+    // Delete session 1.
+    let sid1 = s1["id"].as_str().unwrap();
+    s.http.delete(format!("{}/v1/sessions/{sid1}", s.ctl_base()))
+        .bearer_auth(&s.api_key)
+        .send().await.unwrap();
+
+    // Session 1 token dead, session 2 still alive.
+    assert_eq!(s.post_with_bearer(&url, phm1, json!({})).await.status(), 401);
+    assert_eq!(s.post_with_bearer(&url, phm2, json!({})).await.status(), 200);
+
+    s.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 6. Credential lifecycle: add → use → delete → session fails
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn e2e_credential_lifecycle() {
+    let s = Stack::boot(&[]).await; // no initial keys
+
+    // No credential → session creation fails.
+    let resp = s.http.post(format!("{}/v1/sessions", s.ctl_base()))
+        .bearer_auth(&s.api_key)
+        .json(&json!({"services": ["openai"]}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 400, "no credential should fail session create");
+
+    // Add credential via ctl.
+    let resp = s.http.post(format!("{}/v1/credentials", s.ctl_base()))
+        .bearer_auth(&s.api_key)
+        .json(&json!({"service": "openai", "secret": "sk-added"}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Now session works.
+    let session = s.create_session(&["openai"]).await;
+    let phantom = session["env"]["OPENAI_API_KEY"].as_str().unwrap();
+    let base = session["env"]["OPENAI_BASE_URL"].as_str().unwrap();
+    let resp = s.post_with_bearer(
+        &format!("{base}/chat/completions"), phantom, json!({}),
+    ).await;
+    assert_eq!(resp.status(), 200);
+
+    // Upstream got the key we added.
+    assert_eq!(s.last_upstream_auth(), "Bearer sk-added");
+
+    s.shutdown().await;
 }

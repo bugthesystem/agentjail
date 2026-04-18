@@ -204,36 +204,46 @@ impl Drop for Cgroup {
 /// Find the cgroup base and ensure controllers are enabled.
 ///
 /// Cgroup v2 "no internal process" rule: controllers can only be enabled
-/// on a cgroup that has no processes. If we're in root (`0::/`), we move
-/// all processes into `agentjail-init` before enabling controllers.
-/// This is done every time because new threads may appear between calls.
+/// on a cgroup that has no processes. On first call, we migrate all
+/// processes into `agentjail-init` and enable controllers. Subsequent
+/// calls return the cached base path.
 fn ensure_cgroup_base() -> Result<PathBuf> {
+    use std::sync::OnceLock;
+    static BASE: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
+
+    let result = BASE.get_or_init(|| init_cgroup_base().map_err(|e| e.to_string()));
+    match result {
+        Ok(p) => Ok(p.clone()),
+        Err(e) => Err(JailError::Cgroup(std::io::Error::other(e.clone()))),
+    }
+}
+
+fn init_cgroup_base() -> Result<PathBuf> {
     let info = fs::read_to_string("/proc/self/cgroup").map_err(JailError::Cgroup)?;
     let our_path = info.lines()
         .find_map(|l| l.strip_prefix("0::"))
         .unwrap_or("/");
 
-    // Find the outermost cgroup we control (before any agentjail-init migration)
     let base = if our_path == "/" || our_path == "/agentjail-init" {
         PathBuf::from(CGROUP_ROOT)
     } else {
         PathBuf::from(CGROUP_ROOT).join(our_path.trim_start_matches('/'))
     };
 
-    // Ensure controllers are enabled. Move all processes out of the base
-    // cgroup to satisfy cgroup v2's "no internal process" constraint.
+    // Enable controllers. If we can't, drain root cgroup first.
     let subtree_ctl = base.join("cgroup.subtree_control");
     if fs::write(&subtree_ctl, "+memory").is_err() {
         let init_cg = base.join("agentjail-init");
         let _ = fs::create_dir(&init_cg);
-        // Drain-and-retry: other tests may fork between drain and enable.
-        for _ in 0..10 {
+        // Move ALL processes out of root. Retry for stragglers.
+        for _ in 0..20 {
             if let Ok(procs) = fs::read_to_string(base.join("cgroup.procs")) {
                 for pid in procs.lines().filter(|l| !l.is_empty()) {
                     let _ = fs::write(init_cg.join("cgroup.procs"), pid);
                 }
             }
             if fs::write(&subtree_ctl, "+memory").is_ok() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
     for ctrl in ["+cpu", "+pids", "+io"] {
