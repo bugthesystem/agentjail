@@ -89,7 +89,7 @@ async fn run_jail(
             ..Default::default()
         },
         _ => {
-            eprintln!("Unknown preset: {}. Using 'build'", preset);
+            eprintln!("Unknown preset: {preset}. Using 'build'");
             preset_build(&source, &output)
         }
     };

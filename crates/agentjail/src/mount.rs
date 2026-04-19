@@ -50,7 +50,7 @@ fn do_bind_mount(src: &Path, dst: &Path, access: Access, nodev: bool) -> Result<
 pub fn mount_tmpfs(dst: &Path, size_mb: u64) -> Result<()> {
     fs::create_dir_all(dst).map_err(JailError::Io)?;
 
-    let options = format!("size={}m,mode=1777", size_mb);
+    let options = format!("size={size_mb}m,mode=1777");
     let flags = MountFlags::NOSUID | MountFlags::NODEV;
 
     mount("tmpfs", dst, "tmpfs", flags, &options).map_err(JailError::Mount)?;
@@ -62,7 +62,7 @@ pub fn mount_tmpfs(dst: &Path, size_mb: u64) -> Result<()> {
 pub fn mount_tmpfs_noexec(dst: &Path, size_mb: u64) -> Result<()> {
     fs::create_dir_all(dst).map_err(JailError::Io)?;
 
-    let options = format!("size={}m,mode=1777", size_mb);
+    let options = format!("size={size_mb}m,mode=1777");
     let flags = MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
 
     mount("tmpfs", dst, "tmpfs", flags, &options).map_err(JailError::Mount)?;
@@ -116,7 +116,7 @@ pub fn setup_root(new_root: &Path, source: &Path, output: &Path) -> Result<()> {
     for dir in &system_dirs {
         let src = Path::new(dir);
         if !src.exists() {
-            eprintln!("warning: system directory {} does not exist, skipping mount", dir);
+            eprintln!("warning: system directory {dir} does not exist, skipping mount");
             continue;
         }
         let dst = new_root.join(dir.trim_start_matches('/'));

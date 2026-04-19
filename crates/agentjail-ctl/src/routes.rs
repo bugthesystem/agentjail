@@ -29,12 +29,24 @@ pub(crate) struct AppState {
     pub(crate) audit: Arc<dyn AuditStore>,
     pub(crate) proxy_base_url: String,
     pub(crate) exec_config: Option<crate::exec::ExecConfig>,
+    pub(crate) exec_semaphore: Arc<tokio::sync::Semaphore>,
+    pub(crate) exec_metrics: Arc<crate::exec::ExecMetrics>,
 }
 
 // ---------- health ----------
 
 pub(crate) async fn healthz() -> &'static str {
     "ok"
+}
+
+/// `GET /v1/stats` — live metrics (public, no auth).
+pub(crate) async fn stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "active_execs": state.exec_metrics.active(),
+        "total_execs": state.exec_metrics.total(),
+        "sessions": state.sessions.list().await.len(),
+        "credentials": state.credentials.list().await.len(),
+    }))
 }
 
 // ---------- credentials ----------
@@ -367,22 +379,44 @@ pub(crate) async fn exec_in_session(
     let session = state.sessions.get(&id).await
         .ok_or_else(|| CtlError::NotFound(format!("session {id}")))?;
 
-    // Inject session's phantom env vars into the jail
+    // Enforce session expiry.
+    if let Some(exp) = session.expires_at {
+        if exp < OffsetDateTime::now_utc() {
+            return Err(CtlError::BadRequest("session expired".into()));
+        }
+    }
+
+    // Validate inputs.
+    let timeout = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs).clamp(1, 3600);
+    let memory = req.memory_mb.unwrap_or(exec_cfg.default_memory_mb).min(8192);
+
+    // Acquire exec permit (bounded concurrency).
+    let _permit = state.exec_semaphore.try_acquire()
+        .map_err(|_| CtlError::BadRequest("too many concurrent executions".into()))?;
+    let _guard = state.exec_metrics.start();
+
     let env: Vec<(String, String)> = std::iter::once(("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()))
         .chain(session.env.iter().map(|(k, v)| (k.clone(), v.clone())))
         .collect();
-
-    let timeout = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs);
-    let memory = req.memory_mb.unwrap_or(exec_cfg.default_memory_mb);
 
     let source = tempfile::tempdir().map_err(CtlError::Io)?;
     let output = tempfile::tempdir().map_err(CtlError::Io)?;
 
     let config = jail_config(source.path(), output.path(), memory, timeout, env);
-
     let jail = agentjail::Jail::new(config)?;
     let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
     let result = jail.run(&req.cmd, &args_refs).await?;
+
+    tracing::info!(
+        session_id = %id,
+        cmd = %req.cmd,
+        exit_code = result.exit_code,
+        duration_ms = result.duration.as_millis() as u64,
+        timed_out = result.timed_out,
+        oom_killed = result.oom_killed,
+        memory_peak = result.stats.as_ref().map(|s| s.memory_peak_bytes).unwrap_or(0),
+        "exec completed"
+    );
 
     Ok(Json(output_to_response(result)))
 }
@@ -394,6 +428,17 @@ pub(crate) async fn create_run(
 ) -> Result<(StatusCode, Json<ExecResponse>)> {
     let exec_cfg = state.exec_config.as_ref()
         .ok_or_else(|| CtlError::Internal("exec not enabled".into()))?;
+
+    // Validate.
+    if req.code.len() > 1024 * 1024 {
+        return Err(CtlError::BadRequest("code exceeds 1 MB".into()));
+    }
+    let timeout = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs).clamp(1, 3600);
+    let memory = req.memory_mb.unwrap_or(exec_cfg.default_memory_mb).min(8192);
+
+    let _permit = state.exec_semaphore.try_acquire()
+        .map_err(|_| CtlError::BadRequest("too many concurrent executions".into()))?;
+    let _guard = state.exec_metrics.start();
 
     let source = tempfile::tempdir().map_err(CtlError::Io)?;
     let output_dir = tempfile::tempdir().map_err(CtlError::Io)?;
@@ -407,14 +452,19 @@ pub(crate) async fn create_run(
 
     std::fs::write(source.path().join(filename), &req.code).map_err(CtlError::Io)?;
 
-    let timeout = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs);
-    let memory = req.memory_mb.unwrap_or(exec_cfg.default_memory_mb);
-
     let run_env = vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())];
     let config = jail_config(source.path(), output_dir.path(), memory, timeout, run_env);
 
     let jail = agentjail::Jail::new(config)?;
     let result = jail.run(cmd, &[&format!("/workspace/{filename}")]).await?;
+
+    tracing::info!(
+        language = %req.language,
+        exit_code = result.exit_code,
+        duration_ms = result.duration.as_millis() as u64,
+        timed_out = result.timed_out,
+        "run completed"
+    );
 
     Ok((StatusCode::CREATED, Json(output_to_response(result))))
 }

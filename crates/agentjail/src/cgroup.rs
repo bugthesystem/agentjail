@@ -19,7 +19,7 @@ impl Cgroup {
     pub fn create(name: &str) -> Result<Self> {
         let base = ensure_cgroup_base()?;
 
-        let path = base.join(format!("agentjail-{}", name));
+        let path = base.join(format!("agentjail-{name}"));
         if !path.exists() {
             fs::create_dir(&path).map_err(JailError::Cgroup)?;
         }
@@ -38,7 +38,7 @@ impl Cgroup {
         // quota in microseconds, period typically 100000 (100ms)
         let period: u64 = 100_000;
         let quota = (period * percent) / 100;
-        let value = format!("{} {}", quota, period);
+        let value = format!("{quota} {period}");
 
         fs::write(self.path.join("cpu.max"), value).map_err(JailError::Cgroup)
     }
@@ -126,7 +126,7 @@ impl Cgroup {
     /// Set I/O bandwidth limits (bytes per second).
     pub fn set_io_limit(&self, device: &str, read_bps: u64, write_bps: u64) -> Result<()> {
         let dev_id = get_device_id(device)?;
-        let value = format!("{} rbps={} wbps={}", dev_id, read_bps, write_bps);
+        let value = format!("{dev_id} rbps={read_bps} wbps={write_bps}");
         fs::write(self.path.join("io.max"), value).map_err(JailError::Cgroup)
     }
 
@@ -172,7 +172,7 @@ fn get_device_id(path: &str) -> Result<String> {
     let major = libc::major(dev);
     let minor = libc::minor(dev);
 
-    Ok(format!("{}:{}", major, minor))
+    Ok(format!("{major}:{minor}"))
 }
 
 impl Drop for Cgroup {

@@ -2,7 +2,7 @@
 
 mod common;
 
-use agentjail::{Jail, JailConfig, SeccompLevel};
+use agentjail::{Jail, JailConfig};
 use std::fs;
 use std::path::PathBuf;
 
@@ -83,8 +83,8 @@ echo "=== MALICIOUS SCRIPT DONE ==="
     let stdout = String::from_utf8_lossy(&result.stdout);
     let stderr = String::from_utf8_lossy(&result.stderr);
 
-    println!("STDOUT:\n{}", stdout);
-    println!("\nSTDERR:\n{}", stderr);
+    println!("STDOUT:\n{stdout}");
+    println!("\nSTDERR:\n{stderr}");
     println!("\nExit code: {}", result.exit_code);
     println!("Duration: {:?}", result.duration);
 
@@ -104,8 +104,8 @@ echo "=== MALICIOUS SCRIPT DONE ==="
 
     // Count blocked attacks
     let blocked_count = stdout.matches("[BLOCKED]").count();
-    println!("\nBlocked {} attack attempts", blocked_count);
-    assert!(blocked_count >= 4, "Should block most attack attempts, got {}", blocked_count);
+    println!("\nBlocked {blocked_count} attack attempts");
+    assert!(blocked_count >= 4, "Should block most attack attempts, got {blocked_count}");
 
     let _ = fs::remove_dir_all(&source);
     let _ = fs::remove_dir_all(&output);
@@ -142,7 +142,7 @@ echo "Build complete!"
     let result = jail.run("/bin/sh", &["/workspace/build.sh"]).await.unwrap();
 
     let stdout = String::from_utf8_lossy(&result.stdout);
-    println!("Build output:\n{}", stdout);
+    println!("Build output:\n{stdout}");
 
     assert_eq!(result.exit_code, 0, "Build should succeed");
     assert!(stdout.contains("Build complete!"));

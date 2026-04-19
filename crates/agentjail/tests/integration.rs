@@ -5,7 +5,7 @@
 
 mod common;
 
-use agentjail::{Jail, JailConfig, SeccompLevel};
+use agentjail::{Jail, JailConfig};
 use std::fs;
 use std::path::PathBuf;
 
@@ -137,7 +137,7 @@ async fn test_network_blocked() {
     let output_str = String::from_utf8_lossy(&result.stdout);
     // In a container without network namespace isolated, ping might work
     // but that's OK - the network namespace is separately testable
-    println!("Network test output: {}", output_str);
+    println!("Network test output: {output_str}");
 
     cleanup_test_dirs(&source, &output);
 }
@@ -158,8 +158,7 @@ async fn test_env_isolation() {
     // Environment should be minimal (we pass empty env)
     assert!(
         env_count < 10,
-        "Should have minimal environment, got {}",
-        env_count
+        "Should have minimal environment, got {env_count}"
     );
 
     cleanup_test_dirs(&source, &output);
@@ -185,8 +184,7 @@ async fn test_workspace_readonly() {
     let stdout = String::from_utf8_lossy(&result.stdout);
     assert!(
         stdout.contains("WRITE_BLOCKED") || stdout.contains("Read-only"),
-        "Workspace should be read-only, got: {}",
-        stdout
+        "Workspace should be read-only, got: {stdout}"
     );
 
     cleanup_test_dirs(&source, &output);
@@ -213,8 +211,7 @@ async fn test_pid_namespace() {
     // In PID namespace, the shell should be PID 1
     assert!(
         stdout.contains("PID=1"),
-        "Process should see itself as PID 1, got: {}",
-        stdout
+        "Process should see itself as PID 1, got: {stdout}"
     );
 
     cleanup_test_dirs(&source, &output);

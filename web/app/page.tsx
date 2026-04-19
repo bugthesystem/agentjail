@@ -5,9 +5,13 @@ import { PhantomAuditTable } from "@/components/PhantomAuditTable";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/Card";
 
 export default async function DashboardPage() {
-  const [sessions, credentials, audit] = await Promise.all([
-    api.sessions.list().catch(() => []),
-    api.credentials.list().catch(() => []),
+  const [stats, audit] = await Promise.all([
+    api.stats().catch(() => ({
+      active_execs: 0,
+      total_execs: 0,
+      sessions: 0,
+      credentials: 0,
+    })),
     api.audit.recent(20).catch(() => ({ rows: [], total: 0 })),
   ]);
 
@@ -19,14 +23,19 @@ export default async function DashboardPage() {
         title="Dashboard"
         subtitle="Live state of the control plane."
       />
-      <div className="grid grid-cols-4 gap-3">
-        <MetricTile label="Sessions" value={sessions.length} />
-        <MetricTile label="Credentials" value={credentials.length} />
-        <MetricTile label="Proxy requests" value={audit.total} />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <MetricTile
-          label="Rejected (recent)"
-          value={rejectedCount}
-          hint={rejectedCount > 0 ? "inspect on /audit" : "none"}
+          label="Active execs"
+          value={stats.active_execs}
+          hint={stats.active_execs > 0 ? "jails running now" : "idle"}
+        />
+        <MetricTile label="Total execs" value={stats.total_execs} />
+        <MetricTile label="Sessions" value={stats.sessions} />
+        <MetricTile label="Credentials" value={stats.credentials} />
+        <MetricTile
+          label="Proxy requests"
+          value={audit.total}
+          hint={rejectedCount > 0 ? `${rejectedCount} rejected` : undefined}
         />
       </div>
       <Card className="mt-8">

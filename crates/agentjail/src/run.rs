@@ -155,7 +155,7 @@ impl Jail {
                 read_bps,
                 write_bps,
             ) {
-                eprintln!("warning: I/O limits not applied: {}", e);
+                eprintln!("warning: I/O limits not applied: {e}");
             }
         }
 
@@ -222,7 +222,7 @@ impl Jail {
                     drop(barrier_pipe);
 
                     if let Err(e) = exec::setup_child(&config, &gpu_resources, &cmd, &args, child_sync_fd) {
-                        eprintln!("jail setup failed: {}", e);
+                        eprintln!("jail setup failed: {e}");
                         libc::_exit(127);
                     }
                     unreachable!()
@@ -245,7 +245,7 @@ impl Jail {
             && let Some(pid) = child_pid.to_rustix()
                 && let Err(e) = write_uid_gid_map(pid) {
                     if rustix::process::getuid().is_root() {
-                        eprintln!("warning: uid/gid map failed (running as root): {}", e);
+                        eprintln!("warning: uid/gid map failed (running as root): {e}");
                     } else {
                         return Err(e);
                     }
@@ -278,8 +278,8 @@ impl Jail {
 
             let id = NEXT_VETH_ID.fetch_add(1, Ordering::Relaxed);
             let (host_ip, _jail_ip) = veth_addrs(id);
-            let host_if = format!("aj-h{}", id);
-            let jail_if = format!("aj-j{}", id);
+            let host_if = format!("aj-h{id}");
+            let jail_if = format!("aj-j{id}");
 
             // Create veth pair, move jail end into child netns, configure host end
             netlink::create_veth_pair(&host_if, &jail_if)?;
@@ -758,14 +758,14 @@ fn spawn_allowlist_proxy(
 
         rt.block_on(async {
             if let Err(e) = proxy::run_proxy(config, tx, shutdown_rx).await {
-                eprintln!("proxy error: {}", e);
+                eprintln!("proxy error: {e}");
             }
         });
     });
 
     match rx.recv() {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => eprintln!("proxy bind failed: {}", e),
+        Ok(Err(e)) => eprintln!("proxy bind failed: {e}"),
         Err(_) => eprintln!("proxy thread died before signaling readiness"),
     }
 
@@ -774,7 +774,7 @@ fn spawn_allowlist_proxy(
 
 /// Proxy environment variables for the jailed process.
 pub(crate) fn proxy_env_vars(host_ip: Ipv4Addr) -> Vec<(String, String)> {
-    let url = format!("http://{}:{}", host_ip, PROXY_PORT);
+    let url = format!("http://{host_ip}:{PROXY_PORT}");
     vec![
         ("HTTP_PROXY".into(), url.clone()),
         ("HTTPS_PROXY".into(), url.clone()),

@@ -7,7 +7,7 @@
 
 mod common;
 
-use agentjail::{GpuConfig, Jail, JailConfig, Network, SeccompLevel};
+use agentjail::{GpuConfig, Jail, JailConfig};
 use std::fs;
 use std::path::PathBuf;
 
@@ -43,8 +43,7 @@ async fn test_gpu_disabled_no_nvidia_devices() {
 
     assert!(
         stdout.contains("GPU_HIDDEN"),
-        "GPU devices should not be visible when disabled, got: {}",
-        stdout
+        "GPU devices should not be visible when disabled, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -71,8 +70,7 @@ async fn test_gpu_enabled_no_hardware_returns_error() {
             let msg = e.to_string();
             assert!(
                 msg.contains("NVIDIA") || msg.contains("nvidiactl"),
-                "Error should mention NVIDIA, got: {}",
-                msg
+                "Error should mention NVIDIA, got: {msg}"
             );
         }
     }
@@ -231,8 +229,7 @@ async fn test_gpu_device_filter_gpu0() {
 
     assert!(
         stdout.contains("GPU0_OK"),
-        "GPU 0 should be visible, got: {}",
-        stdout
+        "GPU 0 should be visible, got: {stdout}"
     );
 
     cleanup(&src, &out);

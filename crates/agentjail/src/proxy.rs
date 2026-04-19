@@ -30,7 +30,7 @@ impl DomainPattern {
         let lower = pattern.to_lowercase();
         if let Some(base) = lower.strip_prefix("*.") {
             DomainPattern::Wildcard {
-                suffix: format!(".{}", base),
+                suffix: format!(".{base}"),
                 base: base.to_string(),
             }
         } else {
@@ -101,7 +101,7 @@ pub async fn run_proxy(
                 let allowlist = allowlist.clone();
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(stream, &allowlist).await {
-                        eprintln!("proxy error: {}", e);
+                        eprintln!("proxy error: {e}");
                     }
                 });
             }
@@ -148,11 +148,11 @@ async fn handle_connection(
         }
 
         // Connect to target (DNS resolved here).
-        let addr = format!("{}:{}", host, port);
+        let addr = format!("{host}:{port}");
         let stream = match TcpStream::connect(&addr).await {
             Ok(s) => s,
             Err(e) => {
-                let msg = format!("HTTP/1.1 502 Bad Gateway\r\n\r\n{}", e);
+                let msg = format!("HTTP/1.1 502 Bad Gateway\r\n\r\n{e}");
                 writer.write_all(msg.as_bytes()).await?;
                 return Ok(());
             }
@@ -297,10 +297,10 @@ mod tests {
 
     /// Helper: send a CONNECT request through the proxy and return the response status line.
     async fn proxy_connect(port: u16, target: &str) -> String {
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
             .await
             .expect("connect to proxy");
-        let request = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, target);
+        let request = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n");
         stream
             .write_all(request.as_bytes())
             .await
@@ -371,7 +371,7 @@ mod tests {
         });
 
         // Send a GET instead of CONNECT
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
             .await
             .unwrap();
         stream

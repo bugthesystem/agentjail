@@ -63,11 +63,10 @@ async fn test_no_zombie_after_drop() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Check /proc/<pid>/status — should not exist (no zombie).
-    let proc_path = format!("/proc/{}/status", pid);
+    let proc_path = format!("/proc/{pid}/status");
     assert!(
         !std::path::Path::new(&proc_path).exists(),
-        "Process {} should be fully reaped (no zombie), but /proc entry still exists",
-        pid
+        "Process {pid} should be fully reaped (no zombie), but /proc entry still exists"
     );
 
     cleanup(&src, &out);
@@ -97,8 +96,7 @@ async fn test_seccomp_blocks_unshare() {
 
     assert!(
         stdout.contains("BLOCKED") || r.exit_code != 0,
-        "unshare should be blocked by seccomp, got: {}",
-        stdout
+        "unshare should be blocked by seccomp, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -135,8 +133,7 @@ async fn test_seccomp_blocks_bpf() {
     // Either python isn't available (fine) or the syscall returned -1 (EPERM)
     assert!(
         combined.contains("NO_PYTHON") || combined.contains("-1") || combined.contains("EPERM"),
-        "bpf syscall should be blocked, got: {}",
-        combined
+        "bpf syscall should be blocked, got: {combined}"
     );
 
     cleanup(&src, &out);
@@ -171,8 +168,7 @@ async fn test_seccomp_strict_blocks_socketpair() {
 
     assert!(
         stdout.contains("BLOCKED") || stdout.contains("NO_PYTHON"),
-        "socketpair should be blocked in Strict mode, got: {}",
-        stdout
+        "socketpair should be blocked in Strict mode, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -247,8 +243,7 @@ async fn test_etc_shadow_not_accessible() {
 
     assert!(
         !stdout.contains("root:") && stdout.contains("SAFE"),
-        "/etc/shadow should not be accessible, got: {}",
-        stdout
+        "/etc/shadow should not be accessible, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -271,8 +266,7 @@ async fn test_etc_hostname_not_accessible() {
 
     assert!(
         stdout.contains("SAFE") || stdout.contains("No such file"),
-        "/etc/hostname should not be accessible, got: {}",
-        stdout
+        "/etc/hostname should not be accessible, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -295,8 +289,7 @@ async fn test_etc_machine_id_not_accessible() {
 
     assert!(
         stdout.contains("SAFE") || stdout.contains("No such file"),
-        "/etc/machine-id should not be accessible, got: {}",
-        stdout
+        "/etc/machine-id should not be accessible, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -347,8 +340,7 @@ async fn test_tmp_noexec() {
 
     assert!(
         stdout.contains("BLOCKED") || stdout.contains("Permission denied"),
-        "/tmp should be NOEXEC, got: {}",
-        stdout
+        "/tmp should be NOEXEC, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -487,8 +479,7 @@ async fn test_rapid_spawn_drop_no_leak() {
         let alive = unsafe { libc::kill(pid.as_raw() as i32, 0) };
         assert_eq!(
             alive, -1,
-            "PID {} should be dead after handle drop",
-            pid
+            "PID {pid} should be dead after handle drop"
         );
     }
 
@@ -523,8 +514,7 @@ fn test_snapshot_size_does_not_follow_symlinks() {
     // Size should only count real.txt (5 bytes), not the symlink target (10000 bytes)
     assert!(
         size < 1000,
-        "size_bytes should not follow symlinks, got {} bytes",
-        size
+        "size_bytes should not follow symlinks, got {size} bytes"
     );
 
     let _ = fs::remove_dir_all(&snap_dir);
@@ -571,8 +561,7 @@ async fn test_workspace_readonly_enforced() {
 
     assert!(
         stdout.contains("READONLY") || stdout.contains("Read-only"),
-        "Workspace should be read-only, got: {}",
-        stdout
+        "Workspace should be read-only, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -607,7 +596,7 @@ async fn test_seccomp_blocks_io_uring() {
 
     assert!(
         out_str.contains("NO_PYTHON") || out_str.contains("-1"),
-        "io_uring_setup should be blocked, got: {}", out_str
+        "io_uring_setup should be blocked, got: {out_str}"
     );
     cleanup(&src, &out);
 }
@@ -637,7 +626,7 @@ async fn test_seccomp_blocks_personality() {
 
     assert!(
         out_str.contains("NO_PYTHON") || out_str.contains("-1"),
-        "personality() should be blocked, got: {}", out_str
+        "personality() should be blocked, got: {out_str}"
     );
     cleanup(&src, &out);
 }
@@ -667,7 +656,7 @@ async fn test_seccomp_blocks_clone3() {
 
     assert!(
         out_str.contains("NO_PYTHON") || out_str.contains("-1"),
-        "clone3 should be blocked, got: {}", out_str
+        "clone3 should be blocked, got: {out_str}"
     );
     cleanup(&src, &out);
 }
@@ -697,7 +686,7 @@ async fn test_seccomp_blocks_memfd_create() {
 
     assert!(
         out_str.contains("NO_PYTHON") || out_str.contains("-1"),
-        "memfd_create should be blocked, got: {}", out_str
+        "memfd_create should be blocked, got: {out_str}"
     );
     cleanup(&src, &out);
 }
@@ -738,6 +727,6 @@ async fn test_fd_limit_enforced() {
 
     assert_eq!(r.exit_code, 0);
     let limit: u64 = String::from_utf8_lossy(&r.stdout).trim().parse().unwrap_or(999999);
-    assert!(limit <= 4096, "fd limit should be <= 4096, got {}", limit);
+    assert!(limit <= 4096, "fd limit should be <= 4096, got {limit}");
     cleanup(&src, &out);
 }

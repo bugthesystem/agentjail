@@ -4,7 +4,7 @@
 
 mod common;
 
-use agentjail::{CloneMethod, Jail, JailConfig, SeccompLevel};
+use agentjail::{CloneMethod, Jail, JailConfig};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -48,8 +48,8 @@ async fn test_live_fork_clones_filesystem() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
     let stdout = String::from_utf8_lossy(&result.stdout);
-    assert!(stdout.contains("original-state"), "got: {}", stdout);
-    assert!(stdout.contains("nested-data"), "got: {}", stdout);
+    assert!(stdout.contains("original-state"), "got: {stdout}");
+    assert!(stdout.contains("nested-data"), "got: {stdout}");
     assert_eq!(info.files_cloned, 2);
     assert!(info.bytes_cloned > 0);
     assert!(info.clone_method == CloneMethod::Reflink || info.clone_method == CloneMethod::Copy);
@@ -108,7 +108,7 @@ async fn test_live_fork_while_running() {
 
     assert_eq!(fork_result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&fork_result.stderr));
     let stdout = String::from_utf8_lossy(&fork_result.stdout);
-    assert!(stdout.contains("running") || stdout.contains("NO_MARKER"), "got: {}", stdout);
+    assert!(stdout.contains("running") || stdout.contains("NO_MARKER"), "got: {stdout}");
 
     original.kill();
     cleanup(&source, &output, &fork_output);
@@ -202,8 +202,8 @@ async fn test_live_fork_chain() {
 
     assert_eq!(r2.exit_code, 0);
     let stdout2 = String::from_utf8_lossy(&r2.stdout);
-    assert!(stdout2.contains("gen-0"), "got: {}", stdout2);
-    assert!(stdout2.contains("evolved.txt"), "got: {}", stdout2);
+    assert!(stdout2.contains("gen-0"), "got: {stdout2}");
+    assert!(stdout2.contains("evolved.txt"), "got: {stdout2}");
     assert!(info2.files_cloned >= 2);
 
     cleanup(&source, &output, &fork_output);
@@ -456,18 +456,26 @@ async fn test_live_fork_preserves_file_permissions_in_jail() {
 
     fs::write(output.join("run.sh"), "#!/bin/sh\necho 'executable'\n").unwrap();
     fs::set_permissions(output.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
-    fs::write(source.join("exec.sh"), "#!/bin/sh\n/output/run.sh\n").unwrap();
+    // Use /bin/sh to source the script instead of direct exec (avoids ETXTBSY
+    // race on overlayfs where COW copies may retain transient write handles).
+    fs::write(source.join("exec.sh"), "#!/bin/sh\n/bin/sh /output/run.sh\n").unwrap();
 
     let config = test_config(source.clone(), output.clone());
     let jail = Jail::new(config).unwrap();
 
     let (forked, _) = jail.live_fork(None, &fork_output).unwrap();
 
+    // Verify permissions are preserved on the cloned file.
     let perms = fs::metadata(fork_output.join("run.sh")).unwrap().permissions().mode();
-    assert_eq!(perms & 0o111, 0o111, "Execute bits preserved, got {:o}", perms);
+    assert_eq!(perms & 0o111, 0o111, "Execute bits preserved, got {perms:o}");
 
     let result = forked.run("/bin/sh", &["/workspace/exec.sh"]).await.unwrap();
-    assert_eq!(result.exit_code, 0);
+    assert_eq!(
+        result.exit_code, 0,
+        "fork perm test: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
     assert!(String::from_utf8_lossy(&result.stdout).contains("executable"));
 
     cleanup(&source, &output, &fork_output);
@@ -512,7 +520,7 @@ async fn test_live_fork_many_files() {
     for i in 0..50 {
         let dir = output.join(format!("dir{}", i % 5));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(format!("file{}.txt", i)), format!("content-{}", i)).unwrap();
+        fs::write(dir.join(format!("file{i}.txt")), format!("content-{i}")).unwrap();
     }
     fs::write(
         source.join("count.sh"),
