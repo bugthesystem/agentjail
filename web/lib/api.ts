@@ -66,8 +66,16 @@ export interface AuditRow {
   upstream_ms: number | null;
 }
 
+export interface Stats {
+  active_execs: number;
+  total_execs: number;
+  sessions: number;
+  credentials: number;
+}
+
 export const api = {
   health: () => call<string>("GET", "/healthz"),
+  stats: () => call<Stats>("GET", "/v1/stats"),
   credentials: {
     list: () => call<CredentialRecord[]>("GET", "/v1/credentials"),
     put: (service: ServiceId, secret: string) =>

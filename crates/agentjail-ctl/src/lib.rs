@@ -52,13 +52,14 @@ use agentjail_phantom::{InMemoryKeyStore, TokenStore};
 use axum::routing::{delete, get, post};
 use axum::{Router, middleware};
 use routes::AppState;
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 pub use audit::{AuditRow, AuditStore, AuditStoreSink, InMemoryAuditStore};
 pub use auth::ApiKeys;
 pub use credential::{CredentialRecord, CredentialStore, InMemoryCredentialStore};
 pub use error::{CtlError, Result};
-pub use exec::ExecConfig;
+pub use exec::{ExecConfig, ExecMetrics};
 pub use session::{InMemorySessionStore, Session, SessionStore};
 
 /// Configuration for a [`ControlPlane`].
@@ -108,6 +109,9 @@ impl ControlPlane {
         audit: Arc<dyn AuditStore>,
     ) -> Self {
         let proxy_base_url = config.proxy_base_url.trim_end_matches('/').to_string();
+        let max_concurrent = config.exec.as_ref().map(|e| e.max_concurrent).unwrap_or(16);
+        let exec_semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        let exec_metrics = Arc::new(ExecMetrics::new());
         let state = AppState {
             tokens: config.tokens,
             keys: config.keys,
@@ -116,6 +120,8 @@ impl ControlPlane {
             audit,
             proxy_base_url,
             exec_config: config.exec,
+            exec_semaphore,
+            exec_metrics,
         };
         Self {
             state,
@@ -125,7 +131,10 @@ impl ControlPlane {
 
     /// Build the axum router.
     pub fn router(self) -> Router {
-        let public = Router::new().route("/healthz", get(routes::healthz));
+        let public = Router::new()
+            .route("/healthz", get(routes::healthz))
+            .route("/v1/stats", get(routes::stats))
+            .with_state(self.state.clone());
 
         let guarded = Router::new()
             .route(
@@ -147,6 +156,7 @@ impl ControlPlane {
             .route("/v1/sessions/:id/exec", post(routes::exec_in_session))
             .route("/v1/runs", post(routes::create_run))
             .route("/v1/audit", get(routes::list_audit))
+            .layer(RequestBodyLimitLayer::new(1024 * 1024)) // 1 MB
             .layer(middleware::from_fn_with_state(
                 self.api_keys.clone(),
                 auth::require_api_key,
