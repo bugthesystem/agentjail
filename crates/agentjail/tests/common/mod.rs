@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 /// Create temp directories for a test. Returns (source, output).
 pub fn setup(prefix: &str, name: &str) -> (PathBuf, PathBuf) {
-    let src = PathBuf::from(format!("/tmp/aj-{}-{}-src", prefix, name));
-    let out = PathBuf::from(format!("/tmp/aj-{}-{}-out", prefix, name));
+    let src = PathBuf::from(format!("/tmp/aj-{prefix}-{name}-src"));
+    let out = PathBuf::from(format!("/tmp/aj-{prefix}-{name}-out"));
     let _ = fs::remove_dir_all(&src);
     let _ = fs::remove_dir_all(&out);
     fs::create_dir_all(&src).unwrap();

@@ -58,7 +58,7 @@ pub(crate) fn setup_child(
 
                 let veth_id = u32::from_le_bytes(id_buf);
                 let (host_ip, jail_ip) = veth_addrs(veth_id);
-                let jail_if = format!("aj-j{}", veth_id);
+                let jail_if = format!("aj-j{veth_id}");
 
                 setup_loopback()?;
                 netlink::add_ipv4_addr(&jail_if, jail_ip, 30)?;
@@ -86,7 +86,7 @@ pub(crate) fn setup_child(
             (config.output.as_path(), crate::config::Access::ReadWrite),
         ];
         if let Err(e) = landlock::apply_rules(&rules) {
-            eprintln!("warning: landlock enforcement failed: {}", e);
+            eprintln!("warning: landlock enforcement failed: {e}");
         }
     }
 
@@ -155,17 +155,17 @@ fn enter_pid_namespace_and_exec(
             // Remount /proc for the new PID namespace. This MUST succeed
             // or the child sees the host process tree (critical info leak).
             if let Err(e) = remount_proc() {
-                eprintln!("/proc remount failed (host PID leak): {}", e);
+                eprintln!("/proc remount failed (host PID leak): {e}");
                 unsafe { libc::_exit(127) };
             }
 
             if let Err(e) = apply_filter(config.seccomp) {
-                eprintln!("seccomp failed: {}", e);
+                eprintln!("seccomp failed: {e}");
                 unsafe { libc::_exit(127) };
             }
 
             if let Err(e) = do_exec(cmd, args, env) {
-                eprintln!("exec failed: {}", e);
+                eprintln!("exec failed: {e}");
                 unsafe { libc::_exit(127) };
             }
             unreachable!()
@@ -214,7 +214,7 @@ fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
     let c_args: Vec<CString> = std::iter::once(Ok(c_cmd.clone()))
         .chain(args.iter().map(|a| {
             CString::new(a.as_str())
-                .map_err(|_| JailError::Exec(std::io::Error::other(format!("argument contains null byte: {:?}", a))))
+                .map_err(|_| JailError::Exec(std::io::Error::other(format!("argument contains null byte: {a:?}"))))
         }))
         .collect::<Result<Vec<_>>>()?;
 
@@ -227,8 +227,8 @@ fn do_exec(cmd: &str, args: &[String], env: &[(String, String)]) -> Result<()> {
     let c_env: Vec<CString> = env
         .iter()
         .map(|(k, v)| {
-            CString::new(format!("{}={}", k, v))
-                .map_err(|_| JailError::Exec(std::io::Error::other(format!("env var contains null byte: {}={}", k, v))))
+            CString::new(format!("{k}={v}"))
+                .map_err(|_| JailError::Exec(std::io::Error::other(format!("env var contains null byte: {k}={v}"))))
         })
         .collect::<Result<Vec<_>>>()?;
 

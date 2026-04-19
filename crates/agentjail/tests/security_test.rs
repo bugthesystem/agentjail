@@ -36,8 +36,7 @@ async fn test_network_none_blocks_external() {
 
     assert!(
         stdout.contains("BLOCKED"),
-        "Network::None must block external connections, got: {}",
-        stdout
+        "Network::None must block external connections, got: {stdout}"
     );
     assert!(
         !stdout.contains("REACHABLE"),
@@ -63,8 +62,7 @@ async fn test_network_none_blocks_dns() {
 
     assert!(
         stdout.contains("DNS_BLOCKED"),
-        "Network::None must block DNS, got: {}",
-        stdout
+        "Network::None must block DNS, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -138,8 +136,7 @@ async fn test_network_loopback_blocks_external() {
 
     assert!(
         stdout.contains("BLOCKED"),
-        "Loopback mode must block external, got: {}",
-        stdout
+        "Loopback mode must block external, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -173,8 +170,7 @@ async fn test_seccomp_standard_blocks_ptrace() {
         combined.contains("PTRACE_BLOCKED")
             || combined.contains("Operation not permitted")
             || combined.contains("not found"),
-        "Seccomp Standard should block ptrace, got: {}",
-        combined
+        "Seccomp Standard should block ptrace, got: {combined}"
     );
 
     cleanup(&src, &out);
@@ -208,8 +204,7 @@ async fn test_seccomp_strict_blocks_sockets() {
 
     assert!(
         stdout.contains("SOCKET_BLOCKED"),
-        "Strict seccomp must block socket(), got: {}",
-        stdout
+        "Strict seccomp must block socket(), got: {stdout}"
     );
     assert!(
         !stdout.contains("SOCKET_CREATED"),
@@ -271,8 +266,7 @@ async fn test_dev_null_writable() {
 
     assert!(
         stdout.contains("WRITE_OK"),
-        "/dev/null must be writable, got: {}",
-        stdout
+        "/dev/null must be writable, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -326,8 +320,7 @@ async fn test_dev_urandom_not_writable() {
 
     assert!(
         stdout.contains("WRITE_BLOCKED"),
-        "/dev/urandom should be read-only, got: {}",
-        stdout
+        "/dev/urandom should be read-only, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -355,8 +348,7 @@ async fn test_dev_zero_not_writable() {
 
     assert!(
         stdout.contains("WRITE_BLOCKED"),
-        "/dev/zero should be read-only, got: {}",
-        stdout
+        "/dev/zero should be read-only, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -378,8 +370,7 @@ async fn test_workspace_readonly_full_sandbox() {
 
     assert!(
         stdout.contains("WRITE_BLOCKED"),
-        "Workspace must be read-only, got: {}",
-        stdout
+        "Workspace must be read-only, got: {stdout}"
     );
     // Verify no file was actually written on host
     assert!(!src.join("hack.txt").exists(), "File should not exist on host");
@@ -403,8 +394,7 @@ async fn test_output_writable_full_sandbox() {
 
     assert!(
         stdout.contains("WRITE_OK"),
-        "Output dir must be writable, got: {}",
-        stdout
+        "Output dir must be writable, got: {stdout}"
     );
     assert!(
         out.join("result.txt").exists(),
@@ -434,8 +424,7 @@ async fn test_pid_namespace_full_sandbox() {
 
     assert!(
         stdout.contains("PID=1"),
-        "Must be PID 1 in namespace, got: {}",
-        stdout
+        "Must be PID 1 in namespace, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -461,8 +450,7 @@ async fn test_chroot_no_home() {
 
     assert!(
         stdout.contains("HOME_BLOCKED"),
-        "/home should not exist in jail, got: {}",
-        stdout
+        "/home should not exist in jail, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -484,8 +472,7 @@ async fn test_chroot_no_var() {
 
     assert!(
         stdout.contains("VAR_BLOCKED"),
-        "/var should not exist in jail, got: {}",
-        stdout
+        "/var should not exist in jail, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -507,8 +494,7 @@ async fn test_cannot_read_ssh_keys() {
 
     assert!(
         !stdout.contains("SSH_LEAKED"),
-        "SSH keys must not be readable, got: {}",
-        stdout
+        "SSH keys must not be readable, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -535,8 +521,7 @@ async fn test_allowlist_empty_blocks_all() {
 
     assert!(
         stdout.contains("BLOCKED"),
-        "Empty allowlist must block all traffic, got: {}",
-        stdout
+        "Empty allowlist must block all traffic, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -629,8 +614,7 @@ async fn test_allowlist_npm_install_blocked() {
 
     assert!(
         stdout.contains("NPM_INSTALL_BLOCKED"),
-        "npm install should fail when registry not in allowlist, got: {}",
-        stdout
+        "npm install should fail when registry not in allowlist, got: {stdout}"
     );
 
     cleanup(&src, &out);
@@ -652,8 +636,7 @@ async fn test_reverse_shell_blocked() {
 
     assert!(
         stdout.contains("SHELL_BLOCKED"),
-        "Reverse shell must fail, got: {}",
-        stdout
+        "Reverse shell must fail, got: {stdout}"
     );
 
     cleanup(&src, &out);

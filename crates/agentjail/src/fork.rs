@@ -107,6 +107,11 @@ pub(crate) fn cow_clone(src: &Path, dst: &Path) -> Result<ForkInfo> {
             cow_files += 1;
         } else {
             fs::copy(src_path, dst_path).map_err(JailError::Io)?;
+            // Preserve permissions (fs::copy preserves on most filesystems
+            // but we explicitly set to be safe on overlayfs).
+            if let Ok(meta) = fs::metadata(src_path) {
+                let _ = fs::set_permissions(dst_path, meta.permissions());
+            }
         }
         Ok(())
     })?;
