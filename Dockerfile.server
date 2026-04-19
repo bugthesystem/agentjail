@@ -13,10 +13,6 @@ COPY crates/agentjail crates/agentjail
 COPY crates/agentjail-phantom crates/agentjail-phantom
 COPY crates/agentjail-ctl crates/agentjail-ctl
 COPY crates/agentjail-server crates/agentjail-server
-# CLI not needed in this image — stub it for workspace resolution.
-RUN mkdir -p crates/agentjail-cli/src \
-  && echo 'fn main() {}' > crates/agentjail-cli/src/main.rs
-COPY crates/agentjail-cli/Cargo.toml crates/agentjail-cli/Cargo.toml
 
 RUN cargo build --release -p agentjail-server
 

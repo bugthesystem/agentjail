@@ -257,23 +257,60 @@ source file. All critical and high severity issues have been fixed with
 72 regression tests. See the test suite for specific attack scenarios
 that are verified on every build.
 
-## CLI
+## TypeScript SDK
 
-```bash
-agentjail run -s ./src -o ./out npm run build
-agentjail tui   # Dashboard
-agentjail demo  # Demo mode
+`@agentjail/sdk` talks to the agentjail control plane (HTTP). Sandboxes
+get phantom tokens (`phm_<hex>`) and a `*_BASE_URL` pointing at a local
+proxy — real API keys never enter the jail. Zero runtime dependencies,
+Node ≥ 18.
+
+```ts
+import { Agentjail } from "@agentjail/sdk";
+
+const aj = new Agentjail({
+  baseUrl: "http://localhost:7000",
+  apiKey: process.env.AGENTJAIL_API_KEY!,
+});
+
+await aj.credentials.put({ service: "openai", secret: process.env.OPENAI_API_KEY! });
+
+// One-shot run in a fresh jail.
+const result = await aj.runs.create({
+  code: "print('hi from jail')",
+  language: "python",
+  timeoutSecs: 30,
+});
+
+// Stream stdout/stderr as they happen.
+for await (const ev of aj.runs.stream({ code, language: "python" })) {
+  if (ev.type === "stdout") process.stdout.write(ev.line + "\n");
+}
+
+// Or mint a session and hand its phantom env to your own sandbox.
+const session = await aj.sessions.create({
+  services: ["openai", "github"],
+  scopes:   { github: ["/repos/my-org/*"] },
+  ttlSecs:  600,
+});
+spawn("node", ["agent.js"], { env: { ...process.env, ...session.env } });
 ```
 
-### TUI Controls
+Surface area: `credentials`, `sessions`, `runs` (`create` / `fork` / `stream`),
+`audit`. See [packages/sdk-node/README.md](packages/sdk-node/README.md)
+and [PLATFORM.md](PLATFORM.md) for the full platform story.
 
-| Key | Action |
-|-----|--------|
-| `j`/`k` | Navigate |
-| `Enter` | Details |
-| `K` | Kill |
-| `C` | Clear |
-| `q` | Quit |
+## Web UI
+
+Admin dashboard for the control plane: credentials, sessions, live event
+stream, and a code playground. React 19 + Vite + Tailwind, served on
+`http://localhost:3000`.
+
+```bash
+export AGENTJAIL_API_KEY=aj_local_$(openssl rand -hex 16)
+docker compose -f docker-compose.platform.yml up --build
+```
+
+Pages: Overview · Sessions · Credentials · Stream · Playground.
 
 ## Limitations
 
@@ -296,7 +333,8 @@ For stronger isolation: [gVisor](https://gvisor.dev) or [Firecracker](https://fi
 
 ```bash
 docker compose run --rm dev cargo test
-docker compose run --rm dev cargo build -p agentjail-cli
+( cd packages/sdk-node && npm test )
+( cd web && npm run build )
 ```
 
 ### GPU Testing
