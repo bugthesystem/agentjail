@@ -52,6 +52,7 @@ use agentjail_phantom::{InMemoryKeyStore, TokenStore};
 use axum::routing::{delete, get, post};
 use axum::{Router, middleware};
 use routes::AppState;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -163,6 +164,13 @@ impl ControlPlane {
             ))
             .with_state(self.state.clone());
 
-        public.merge(guarded).layer(TraceLayer::new_for_http())
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+
+        public.merge(guarded)
+            .layer(cors)
+            .layer(TraceLayer::new_for_http())
     }
 }

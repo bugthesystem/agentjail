@@ -32,7 +32,7 @@ services:
       PROXY_BASE_URL: ${PROXY_BASE_URL:-http://server:8443}
       RUST_LOG: info,agentjail_phantom=debug,agentjail_ctl=debug
     ports:
-      - "7000:7000"   # control plane
+      - "7070:7000"   # control plane (7000 conflicts with AirPlay on macOS)
       - "8443:8443"   # phantom proxy
     restart: unless-stopped
 
