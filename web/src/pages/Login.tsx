@@ -40,24 +40,24 @@ export function LoginPage() {
         <div className="relative z-10 space-y-10">
           <div className="max-w-lg">
             <h2 className="text-4xl font-bold tracking-tight leading-[1.1]">
-              Run untrusted code.
+              Let your agents build.
               <br />
-              <span className="text-accent">Keep your keys safe.</span>
+              <span className="text-accent">You stay in control.</span>
             </h2>
             <p className="mt-4 text-text-secondary leading-relaxed max-w-md">
-              Linux namespace isolation for AI agents. Real API credentials
-              never enter the sandbox — only ephemeral tokens that
-              self-destruct when the session ends.
+              Give AI agents the freedom to execute code, call APIs, and ship —
+              without ever risking your credentials. Every session is isolated.
+              Every secret is protected.
             </p>
           </div>
 
           {/* Feature pills */}
           <div className="flex flex-wrap gap-2">
             {[
-              { icon: Lock, text: "Phantom tokens" },
-              { icon: Cpu, text: "Namespace isolation" },
-              { icon: Terminal, text: "Live execution" },
-              { icon: Shield, text: "Seccomp + cgroups" },
+              { icon: Lock, text: "Zero-trust credentials" },
+              { icon: Cpu, text: "Isolated sandboxes" },
+              { icon: Terminal, text: "Live code execution" },
+              { icon: Shield, text: "Built-in guardrails" },
             ].map(({ icon: Icon, text }) => (
               <div key={text} className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-border bg-bg-subtle/50 text-sm text-text-secondary">
                 <Icon size={13} className="text-accent" />
