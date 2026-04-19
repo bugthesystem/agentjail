@@ -43,8 +43,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const url = baseUrl.replace(/\/+$/, "");
+      // Validate connection with a raw fetch (healthz returns plain text)
+      const res = await fetch(`${url}/healthz`);
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const api = createApi(url, apiKey);
-      await api.health();
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ baseUrl: url, apiKey }));
       setAuth({ baseUrl: url, apiKey, api });
     } catch (e) {
