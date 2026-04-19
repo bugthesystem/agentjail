@@ -28,14 +28,29 @@ export class Runs {
   }
 
   /**
-   * Live-fork: spawn parent, mid-run COW-clone its output, then spawn child
-   * against the forked filesystem state. Both results are returned together.
+   * Live-fork: spawn a parent, mid-run COW-clone its output, then spawn
+   * one or more children against the forked filesystem state. Pass either
+   * `childCode` (single child) or `children` (up to 16). Both the legacy
+   * (`child`, `fork`) and N-way (`children`, `forks`) fields are returned.
    */
   async fork(params: ForkRequest): Promise<ForkResult> {
+    if (!params.childCode && !params.children) {
+      throw new Error("fork: provide either childCode or children");
+    }
+    if (params.childCode && params.children) {
+      throw new Error("fork: childCode and children are mutually exclusive");
+    }
     const body: Record<string, unknown> = {
       parent_code: params.parentCode,
-      child_code:  params.childCode,
     };
+    if (params.childCode) body.child_code = params.childCode;
+    if (params.children) {
+      body.children = params.children.map((c) => {
+        const child: Record<string, unknown> = { code: c.code };
+        if (c.memoryMb !== undefined) child.memory_mb = c.memoryMb;
+        return child;
+      });
+    }
     if (params.language)    body.language       = params.language;
     if (params.forkAfterMs !== undefined) body.fork_after_ms = params.forkAfterMs;
     if (params.timeoutSecs  !== undefined) body.timeout_secs  = params.timeoutSecs;

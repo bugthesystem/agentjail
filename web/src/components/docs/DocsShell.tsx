@@ -23,6 +23,8 @@ const NAV: { section: string; items: { to: string; label: string; hint?: string 
       { to: "phantom",    label: "Phantom proxy",    hint: "credential edge" },
       { to: "network",    label: "Network modes",    hint: "none · loopback · allowlist" },
       { to: "forking",    label: "Live forking",     hint: "COW jail clones" },
+      { to: "workspaces", label: "Workspaces",       hint: "persistent multi-exec" },
+      { to: "snapshots",  label: "Snapshots",        hint: "freeze & restore" },
     ],
   },
   {

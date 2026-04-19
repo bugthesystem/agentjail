@@ -18,7 +18,7 @@ const DEFAULT_CAPACITY: usize = 2_000;
 pub const OUTPUT_CAP: usize = 16 * 1024;
 
 /// Kind of jail run.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JailKind {
     /// `/v1/runs`
@@ -29,6 +29,8 @@ pub enum JailKind {
     Fork,
     /// `/v1/runs/stream`
     Stream,
+    /// `/v1/workspaces/:id/exec` — jail backed by a persistent workspace.
+    Workspace,
 }
 
 impl JailKind {
@@ -39,16 +41,18 @@ impl JailKind {
             JailKind::Exec => "exec",
             JailKind::Fork => "fork",
             JailKind::Stream => "stream",
+            JailKind::Workspace => "workspace",
         }
     }
 
     /// Parse from the DB column.
     pub fn from_str_or_run(s: &str) -> Self {
         match s {
-            "exec"   => JailKind::Exec,
-            "fork"   => JailKind::Fork,
-            "stream" => JailKind::Stream,
-            _        => JailKind::Run,
+            "exec"      => JailKind::Exec,
+            "fork"      => JailKind::Fork,
+            "stream"    => JailKind::Stream,
+            "workspace" => JailKind::Workspace,
+            _           => JailKind::Run,
         }
     }
 }
@@ -391,10 +395,5 @@ pub(crate) fn truncate(s: &str, cap: usize) -> String {
 }
 
 fn matches_kind(a: JailKind, b: JailKind) -> bool {
-    matches!((a, b),
-        (JailKind::Run, JailKind::Run)
-        | (JailKind::Exec, JailKind::Exec)
-        | (JailKind::Fork, JailKind::Fork)
-        | (JailKind::Stream, JailKind::Stream)
-    )
+    a == b
 }

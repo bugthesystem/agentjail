@@ -11,6 +11,8 @@ import { Sessions } from "./pages/Sessions";
 import { Credentials } from "./pages/Credentials";
 import { Stream } from "./pages/Stream";
 import { Playground } from "./pages/Playground";
+import { Workspaces } from "./pages/Workspaces";
+import { Snapshots } from "./pages/Snapshots";
 import { DocsShell } from "./components/docs/DocsShell";
 import { Quickstart } from "./pages/docs/Quickstart";
 import { Sdk } from "./pages/docs/Sdk";
@@ -19,6 +21,8 @@ import { Network } from "./pages/docs/Network";
 import { Forking } from "./pages/docs/Forking";
 import { Security } from "./pages/docs/Security";
 import { PlaygroundDoc } from "./pages/docs/PlaygroundDoc";
+import { Workspaces as WorkspacesDoc } from "./pages/docs/Workspaces";
+import { Snapshots as SnapshotsDoc } from "./pages/docs/Snapshots";
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -38,12 +42,16 @@ function Gate() {
         <Route path="phantom"      element={<Phantom />} />
         <Route path="network"      element={<Network />} />
         <Route path="forking"      element={<Forking />} />
+        <Route path="workspaces"   element={<WorkspacesDoc />} />
+        <Route path="snapshots"    element={<SnapshotsDoc />} />
         <Route path="security"     element={<Security />} />
       </Route>
       {auth ? (
         <Route element={<Shell />}>
           <Route index element={<Overview />} />
           <Route path="jails"       element={<Jails />} />
+          <Route path="workspaces"  element={<Workspaces />} />
+          <Route path="snapshots"   element={<Snapshots />} />
           <Route path="sessions"    element={<Sessions />} />
           <Route path="credentials" element={<Credentials />} />
           <Route path="stream"      element={<Stream />} />

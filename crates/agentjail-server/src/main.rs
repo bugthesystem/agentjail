@@ -16,6 +16,12 @@
 //! | `PROXY_ADDR`       | `127.0.0.1:8443`     | Phantom proxy bind address |
 //! | `PROXY_BASE_URL`   | `http://<PROXY_ADDR>`| URL the sandbox uses       |
 //! | `AGENTJAIL_API_KEY`| (none → auth off)    | Comma-separated API keys   |
+//! | `AGENTJAIL_STATE_DIR` | `$TMPDIR/agentjail-state` | Persistent workspace + snapshot root |
+//! | `AGENTJAIL_SNAPSHOT_MAX_AGE_SECS` | — | Drop snapshots older than N sec (GC) |
+//! | `AGENTJAIL_SNAPSHOT_MAX_COUNT`    | — | Keep at most N snapshots (GC)        |
+//! | `AGENTJAIL_SNAPSHOT_GC_TICK_SECS` | 60 | GC sweep interval                   |
+//! | `AGENTJAIL_SNAPSHOT_POOL_DIR`     | — | Content-addressed snapshot pool      |
+//! | `AGENTJAIL_IDLE_CHECK_INTERVAL_SECS` | 30 | Workspace idle-reaper interval   |
 //! | `OPENAI_API_KEY`   | —                    | Seeded as real key         |
 //! | `ANTHROPIC_API_KEY`| —                    | Seeded as real key         |
 //! | `GITHUB_TOKEN`     | —                    | Seeded as real key         |
@@ -30,8 +36,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use agentjail_ctl::{
-    AuditStoreSink, ControlPlane, ControlPlaneConfig, InMemoryAuditStore, Postgres,
-    db::PgAuditStore,
+    AuditStoreSink, ControlPlane, ControlPlaneConfig, InMemoryAuditStore, InMemorySnapshotStore,
+    InMemoryWorkspaceStore, Postgres, SnapshotGcConfig, SnapshotStore, WorkspaceStore,
+    db::PgAuditStore, db::PgSnapshotStore, db::PgWorkspaceStore, snapshot_gc,
+    workspace_idle::{IdleReaperConfig, spawn_sweeper as spawn_idle_sweeper},
 };
 use agentjail_phantom::providers::{
     AnthropicProvider, GitHubProvider, OpenAiProvider, StripeProvider,
@@ -111,6 +119,8 @@ async fn main() -> Result<()> {
         proxy_base_url: config.proxy_base_url.clone(),
         api_keys: config.api_keys.clone(),
         exec: Some(agentjail_ctl::ExecConfig::default()),
+        state_dir: config.state_dir.clone(),
+        snapshot_pool_dir: config.snapshot_pool_dir.clone(),
     };
     let ctl = match pg.as_ref() {
         Some(p) => ControlPlane::with_postgres(cfg, p),
@@ -121,6 +131,34 @@ async fn main() -> Result<()> {
             stores.audit.clone(),
         ),
     };
+    // Drop rows whose on-disk dirs have disappeared (e.g. tmpfs wipe).
+    ctl.reconcile().await;
+
+    // Snapshot + workspace stores used by background sweepers. Mirror
+    // whatever the control plane is using so both paths touch the same
+    // rows.
+    let snapshot_store: Arc<dyn SnapshotStore> = match pg.as_ref() {
+        Some(p) => Arc::new(PgSnapshotStore::new(p.pool.clone())),
+        None    => Arc::new(InMemorySnapshotStore::new()),
+    };
+    let workspace_store: Arc<dyn WorkspaceStore> = match pg.as_ref() {
+        Some(p) => Arc::new(PgWorkspaceStore::new(p.pool.clone())),
+        None    => Arc::new(InMemoryWorkspaceStore::new()),
+    };
+
+    let _gc_task = snapshot_gc::spawn_sweeper(snapshot_store.clone(), config.snapshot_gc);
+
+    let _idle_task = spawn_idle_sweeper(IdleReaperConfig {
+        workspaces: workspace_store,
+        snapshots:  snapshot_store,
+        state_dir:  config
+            .state_dir
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("agentjail-state")),
+        pool_dir:   config.snapshot_pool_dir.clone(),
+        tick_secs:  config.idle_check_interval_secs,
+    });
+
     let router = ctl.router();
 
     let ctl_listener = TcpListener::bind(config.ctl_addr)
@@ -174,6 +212,10 @@ struct Config {
     proxy_addr: SocketAddr,
     proxy_base_url: String,
     api_keys: Vec<String>,
+    state_dir: Option<std::path::PathBuf>,
+    snapshot_pool_dir: Option<std::path::PathBuf>,
+    snapshot_gc: SnapshotGcConfig,
+    idle_check_interval_secs: u64,
 }
 
 impl Config {
@@ -203,13 +245,55 @@ impl Config {
             );
         }
 
+        let state_dir = std::env::var("AGENTJAIL_STATE_DIR")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from);
+
+        let snapshot_pool_dir = std::env::var("AGENTJAIL_SNAPSHOT_POOL_DIR")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from);
+        if snapshot_pool_dir.is_some() {
+            tracing::info!("content-addressed snapshot pool enabled");
+        }
+
+        let snapshot_gc = SnapshotGcConfig {
+            max_age_secs: parse_env_u64("AGENTJAIL_SNAPSHOT_MAX_AGE_SECS"),
+            max_count:    parse_env_u64("AGENTJAIL_SNAPSHOT_MAX_COUNT")
+                            .map(|v| v as usize),
+            tick_secs:    parse_env_u64("AGENTJAIL_SNAPSHOT_GC_TICK_SECS").unwrap_or(60),
+        };
+        if snapshot_gc.is_enabled() {
+            tracing::info!(
+                max_age_secs = ?snapshot_gc.max_age_secs,
+                max_count    = ?snapshot_gc.max_count,
+                tick_secs    = snapshot_gc.tick_secs,
+                "snapshot gc sweeper enabled"
+            );
+        }
+
+        let idle_check_interval_secs =
+            parse_env_u64("AGENTJAIL_IDLE_CHECK_INTERVAL_SECS").unwrap_or(30);
+
         Ok(Self {
             ctl_addr,
             proxy_addr,
             proxy_base_url,
             api_keys,
+            state_dir,
+            snapshot_pool_dir,
+            snapshot_gc,
+            idle_check_interval_secs,
         })
     }
+}
+
+fn parse_env_u64(var: &str) -> Option<u64> {
+    std::env::var(var)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 struct Stores {

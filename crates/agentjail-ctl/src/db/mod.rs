@@ -9,6 +9,8 @@
 mod audit_pg;
 mod credentials_pg;
 mod jails_pg;
+mod snapshots_pg;
+mod workspaces_pg;
 
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -17,6 +19,8 @@ use std::time::Duration;
 pub use audit_pg::PgAuditStore;
 pub use credentials_pg::{PgCredentialStore, rehydrate_keystore};
 pub use jails_pg::PgJailStore;
+pub use snapshots_pg::PgSnapshotStore;
+pub use workspaces_pg::PgWorkspaceStore;
 
 /// Connect to Postgres + run the embedded migrations. Idempotent.
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
@@ -27,6 +31,15 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .await?;
 
     sqlx::raw_sql(include_str!("../../migrations/0001_init.sql"))
+        .execute(&pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../../migrations/0002_workspaces_snapshots.sql"))
+        .execute(&pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../../migrations/0003_workspace_idle.sql"))
+        .execute(&pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../../migrations/0004_workspace_domains.sql"))
         .execute(&pool)
         .await?;
 

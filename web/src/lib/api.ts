@@ -41,8 +41,69 @@ export interface Stats {
   credentials: number;
 }
 
-export type JailKind   = "run" | "exec" | "fork" | "stream";
+export type JailKind   = "run" | "exec" | "fork" | "stream" | "workspace";
 export type JailStatus = "running" | "completed" | "error";
+
+export interface WorkspaceSpec {
+  memory_mb: number;
+  timeout_secs: number;
+  cpu_percent: number;
+  max_pids: number;
+  network_mode: "none" | "loopback" | "allowlist";
+  network_domains: string[];
+  seccomp: "standard" | "strict";
+  idle_timeout_secs: number;
+}
+
+export interface Workspace {
+  id: string;
+  created_at: string;
+  deleted_at: string | null;
+  source_dir: string;
+  output_dir: string;
+  config: WorkspaceSpec;
+  git_repo: string | null;
+  git_ref: string | null;
+  label: string | null;
+  last_exec_at: string | null;
+  paused_at: string | null;
+  auto_snapshot: string | null;
+}
+
+export interface WorkspaceList {
+  rows: Workspace[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface WorkspaceCreateRequest {
+  git?: { repo: string; ref?: string };
+  label?: string;
+  memory_mb?: number;
+  timeout_secs?: number;
+  idle_timeout_secs?: number;
+  network?: { mode: "none" } | { mode: "loopback" } | { mode: "allowlist"; domains: string[] };
+  seccomp?: "standard" | "strict";
+  cpu_percent?: number;
+  max_pids?: number;
+}
+
+export interface SnapshotRecord {
+  id: string;
+  workspace_id: string | null;
+  name: string | null;
+  created_at: string;
+  path: string;
+  size_bytes: number;
+}
+
+export interface SnapshotList {
+  rows: SnapshotRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
 
 export interface JailRecord {
   id: number;
@@ -186,6 +247,43 @@ export function createApi(baseUrl: string, apiKey: string) {
         return call<JailsList>("GET", `/v1/jails${qs ? `?${qs}` : ""}`);
       },
       get: (id: number) => call<JailRecord>("GET", `/v1/jails/${id}`),
+    },
+
+    workspaces: {
+      list: (params?: { limit?: number; offset?: number }) => {
+        const q = new URLSearchParams();
+        if (params?.limit != null)  q.set("limit",  String(params.limit));
+        if (params?.offset != null) q.set("offset", String(params.offset));
+        const qs = q.toString();
+        return call<WorkspaceList>("GET", `/v1/workspaces${qs ? `?${qs}` : ""}`);
+      },
+      get: (id: string) => call<Workspace>("GET", `/v1/workspaces/${id}`),
+      create: (req: WorkspaceCreateRequest) =>
+        call<Workspace>("POST", "/v1/workspaces", req),
+      delete: (id: string) => call<void>("DELETE", `/v1/workspaces/${id}`),
+      exec: (
+        id: string,
+        req: { cmd: string; args?: string[]; timeout_secs?: number; memory_mb?: number },
+      ) => call<ExecResult>("POST", `/v1/workspaces/${id}/exec`, req),
+    },
+
+    snapshots: {
+      list: (params?: { workspace_id?: string; limit?: number; offset?: number }) => {
+        const q = new URLSearchParams();
+        if (params?.workspace_id) q.set("workspace_id", params.workspace_id);
+        if (params?.limit != null)  q.set("limit",  String(params.limit));
+        if (params?.offset != null) q.set("offset", String(params.offset));
+        const qs = q.toString();
+        return call<SnapshotList>("GET", `/v1/snapshots${qs ? `?${qs}` : ""}`);
+      },
+      get: (id: string) => call<SnapshotRecord>("GET", `/v1/snapshots/${id}`),
+      create: (workspaceId: string, name?: string) =>
+        call<SnapshotRecord>("POST", `/v1/workspaces/${workspaceId}/snapshot`,
+          name ? { name } : {}),
+      delete: (id: string) => call<void>("DELETE", `/v1/snapshots/${id}`),
+      restoreToNew: (snapshotId: string, label?: string) =>
+        call<Workspace>("POST", "/v1/workspaces/from-snapshot",
+          label ? { snapshot_id: snapshotId, label } : { snapshot_id: snapshotId }),
     },
   };
 }

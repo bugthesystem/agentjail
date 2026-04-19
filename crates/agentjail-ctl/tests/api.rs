@@ -25,6 +25,8 @@ impl Harness {
             proxy_base_url: "http://10.0.0.1:8443".into(),
             api_keys,
             exec: None,
+            state_dir: Some(tempfile::tempdir().unwrap().keep()),
+            snapshot_pool_dir: None,
         });
         let router = ctl.router();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

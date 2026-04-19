@@ -126,6 +126,8 @@ impl Stack {
                 proxy_base_url: format!("http://{proxy_addr}"),
                 api_keys: vec![api_key.clone()],
                 exec,
+                state_dir: None,
+                snapshot_pool_dir: None,
             },
             Arc::new(InMemorySessionStore::new()),
             Arc::new(InMemoryCredentialStore::new()),

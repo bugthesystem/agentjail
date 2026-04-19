@@ -109,12 +109,26 @@ export interface RunRequest extends ExecOptions {
   memoryMb?: number;
 }
 
-/** Parameters for `aj.runs.fork` — live-forks the parent jail mid-run. */
+/** One child of an N-way fork. */
+export interface ForkChild {
+  code: string;
+  memoryMb?: number;
+}
+
+/**
+ * Parameters for `aj.runs.fork`. Supports either a single child
+ * (legacy `childCode` field) or N children (`children`, up to 16).
+ * Server populates both legacy and new response fields so either shape
+ * of request works.
+ */
 export interface ForkRequest extends ExecOptions {
   parentCode: string;
-  childCode: string;
+  /** Legacy single-child shorthand. */
+  childCode?: string;
+  /** N-way children (up to 16). Mutually exclusive with `childCode`. */
+  children?: ForkChild[];
   language?: "javascript" | "python" | "bash";
-  /** How long the parent runs before we freeze + fork. Default 200ms. */
+  /** How long the parent runs before we freeze + fork. Default 1500ms. */
   forkAfterMs?: number;
   timeoutSecs?: number;
   memoryMb?: number;
@@ -130,15 +144,26 @@ export interface ForkMeta {
   was_frozen: boolean;
 }
 
-/** Response from `aj.runs.fork`. */
+/**
+ * Response from `aj.runs.fork`. Both legacy single-child fields
+ * (`child`, `fork`) and N-way arrays (`children`, `forks`) are populated
+ * so existing callers keep working. For N-way calls, `child === children[0]`
+ * and `fork === forks[0]`.
+ */
 export interface ForkResult {
   parent: ExecResult;
+  /** First child (back-compat). Equals `children[0]`. */
   child: ExecResult;
+  /** All children in invocation order. */
+  children: ExecResult[];
+  /** ForkMeta for the first child (back-compat). Equals `forks[0]`. */
   fork: ForkMeta;
+  /** Per-child ForkMeta. */
+  forks: ForkMeta[];
 }
 
 /** Kinds of jail run — one per exec endpoint. */
-export type JailKind = "run" | "exec" | "fork" | "stream";
+export type JailKind = "run" | "exec" | "fork" | "stream" | "workspace";
 
 /** Jail record lifecycle. */
 export type JailStatus = "running" | "completed" | "error";
@@ -194,3 +219,107 @@ export type StreamEvent =
       cpu_usage_usec: number;
     }
   | { type: "error";     message: string };
+
+// ---------------- workspaces ----------------
+
+/**
+ * Persisted jail config shipped with a workspace. Re-applied on every
+ * exec so the user's network/seccomp/limits decisions survive restarts.
+ */
+export interface WorkspaceSpec {
+  memory_mb: number;
+  timeout_secs: number;
+  cpu_percent: number;
+  max_pids: number;
+  network_mode: "none" | "loopback" | "allowlist";
+  network_domains: string[];
+  seccomp: SeccompSpec;
+  /** Auto-pause after N seconds of inactivity. 0 = never. */
+  idle_timeout_secs: number;
+}
+
+/** A persistent workspace (long-lived mount tree). */
+export interface Workspace {
+  id: string;
+  /** RFC3339. */
+  created_at: string;
+  /** RFC3339 or null. */
+  deleted_at: string | null;
+  source_dir: string;
+  output_dir: string;
+  config: WorkspaceSpec;
+  git_repo: string | null;
+  git_ref: string | null;
+  label: string | null;
+  /** RFC3339 or null. */
+  last_exec_at: string | null;
+  /**
+   * RFC3339 or null. When set, the idle-reaper paused this workspace
+   * and captured `auto_snapshot`; the next exec auto-restores.
+   */
+  paused_at: string | null;
+  /** Snapshot id captured at pause time. Cleared on resume. */
+  auto_snapshot: string | null;
+}
+
+/** Paginated list response from `GET /v1/workspaces`. */
+export interface WorkspaceList {
+  rows: Workspace[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Parameters accepted by `aj.workspaces.create`. Mirrors the jail-config
+ * knobs of a one-shot run, plus an optional git clone into `source_dir`.
+ */
+export interface WorkspaceCreateRequest extends ExecOptions {
+  git?: { repo: string; ref?: string };
+  label?: string;
+  memoryMb?: number;
+  timeoutSecs?: number;
+  /** Auto-pause after this many seconds of inactivity. 0 = never. */
+  idleTimeoutSecs?: number;
+}
+
+/** One exec against a workspace. */
+export interface WorkspaceExecRequest {
+  cmd: string;
+  args?: string[];
+  timeoutSecs?: number;
+  memoryMb?: number;
+  /** Additional env pairs appended to the session base (PATH always set). */
+  env?: [string, string][];
+}
+
+// ---------------- snapshots ----------------
+
+/** One snapshot row. */
+export interface SnapshotRecord {
+  id: string;
+  workspace_id: string | null;
+  name: string | null;
+  /** RFC3339. */
+  created_at: string;
+  path: string;
+  size_bytes: number;
+}
+
+/** Paginated list from `GET /v1/snapshots`. */
+export interface SnapshotList {
+  rows: SnapshotRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// ---------------- public (no-auth) ----------------
+
+/** Live counters returned by `GET /v1/stats`. */
+export interface PublicStats {
+  active_execs: number;
+  total_execs: number;
+  sessions: number;
+  credentials: number;
+}

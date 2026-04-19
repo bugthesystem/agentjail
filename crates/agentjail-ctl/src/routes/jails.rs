@@ -45,10 +45,11 @@ pub(crate) async fn list_jails(
         _ => None,
     };
     let kind = match q.kind.as_deref() {
-        Some("run")    => Some(JailKind::Run),
-        Some("exec")   => Some(JailKind::Exec),
-        Some("fork")   => Some(JailKind::Fork),
-        Some("stream") => Some(JailKind::Stream),
+        Some("run")       => Some(JailKind::Run),
+        Some("exec")      => Some(JailKind::Exec),
+        Some("fork")      => Some(JailKind::Fork),
+        Some("stream")    => Some(JailKind::Stream),
+        Some("workspace") => Some(JailKind::Workspace),
         _ => None,
     };
     let query = JailQuery {

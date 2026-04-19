@@ -30,6 +30,7 @@ Built for AI agents, build systems, and any scenario where you need to execute c
 - **Snapshotting** — save/restore output for incremental rebuilds
 - **Live forking** — clone a running jail in milliseconds via COW reflinks
 - **Event streaming** — real-time stdout/stderr/lifecycle events
+- **Persistent workspaces** — long-lived mount trees with multi-exec + named snapshots ([SDK ≥ 0.2](packages/sdk-node/README.md#persistent-workspaces--snapshots))
 
 ## Requirements
 

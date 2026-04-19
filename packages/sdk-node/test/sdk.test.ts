@@ -339,13 +339,16 @@ describe("Runs", () => {
           stdout: "child\n", stderr: "", exit_code: 0,
           duration_ms: 180, timed_out: false, oom_killed: false,
         };
+        const forkMeta = {
+          clone_ms: 3, files_cloned: 1, files_cow: 1,
+          bytes_cloned: 42, method: "reflink", was_frozen: true,
+        };
         return json({
           parent: parentExec,
-          child: childExec,
-          fork: {
-            clone_ms: 3, files_cloned: 1, files_cow: 1,
-            bytes_cloned: 42, method: "reflink", was_frozen: true,
-          },
+          child:    childExec,
+          children: [childExec],
+          fork:     forkMeta,
+          forks:    [forkMeta],
         });
       }),
     });
@@ -368,8 +371,63 @@ describe("Runs", () => {
     });
     expect(r.parent.stdout).toBe("parent\n");
     expect(r.child.stdout).toBe("child\n");
+    expect(r.children?.length).toBe(1);
+    expect(r.children[0]).toEqual(r.child);
+    expect(r.forks?.length).toBe(1);
+    expect(r.forks[0]).toEqual(r.fork);
     expect(r.fork.method).toBe("reflink");
     expect(r.fork.was_frozen).toBe(true);
+  });
+
+  it("fork accepts N-way children and serializes them as children:[]", async () => {
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ init }) => {
+        bodyText = init.body as string;
+        const exec = {
+          stdout: "", stderr: "", exit_code: 0,
+          duration_ms: 1, timed_out: false, oom_killed: false,
+        };
+        const forkMeta = {
+          clone_ms: 1, files_cloned: 0, files_cow: 0,
+          bytes_cloned: 0, method: "reflink", was_frozen: true,
+        };
+        return json({
+          parent: exec,
+          child: exec, children: [exec, exec, exec],
+          fork: forkMeta, forks: [forkMeta, forkMeta, forkMeta],
+        });
+      }),
+    });
+    const r = await aj.runs.fork({
+      parentCode: "1",
+      children: [
+        { code: "a" },
+        { code: "b", memoryMb: 128 },
+        { code: "c" },
+      ],
+      language: "javascript",
+    });
+    expect(JSON.parse(bodyText)).toEqual({
+      parent_code: "1",
+      children: [{ code: "a" }, { code: "b", memory_mb: 128 }, { code: "c" }],
+      language: "javascript",
+    });
+    expect(r.children.length).toBe(3);
+    expect(r.forks.length).toBe(3);
+  });
+
+  it("fork rejects when neither childCode nor children is set", async () => {
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(() => json({})),
+    });
+    await expect(
+      aj.runs.fork({ parentCode: "1" } as unknown as Parameters<typeof aj.runs.fork>[0]),
+    ).rejects.toThrow();
   });
 
   it("stream parses SSE frames into typed events", async () => {
@@ -435,6 +493,254 @@ describe("Runs", () => {
       network: { mode: "loopback" },
       seccomp: "standard",
     });
+  });
+});
+
+describe("Workspaces", () => {
+  it("create POSTs with nested git block + label + memoryMb", async () => {
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ init }) => {
+        bodyText = init.body as string;
+        return json({
+          id: "wrk_abc",
+          created_at: "2026-04-19T00:00:00Z",
+          deleted_at: null,
+          source_dir: "/state/workspaces/wrk_abc/source",
+          output_dir: "/state/workspaces/wrk_abc/output",
+          config: {
+            memory_mb: 512, timeout_secs: 300, cpu_percent: 100,
+            max_pids: 64, network_mode: "none", network_domains: [],
+            seccomp: "standard", idle_timeout_secs: 0,
+          },
+          last_exec_at: null,
+          paused_at: null,
+          auto_snapshot: null,
+          git_repo: "https://github.com/org/repo", git_ref: "main",
+          label: "ci",
+        });
+      }),
+    });
+    const ws = await aj.workspaces.create({
+      git: { repo: "https://github.com/org/repo", ref: "main" },
+      label: "ci",
+      memoryMb: 512,
+    });
+    expect(JSON.parse(bodyText)).toEqual({
+      git: { repo: "https://github.com/org/repo", ref: "main" },
+      label: "ci",
+      memory_mb: 512,
+    });
+    expect(ws.id).toBe("wrk_abc");
+    expect(ws.config.memory_mb).toBe(512);
+  });
+
+  it("list includes limit+offset as query params", async () => {
+    let seenUrl = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url }) => {
+        seenUrl = url;
+        return json({ rows: [], total: 0, limit: 10, offset: 20 });
+      }),
+    });
+    await aj.workspaces.list({ limit: 10, offset: 20 });
+    expect(seenUrl).toBe("http://api/v1/workspaces?limit=10&offset=20");
+  });
+
+  it("exec POSTs cmd+args and merges env if provided", async () => {
+    let seenUrl = "";
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url, init }) => {
+        seenUrl = url;
+        bodyText = init.body as string;
+        return json({
+          stdout: "ok\n", stderr: "", exit_code: 0,
+          duration_ms: 10, timed_out: false, oom_killed: false,
+        });
+      }),
+    });
+    const out = await aj.workspaces.exec("wrk_abc", {
+      cmd: "bun",
+      args: ["test"],
+      memoryMb: 1024,
+      env: [["DEBUG", "1"]],
+    });
+    expect(seenUrl).toBe("http://api/v1/workspaces/wrk_abc/exec");
+    expect(JSON.parse(bodyText)).toEqual({
+      cmd: "bun",
+      args: ["test"],
+      memory_mb: 1024,
+      env: [["DEBUG", "1"]],
+    });
+    expect(out.exit_code).toBe(0);
+  });
+
+  it("create forwards idleTimeoutSecs as snake_case", async () => {
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ init }) => {
+        bodyText = init.body as string;
+        return json({
+          id: "wrk_idle",
+          created_at: "2026-04-19T00:00:00Z",
+          deleted_at: null,
+          source_dir: "/state/workspaces/wrk_idle/source",
+          output_dir: "/state/workspaces/wrk_idle/output",
+          config: {
+            memory_mb: 256, timeout_secs: 60, cpu_percent: 100,
+            max_pids: 64, network_mode: "none", network_domains: [],
+            seccomp: "standard", idle_timeout_secs: 90,
+          },
+          git_repo: null, git_ref: null, label: null,
+          last_exec_at: null, paused_at: null, auto_snapshot: null,
+        });
+      }),
+    });
+    const ws = await aj.workspaces.create({ idleTimeoutSecs: 90 });
+    expect(JSON.parse(bodyText)).toEqual({ idle_timeout_secs: 90 });
+    expect(ws.config.idle_timeout_secs).toBe(90);
+  });
+
+  it("delete sends DELETE and returns void on 204", async () => {
+    let seenMethod = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ init }) => {
+        seenMethod = init.method as string;
+        return new Response(null, { status: 204 });
+      }),
+    });
+    await aj.workspaces.delete("wrk_abc");
+    expect(seenMethod).toBe("DELETE");
+  });
+});
+
+describe("Snapshots", () => {
+  function snap(overrides: Partial<Record<string, unknown>> = {}): unknown {
+    return {
+      id: "snap_xyz",
+      workspace_id: "wrk_abc",
+      name: "baseline",
+      created_at: "2026-04-19T00:01:00Z",
+      path: "/state/snapshots/snap_xyz",
+      size_bytes: 12345,
+      ...overrides,
+    };
+  }
+
+  it("create POSTs /v1/workspaces/:id/snapshot with optional name", async () => {
+    let seenUrl = "";
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url, init }) => {
+        seenUrl = url;
+        bodyText = init.body as string;
+        return json(snap());
+      }),
+    });
+    const r = await aj.snapshots.create("wrk_abc", { name: "baseline" });
+    expect(seenUrl).toBe("http://api/v1/workspaces/wrk_abc/snapshot");
+    expect(JSON.parse(bodyText)).toEqual({ name: "baseline" });
+    expect(r.id).toBe("snap_xyz");
+    expect(r.size_bytes).toBe(12345);
+  });
+
+  it("list forwards workspace_id as query param", async () => {
+    let seenUrl = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url }) => {
+        seenUrl = url;
+        return json({ rows: [], total: 0, limit: 50, offset: 0 });
+      }),
+    });
+    await aj.snapshots.list({ workspaceId: "wrk_abc" });
+    expect(seenUrl).toBe("http://api/v1/snapshots?workspace_id=wrk_abc");
+  });
+
+  it("createWorkspaceFrom POSTs /v1/workspaces/from-snapshot", async () => {
+    let seenUrl = "";
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url, init }) => {
+        seenUrl = url;
+        bodyText = init.body as string;
+        return json({
+          id: "wrk_new",
+          created_at: "2026-04-19T00:02:00Z",
+          deleted_at: null,
+          source_dir: "/state/workspaces/wrk_new/source",
+          output_dir: "/state/workspaces/wrk_new/output",
+          config: {
+            memory_mb: 512, timeout_secs: 300, cpu_percent: 100,
+            max_pids: 64, network_mode: "none", network_domains: [],
+            seccomp: "standard", idle_timeout_secs: 0,
+          },
+          last_exec_at: null,
+          paused_at: null,
+          auto_snapshot: null,
+          git_repo: null, git_ref: null, label: "recovered",
+        });
+      }),
+    });
+    const ws = await aj.snapshots.createWorkspaceFrom("snap_xyz", {
+      label: "recovered",
+    });
+    expect(seenUrl).toBe("http://api/v1/workspaces/from-snapshot");
+    expect(JSON.parse(bodyText)).toEqual({
+      snapshot_id: "snap_xyz",
+      label: "recovered",
+    });
+    expect(ws.id).toBe("wrk_new");
+    expect(ws.label).toBe("recovered");
+  });
+});
+
+describe("Public", () => {
+  it("health returns the server's plain-text reply", async () => {
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      fetch: fakeFetch(() =>
+        new Response(JSON.stringify("ok"), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      ),
+    });
+    const r = await aj.public.health();
+    expect(r).toBe("ok");
+  });
+
+  it("stats returns live counters", async () => {
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      fetch: fakeFetch(() =>
+        json({
+          active_execs: 2,
+          total_execs: 100,
+          sessions: 3,
+          credentials: 4,
+        })
+      ),
+    });
+    const s = await aj.public.stats();
+    expect(s.active_execs).toBe(2);
+    expect(s.credentials).toBe(4);
   });
 });
 

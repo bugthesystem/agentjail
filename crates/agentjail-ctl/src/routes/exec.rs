@@ -86,10 +86,10 @@ pub(crate) struct RunRequest {
 #[derive(Debug, Deserialize, Clone)]
 pub(super) struct GitSpec {
     /// `https://…` URL. ssh/git protocols are rejected at the edge.
-    repo: String,
+    pub(super) repo: String,
     /// Optional branch / tag / commit.
     #[serde(default, rename = "ref")]
-    git_ref: Option<String>,
+    pub(super) git_ref: Option<String>,
 }
 
 pub(super) fn default_language() -> String {
@@ -262,6 +262,40 @@ pub(crate) async fn create_run(
 
 // ---------- shared execution plumbing ----------
 
+/// RAII hook that records the cgroup path of an in-flight exec in
+/// [`crate::workspaces::ActiveCgroups`] for the duration of the run.
+///
+/// Constructed by the caller with a tracker + workspace id; filled in by
+/// [`run_monitored_with`] once the cgroup path is known; cleaned up on
+/// drop so the tracker never holds stale entries.
+pub(crate) struct CgroupRegistration {
+    tracker: Arc<crate::workspaces::ActiveCgroups>,
+    workspace_id: String,
+    registered: bool,
+}
+
+impl CgroupRegistration {
+    pub(crate) fn new(
+        tracker: Arc<crate::workspaces::ActiveCgroups>,
+        workspace_id: String,
+    ) -> Self {
+        Self { tracker, workspace_id, registered: false }
+    }
+
+    fn set(&mut self, path: std::path::PathBuf) {
+        self.tracker.insert(&self.workspace_id, path);
+        self.registered = true;
+    }
+}
+
+impl Drop for CgroupRegistration {
+    fn drop(&mut self) {
+        if self.registered {
+            self.tracker.remove(&self.workspace_id);
+        }
+    }
+}
+
 /// Spawn + live-monitor + wait. Runs three cooperating tasks:
 ///   1. The jail process itself.
 ///   2. A cgroup sampler updating `memory_peak_bytes`, `cpu_usage_usec`,
@@ -276,8 +310,27 @@ pub(super) async fn run_monitored(
     cmd: &str,
     args: &[&str],
 ) -> agentjail::Result<agentjail::Output> {
+    run_monitored_with(jails, rec_id, jail, cmd, args, None).await
+}
+
+/// Variant of [`run_monitored`] that publishes the cgroup path to the
+/// supplied [`CgroupRegistration`]. Used by workspace execs so a snapshot
+/// route can freeze the running jail before copying its output dir.
+pub(super) async fn run_monitored_with(
+    jails: &Arc<dyn JailStore>,
+    rec_id: i64,
+    jail: &agentjail::Jail,
+    cmd: &str,
+    args: &[&str],
+    mut registration: Option<CgroupRegistration>,
+) -> agentjail::Result<agentjail::Output> {
     use std::sync::Mutex;
     let mut handle = jail.spawn(cmd, args)?;
+
+    // Publish the cgroup path so snapshot routes can freeze it.
+    if let (Some(reg), Some(p)) = (registration.as_mut(), handle.cgroup_path()) {
+        reg.set(p);
+    }
 
     // Stats sampler (cgroup)
     let stats_task = handle.cgroup_path().map(|p| {

@@ -6,10 +6,14 @@ version = 4
 name = "agentjail"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "landlock",
  "libc",
  "rustix 0.38.44",
  "seccompiler",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
 ]

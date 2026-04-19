@@ -24,8 +24,11 @@ import { Audit } from "./audit.js";
 import { Credentials } from "./credentials.js";
 import { HttpClient, type HttpConfig } from "./http.js";
 import { Jails } from "./jails.js";
+import { Public } from "./public.js";
 import { Runs } from "./runs.js";
 import { Sessions } from "./sessions.js";
+import { Snapshots } from "./snapshots.js";
+import { Workspaces } from "./workspaces.js";
 
 export { AgentjailError } from "./http.js";
 export type {
@@ -34,6 +37,7 @@ export type {
   CredentialRecord,
   ExecOptions,
   ExecResult,
+  ForkChild,
   ForkMeta,
   ForkRequest,
   ForkResult,
@@ -42,12 +46,20 @@ export type {
   JailsList,
   JailStatus,
   NetworkSpec,
+  PublicStats,
   ResourceStats,
   RunRequest,
   SeccompSpec,
   ServiceId,
   Session,
+  SnapshotList,
+  SnapshotRecord,
   StreamEvent,
+  Workspace,
+  WorkspaceCreateRequest,
+  WorkspaceExecRequest,
+  WorkspaceList,
+  WorkspaceSpec,
 } from "./types.js";
 
 /** Top-level client. Sub-namespaces are independently usable. */
@@ -62,6 +74,12 @@ export class Agentjail {
   public readonly audit: Audit;
   /** Jail-run ledger sub-API. */
   public readonly jails: Jails;
+  /** Persistent workspaces (multi-exec filesystem persistence). */
+  public readonly workspaces: Workspaces;
+  /** Named snapshots of workspace output dirs. */
+  public readonly snapshots: Snapshots;
+  /** Unauthenticated health + stats. */
+  public readonly public: Public;
 
   constructor(config: HttpConfig) {
     const http = new HttpClient(config);
@@ -70,5 +88,8 @@ export class Agentjail {
     this.runs = new Runs(http);
     this.audit = new Audit(http);
     this.jails = new Jails(http);
+    this.workspaces = new Workspaces(http);
+    this.snapshots = new Snapshots(http);
+    this.public = new Public(http);
   }
 }

@@ -4,10 +4,11 @@ import { clock, humanBytes, humanMs } from "../../lib/format";
 import { cn } from "../../lib/cn";
 
 const KIND_TONE: Record<JailRecord["kind"], "phantom" | "flare" | "iris" | "ink"> = {
-  run:    "phantom",
-  exec:   "iris",
-  fork:   "flare",
-  stream: "phantom",
+  run:       "phantom",
+  exec:      "iris",
+  fork:      "flare",
+  stream:    "phantom",
+  workspace: "iris",
 };
 
 export function JailsList({

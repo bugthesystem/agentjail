@@ -64,4 +64,7 @@ pub use error::{JailError, Result};
 pub use events::{EventReceiver, EventSender, JailEvent};
 pub use fork::{CloneMethod, ForkInfo};
 pub use run::{Jail, JailHandle, JailPid, Output, ResourceStats, cleanup_stale_veths};
-pub use snapshot::Snapshot;
+pub use snapshot::{
+    Manifest, ManifestEntry, Snapshot, freeze_cgroup, gc_objects_pool, load_manifest,
+    snapshot_frozen, thaw_cgroup,
+};
