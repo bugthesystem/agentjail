@@ -20,6 +20,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libseccomp2 \
     nodejs npm python3 \
+    git curl \
   && rm -rf /var/lib/apt/lists/*
 # Run as root — sandbox execution needs namespaces + cgroups.
 # The jail engine provides isolation (namespaces, seccomp, cgroups).

@@ -45,3 +45,9 @@ CREATE TABLE IF NOT EXISTS jails (
 );
 CREATE INDEX IF NOT EXISTS jails_started_at_idx ON jails (started_at DESC);
 CREATE INDEX IF NOT EXISTS jails_status_idx     ON jails (status);
+
+-- Fork-graph link: children point at their parent row. NULL for non-fork
+-- or root fork rows. Additive to support replays.
+ALTER TABLE jails ADD COLUMN IF NOT EXISTS parent_id bigint
+    REFERENCES jails(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS jails_parent_id_idx ON jails (parent_id);

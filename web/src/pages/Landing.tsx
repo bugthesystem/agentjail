@@ -49,6 +49,12 @@ function Nav() {
           >
             how it works
           </a>
+          <Link
+            to="/docs"
+            className="text-ink-400 hover:text-ink-200 transition-colors"
+          >
+            docs
+          </Link>
           <a
             href="https://github.com/bugthesystem/agentjail"
             target="_blank"

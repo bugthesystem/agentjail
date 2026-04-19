@@ -7,13 +7,20 @@ import { Pill } from "../Pill";
 import { Sparkline } from "../Sparkline";
 import { OutputBlock } from "../OutputBlock";
 import { AuditList } from "../AuditList";
+import { ForkGraph } from "./ForkGraph";
 import { humanBytes, humanMs, statusTone, timeAgo } from "../../lib/format";
 
 /**
  * Jail detail pane — resource bar, live sparklines while running,
  * network-activity section (audit rows filtered by session), stdout/stderr.
  */
-export function JailDetail({ rec }: { rec: JailRecord | null }) {
+export function JailDetail({
+  rec,
+  onSelect,
+}: {
+  rec: JailRecord | null;
+  onSelect?: (id: number) => void;
+}) {
   if (!rec) {
     return (
       <Panel>
@@ -63,6 +70,7 @@ export function JailDetail({ rec }: { rec: JailRecord | null }) {
         </div>
       </Panel>
 
+      {rec.kind === "fork" && <ForkGraph rec={rec} onSelect={onSelect} />}
       {rec.session_id && <NetworkPanel sessionId={rec.session_id} />}
     </div>
   );

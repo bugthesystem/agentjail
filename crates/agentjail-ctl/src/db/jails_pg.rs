@@ -5,7 +5,7 @@ use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 
 use crate::jails::{
-    JailKind, JailRecord, JailStatus, JailStore, OUTPUT_CAP, truncate,
+    JailKind, JailQuery, JailRecord, JailStatus, JailStore, OUTPUT_CAP, truncate,
 };
 
 /// Postgres-backed jail ledger.
@@ -40,6 +40,7 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> JailRecord {
         stdout:            row.get::<Option<String>, _>("stdout"),
         stderr:            row.get::<Option<String>, _>("stderr"),
         error:             row.get::<Option<String>, _>("error"),
+        parent_id:         row.get::<Option<i64>, _>("parent_id"),
     }
 }
 
@@ -50,15 +51,17 @@ impl JailStore for PgJailStore {
         kind: JailKind,
         label: String,
         session_id: Option<String>,
+        parent_id: Option<i64>,
     ) -> i64 {
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO jails (kind, started_at, status, label, session_id)
-             VALUES ($1, now(), 'running', $2, $3)
+            "INSERT INTO jails (kind, started_at, status, label, session_id, parent_id)
+             VALUES ($1, now(), 'running', $2, $3, $4)
              RETURNING id",
         )
         .bind(kind.as_str())
         .bind(label)
         .bind(session_id)
+        .bind(parent_id)
         .fetch_one(&self.pool)
         .await
         .unwrap_or(-1);
@@ -150,6 +153,66 @@ impl JailStore for PgJailStore {
             .fetch_one(&self.pool).await.unwrap_or(0);
 
         (rows.iter().map(row_to_record).collect(), total as u64)
+    }
+
+    async fn page(&self, q: JailQuery) -> (Vec<JailRecord>, u64) {
+        // Compose a dynamic WHERE clause with positional binds.
+        let mut sql = String::from("SELECT * FROM jails WHERE 1=1");
+        let mut count_sql = String::from("SELECT COUNT(*) FROM jails WHERE 1=1");
+        let mut args: Vec<String> = Vec::new();
+        let mut idx: i32 = 0;
+
+        if let Some(s) = q.status {
+            idx += 1;
+            sql.push_str(&format!(" AND status = ${idx}"));
+            count_sql.push_str(&format!(" AND status = ${idx}"));
+            args.push(s.as_str().to_string());
+        }
+        if let Some(k) = q.kind {
+            idx += 1;
+            sql.push_str(&format!(" AND kind = ${idx}"));
+            count_sql.push_str(&format!(" AND kind = ${idx}"));
+            args.push(k.as_str().to_string());
+        }
+        if let Some(n) = q.q.as_ref().filter(|s| !s.trim().is_empty()) {
+            idx += 1;
+            let like_idx = idx;
+            sql.push_str(&format!(
+                " AND (label ILIKE ${like_idx} OR session_id ILIKE ${like_idx} OR error ILIKE ${like_idx})"
+            ));
+            count_sql.push_str(&format!(
+                " AND (label ILIKE ${like_idx} OR session_id ILIKE ${like_idx} OR error ILIKE ${like_idx})"
+            ));
+            args.push(format!("%{}%", n.replace('%', "\\%")));
+        }
+
+        let limit  = q.limit.max(1).min(500) as i64;
+        let offset = q.offset as i64;
+        sql.push_str(&format!(" ORDER BY id DESC LIMIT {limit} OFFSET {offset}"));
+
+        // Bind args to both queries.
+        let mut row_q = sqlx::query(&sql);
+        let mut cnt_q = sqlx::query_scalar::<_, i64>(&count_sql);
+        for a in &args {
+            row_q = row_q.bind(a);
+            cnt_q = cnt_q.bind(a);
+        }
+
+        let rows = row_q.fetch_all(&self.pool).await.unwrap_or_default();
+        let total = cnt_q.fetch_one(&self.pool).await.unwrap_or(0);
+        (rows.iter().map(row_to_record).collect(), total as u64)
+    }
+
+    async fn tail(&self, id: i64, stdout: &str, stderr: &str) {
+        let _ = sqlx::query(
+            "UPDATE jails SET stdout = $2, stderr = $3
+             WHERE id = $1 AND status = 'running'",
+        )
+        .bind(id)
+        .bind(truncate(stdout, OUTPUT_CAP))
+        .bind(truncate(stderr, OUTPUT_CAP))
+        .execute(&self.pool)
+        .await;
     }
 
     async fn get(&self, id: i64) -> Option<JailRecord> {

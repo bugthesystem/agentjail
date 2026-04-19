@@ -104,6 +104,9 @@ pub struct JailRecord {
     /// Short label: language for `run`/`stream`/`fork`, or the invoked
     /// command for `exec`.
     pub label: String,
+    /// For fork children — the id of the parent jail row they were cloned
+    /// from. `None` for everything else.
+    pub parent_id: Option<i64>,
 
     // ─── set on finish ─────────────────────────────────────────────────
     /// Exit code of the jailed process.
@@ -137,6 +140,7 @@ impl JailRecord {
         kind: JailKind,
         label: String,
         session_id: Option<String>,
+        parent_id: Option<i64>,
     ) -> Self {
         Self {
             id,
@@ -146,6 +150,7 @@ impl JailRecord {
             status: JailStatus::Running,
             session_id,
             label,
+            parent_id,
             exit_code: None,
             duration_ms: None,
             timed_out: None,
@@ -170,6 +175,7 @@ pub trait JailStore: Send + Sync + 'static {
         kind: JailKind,
         label: String,
         session_id: Option<String>,
+        parent_id: Option<i64>,
     ) -> i64;
     /// Mark a record as `Completed` and populate it with captured output.
     async fn finish(&self, id: i64, output: &agentjail::Output);
@@ -182,8 +188,29 @@ pub trait JailStore: Send + Sync + 'static {
     /// Return the most-recent rows, newest first, optionally filtered.
     async fn recent(&self, limit: usize, status: Option<JailStatus>)
         -> (Vec<JailRecord>, u64);
+    /// Paged, filtered, searched. `q` matches label / session_id / error
+    /// (case-insensitive substring). Returns `(rows, total_after_filter)`.
+    async fn page(&self, q: JailQuery) -> (Vec<JailRecord>, u64);
+    /// Append captured output so far. Called by the unified exec helper
+    /// every ~500ms so the Jails detail reads a live tail.
+    async fn tail(&self, _id: i64, _stdout: &str, _stderr: &str) {}
     /// Fetch a single record by id.
     async fn get(&self, id: i64) -> Option<JailRecord>;
+}
+
+/// Paged query over the jail ledger.
+#[derive(Debug, Clone, Default)]
+pub struct JailQuery {
+    /// Max rows to return (1..=500).
+    pub limit: usize,
+    /// Skip this many rows from the head (newest).
+    pub offset: usize,
+    /// Filter by status.
+    pub status: Option<JailStatus>,
+    /// Filter by kind.
+    pub kind: Option<JailKind>,
+    /// Case-insensitive substring match on label / session_id / error.
+    pub q: Option<String>,
 }
 
 /// In-memory ring buffer implementation (default when no DATABASE_URL).
@@ -228,6 +255,7 @@ impl JailStore for InMemoryJailStore {
         kind: JailKind,
         label: String,
         session_id: Option<String>,
+        parent_id: Option<i64>,
     ) -> i64 {
         let mut g = match self.inner.lock() {
             Ok(g) => g,
@@ -235,7 +263,7 @@ impl JailStore for InMemoryJailStore {
         };
         let id = g.next_id;
         g.next_id = g.next_id.wrapping_add(1);
-        let rec = JailRecord::new_running(id, kind, label, session_id);
+        let rec = JailRecord::new_running(id, kind, label, session_id, parent_id);
         if g.rows.len() >= self.capacity {
             g.rows.pop_front();
         }
@@ -307,6 +335,46 @@ impl JailStore for InMemoryJailStore {
         (rows, total)
     }
 
+    async fn page(&self, q: JailQuery) -> (Vec<JailRecord>, u64) {
+        let g = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let needle = q.q.as_deref().map(|s| s.to_lowercase());
+        let matches = |r: &JailRecord| -> bool {
+            if let Some(s) = q.status    { if r.status != s { return false; } }
+            if let Some(k) = q.kind      { if !matches_kind(r.kind, k) { return false; } }
+            if let Some(n) = needle.as_deref() {
+                let hay_lbl = r.label.to_lowercase();
+                let hay_sid = r.session_id.as_deref().unwrap_or("").to_lowercase();
+                let hay_err = r.error.as_deref().unwrap_or("").to_lowercase();
+                if !hay_lbl.contains(n) && !hay_sid.contains(n) && !hay_err.contains(n) {
+                    return false;
+                }
+            }
+            true
+        };
+        let filtered: Vec<&JailRecord> = g.rows.iter().rev().filter(|r| matches(r)).collect();
+        let total = filtered.len() as u64;
+        let rows: Vec<JailRecord> = filtered.into_iter()
+            .skip(q.offset)
+            .take(q.limit.max(1).min(500))
+            .cloned()
+            .collect();
+        (rows, total)
+    }
+
+    async fn tail(&self, id: i64, stdout: &str, stderr: &str) {
+        let mut g = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(rec) = g.rows.iter_mut().find(|r| r.id == id) {
+            rec.stdout = Some(truncate(stdout, OUTPUT_CAP));
+            rec.stderr = Some(truncate(stderr, OUTPUT_CAP));
+        }
+    }
+
     async fn get(&self, id: i64) -> Option<JailRecord> {
         let g = match self.inner.lock() {
             Ok(g) => g,
@@ -320,4 +388,13 @@ impl JailStore for InMemoryJailStore {
 pub(crate) fn truncate(s: &str, cap: usize) -> String {
     if s.len() <= cap { s.to_owned() }
     else { format!("{}… (truncated)", &s[..cap]) }
+}
+
+fn matches_kind(a: JailKind, b: JailKind) -> bool {
+    matches!((a, b),
+        (JailKind::Run, JailKind::Run)
+        | (JailKind::Exec, JailKind::Exec)
+        | (JailKind::Fork, JailKind::Fork)
+        | (JailKind::Stream, JailKind::Stream)
+    )
 }

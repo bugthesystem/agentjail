@@ -63,11 +63,22 @@ export interface JailRecord {
   stdout: string | null;
   stderr: string | null;
   error:  string | null;
+  parent_id: number | null;
 }
 
 export interface JailsList {
   rows:  JailRecord[];
   total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface JailsQuery {
+  limit?:  number;
+  offset?: number;
+  status?: JailStatus;
+  kind?:   JailKind;
+  q?:      string;
 }
 
 export interface ExecResult {
@@ -164,10 +175,13 @@ export function createApi(baseUrl: string, apiKey: string) {
     },
 
     jails: {
-      list: (params?: { limit?: number; status?: JailStatus }) => {
+      list: (params?: JailsQuery) => {
         const q = new URLSearchParams();
-        if (params?.limit)  q.set("limit",  String(params.limit));
-        if (params?.status) q.set("status", params.status);
+        if (params?.limit  != null) q.set("limit",  String(params.limit));
+        if (params?.offset != null) q.set("offset", String(params.offset));
+        if (params?.status)         q.set("status", params.status);
+        if (params?.kind)           q.set("kind",   params.kind);
+        if (params?.q)              q.set("q",      params.q);
         const qs = q.toString();
         return call<JailsList>("GET", `/v1/jails${qs ? `?${qs}` : ""}`);
       },

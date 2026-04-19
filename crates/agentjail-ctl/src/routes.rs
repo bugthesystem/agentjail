@@ -17,7 +17,7 @@ use time::OffsetDateTime;
 use crate::audit::{AuditRow, AuditStore};
 use crate::credential::{CredentialRecord, CredentialStore, fingerprint};
 use crate::error::{CtlError, Result};
-use crate::jails::{JailKind, JailRecord, JailStatus, JailStore};
+use crate::jails::{JailKind, JailQuery, JailRecord, JailStatus, JailStore};
 use crate::sampler;
 use crate::session::{Session, SessionStore, new_session_id};
 
@@ -369,8 +369,22 @@ pub(crate) struct RunRequest {
     language: String,
     timeout_secs: Option<u64>,
     memory_mb: Option<u64>,
+    /// When present, the server `git clone`s this repo into the jail's
+    /// source directory before running the code. The checkout is available
+    /// inside the jail at `/workspace`.
+    #[serde(default)]
+    git: Option<GitSpec>,
     #[serde(flatten)]
     options: ExecOptions,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct GitSpec {
+    /// `https://…` URL. ssh/git protocols are rejected at the edge.
+    repo: String,
+    /// Optional branch / tag / commit.
+    #[serde(default, rename = "ref")]
+    git_ref: Option<String>,
 }
 
 fn default_language() -> String {
@@ -387,7 +401,7 @@ fn language_runtime(lang: &str) -> Result<(&'static str, &'static str)> {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct ExecResponse {
     stdout: String,
     stderr: String,
@@ -399,7 +413,7 @@ pub(crate) struct ExecResponse {
     stats: Option<StatsResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct StatsResponse {
     memory_peak_bytes: u64,
     cpu_usage_usec: u64,
@@ -463,8 +477,8 @@ pub(crate) async fn exec_in_session(
     let jail = agentjail::Jail::new(config)?;
     let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
 
-    let rec_id = state.jails.start(JailKind::Exec, req.cmd.clone(), Some(id.clone())).await;
-    let result = run_with_sampler(&state.jails, rec_id, &jail, &req.cmd, &args_refs).await;
+    let rec_id = state.jails.start(JailKind::Exec, req.cmd.clone(), Some(id.clone()), None).await;
+    let result = run_monitored(&state.jails, rec_id, &jail, &req.cmd, &args_refs).await;
     let result = match result {
         Ok(r)  => { state.jails.finish(rec_id, &r).await; r }
         Err(e) => { state.jails.error(rec_id, e.to_string()).await; return Err(e.into()); }
@@ -508,16 +522,19 @@ pub(crate) async fn create_run(
 
     let (filename, cmd) = language_runtime(&req.language)?;
 
+    // Optional: `git clone` into the source tree before mounting.
+    if let Some(g) = &req.git { git_clone(g, source.path()).await?; }
+
     std::fs::write(source.path().join(filename), &req.code).map_err(CtlError::Io)?;
 
     let run_env = vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())];
     let config = jail_config(source.path(), output_dir.path(), memory, timeout, run_env, &req.options)?;
 
     let jail = agentjail::Jail::new(config)?;
-    let rec_id = state.jails.start(JailKind::Run, req.language.clone(), None).await;
+    let rec_id = state.jails.start(JailKind::Run, req.language.clone(), None, None).await;
     let args: Vec<String> = vec![format!("/workspace/{filename}")];
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let result = run_with_sampler(&state.jails, rec_id, &jail, cmd, &args_ref).await;
+    let result = run_monitored(&state.jails, rec_id, &jail, cmd, &args_ref).await;
     let result = match result {
         Ok(r)  => { state.jails.finish(rec_id, &r).await; r }
         Err(e) => { state.jails.error(rec_id, e.to_string()).await; return Err(e.into()); }
@@ -584,7 +601,7 @@ pub(crate) async fn create_stream_run(
     let pid: u32 = handle.pid().as_raw();
 
     let started_guard = state.exec_metrics.clone().start_owned();
-    let stream_rec    = state.jails.start(JailKind::Stream, req.language.clone(), None).await;
+    let stream_rec    = state.jails.start(JailKind::Stream, req.language.clone(), None, None).await;
     let jails_store   = state.jails.clone();
 
     // Persist mid-flight stats so the Jails detail view stays live even
@@ -686,56 +703,220 @@ fn trim_nl(mut s: String) -> String {
     s
 }
 
-/// Spawn + background-sample + wait. Publishes a stats row every 500ms to
-/// `JailStore::sample_stats` so the dashboard sees memory/cpu climb live.
-async fn run_with_sampler(
+/// Spawn + live-monitor + wait. Runs three cooperating tasks:
+///   1. The jail process itself.
+///   2. A cgroup sampler updating `memory_peak_bytes`, `cpu_usage_usec`,
+///      and `io_*` every 500ms.
+///   3. A stdout/stderr tailer that reads lines into a capped buffer and
+///      flushes to `JailStore::tail` every 500ms so the Jails page
+///      renders a live `tail -f` of any running jail, not just SSE ones.
+///
+/// This replaces the old `run_monitored` everywhere exec happens.
+async fn run_monitored(
     jails: &std::sync::Arc<dyn JailStore>,
     rec_id: i64,
     jail: &agentjail::Jail,
     cmd: &str,
     args: &[&str],
 ) -> agentjail::Result<agentjail::Output> {
-    let handle = jail.spawn(cmd, args)?;
-    let sampler_handle = handle.cgroup_path().map(|p| {
+    use std::sync::{Arc, Mutex};
+    let mut handle = jail.spawn(cmd, args)?;
+
+    // Stats sampler (cgroup)
+    let stats_task = handle.cgroup_path().map(|p| {
         let js = jails.clone();
         sampler::spawn(p, std::time::Duration::from_millis(500), move |s| {
             let js = js.clone();
             tokio::spawn(async move { js.sample_stats(rec_id, &s).await; });
         })
     });
+
+    // Buffered stdout/stderr with periodic DB flush.
+    let buf_stdout = Arc::new(Mutex::new(String::new()));
+    let buf_stderr = Arc::new(Mutex::new(String::new()));
+
+    // Flush ticker → JailStore::tail.
+    let flush_task = {
+        let js = jails.clone();
+        let o  = buf_stdout.clone();
+        let e  = buf_stderr.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await; // skip immediate
+            loop {
+                tick.tick().await;
+                let (so, se) = {
+                    let so = o.lock().map(|g| g.clone()).unwrap_or_default();
+                    let se = e.lock().map(|g| g.clone()).unwrap_or_default();
+                    (so, se)
+                };
+                js.tail(rec_id, &so, &se).await;
+            }
+        })
+    };
+
+    // Drain stdout/stderr in-process. We need to read them here because
+    // handle.wait() only collects them at the end. Use tokio::select over
+    // both pipes + the wait future; aggregate into the shared buffers.
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    while !stdout_done || !stderr_done {
+        tokio::select! {
+            biased;
+            line = handle.stdout.read_line(), if !stdout_done => {
+                match line {
+                    Some(l) => { if let Ok(mut b) = buf_stdout.lock() { push_capped(&mut b, &l); } }
+                    None    => { stdout_done = true; }
+                }
+            }
+            line = handle.stderr.read_line(), if !stderr_done => {
+                match line {
+                    Some(l) => { if let Ok(mut b) = buf_stderr.lock() { push_capped(&mut b, &l); } }
+                    None    => { stderr_done = true; }
+                }
+            }
+        }
+    }
+
     let out = handle.wait().await;
-    if let Some(h) = sampler_handle { h.abort(); }
-    out
+    if let Some(h) = stats_task { h.abort(); }
+    flush_task.abort();
+
+    // Push the final buffer so the DB reflects the full captured output
+    // even when no one was tailing.
+    let (so, se) = (
+        buf_stdout.lock().map(|g| g.clone()).unwrap_or_default(),
+        buf_stderr.lock().map(|g| g.clone()).unwrap_or_default(),
+    );
+    jails.tail(rec_id, &so, &se).await;
+
+    // Merge captured bytes into the Output (handle.wait() returns empty
+    // stdout/stderr because we drained the pipes line-by-line).
+    out.map(|mut o| {
+        if o.stdout.is_empty() && !so.is_empty() { o.stdout = so.into_bytes(); }
+        if o.stderr.is_empty() && !se.is_empty() { o.stderr = se.into_bytes(); }
+        o
+    })
+}
+
+/// Shallow-clone a repo into the jail's source directory. Runs on the
+/// host, *before* the jail locks down the filesystem.
+///
+/// Security:
+///  - scheme must be `https://` (no ssh/git/file)
+///  - URL length capped at 512 bytes; ref at 200
+///  - `git` runs with a 60s hard timeout and `--depth=1`
+async fn git_clone(spec: &GitSpec, dst: &std::path::Path) -> Result<()> {
+    if !spec.repo.starts_with("https://") || spec.repo.len() > 512 {
+        return Err(CtlError::BadRequest("git.repo must be https:// (max 512 bytes)".into()));
+    }
+    if let Some(r) = &spec.git_ref {
+        if r.len() > 200 || r.chars().any(|c| c.is_control()) {
+            return Err(CtlError::BadRequest("git.ref invalid".into()));
+        }
+    }
+
+    // Write a .git_keep so the clone target isn't empty before git fills it.
+    // git clone refuses to clone into a non-empty dir, so stage into a subpath.
+    let target = dst.join("__repo");
+    std::fs::create_dir_all(&target).map_err(CtlError::Io)?;
+
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg("clone").arg("--depth=1").arg("--single-branch");
+    if let Some(r) = &spec.git_ref {
+        cmd.arg("--branch").arg(r);
+    }
+    cmd.arg(&spec.repo).arg(&target);
+    cmd.kill_on_drop(true);
+
+    let child_fut = cmd.output();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(60), child_fut)
+        .await
+        .map_err(|_| CtlError::BadRequest("git clone timed out (60s)".into()))?
+        .map_err(CtlError::Io)?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail: String = stderr.lines().rev().take(3).collect::<Vec<_>>().join(" · ");
+        return Err(CtlError::BadRequest(format!("git clone failed: {tail}")));
+    }
+
+    // Flatten `__repo/*` up into `dst` so /workspace points directly at the
+    // repo root (not /workspace/__repo).
+    for entry in std::fs::read_dir(&target).map_err(CtlError::Io)? {
+        let e = entry.map_err(CtlError::Io)?;
+        let from = e.path();
+        let to   = dst.join(e.file_name());
+        std::fs::rename(&from, &to).map_err(CtlError::Io)?;
+    }
+    let _ = std::fs::remove_dir_all(&target);
+    Ok(())
+}
+
+const OUTPUT_CAP_BYTES: usize = 16 * 1024;
+
+fn push_capped(buf: &mut String, line: &str) {
+    if buf.len() + line.len() > OUTPUT_CAP_BYTES {
+        let take = OUTPUT_CAP_BYTES.saturating_sub(buf.len());
+        buf.push_str(&line[..take.min(line.len())]);
+        if !buf.ends_with("…") { buf.push('…'); }
+        return;
+    }
+    buf.push_str(line);
 }
 
 // ---------- fork ----------
 
-/// One-shot live-fork demo: spawn parent, COW-clone the output mid-run,
-/// then spawn child against the forked state. Returns both results and
-/// the ForkInfo (clone duration, bytes copied, reflink method).
+/// Live-fork: spawn parent, COW-clone the output mid-run, then spawn one
+/// or more children against the forked state. Children run in parallel.
+///
+/// The request accepts either legacy `child_code` (single child) or
+/// `children: [{code,...}]` (N children). The response mirrors the shape:
+/// single-child calls get `child` + `fork`; multi-child calls get
+/// `children` + `forks`. Legacy fields stay populated for the first child
+/// so existing SDKs keep working.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ForkRequest {
     parent_code: String,
-    child_code: String,
+    #[serde(default)]
+    child_code: Option<String>,
+    #[serde(default)]
+    children: Vec<ForkChild>,
     #[serde(default = "default_language")]
     language: String,
-    /// How long the parent runs before we freeze + fork. Default 200ms.
+    /// How long the parent runs before we freeze + fork. Default 1500ms.
     #[serde(default)]
     fork_after_ms: Option<u64>,
     timeout_secs: Option<u64>,
     memory_mb: Option<u64>,
     #[serde(flatten)]
     options: ExecOptions,
+    #[serde(default)]
+    git: Option<GitSpec>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct ForkChild {
+    code: String,
+    #[serde(default)]
+    memory_mb: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ForkResponse {
     parent: ExecResponse,
+    /// First child (back-compat). Identical to `children[0]`.
     child: ExecResponse,
+    /// All children in invocation order.
+    children: Vec<ExecResponse>,
+    /// ForkMeta for the first child (back-compat).
     fork: ForkMeta,
+    /// Per-child ForkMeta.
+    forks: Vec<ForkMeta>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct ForkMeta {
     clone_ms: u64,
     files_cloned: u64,
@@ -758,7 +939,7 @@ impl From<agentjail::ForkInfo> for ForkMeta {
     }
 }
 
-/// `POST /v1/runs/fork` — run parent, live_fork, run child on fork.
+/// `POST /v1/runs/fork` — run parent, live_fork, run N children on forks.
 pub(crate) async fn create_fork_run(
     State(state): State<AppState>,
     Json(req): Json<ForkRequest>,
@@ -766,41 +947,53 @@ pub(crate) async fn create_fork_run(
     let exec_cfg = state.exec_config.as_ref()
         .ok_or_else(|| CtlError::Internal("exec not enabled".into()))?;
 
-    if req.parent_code.len() > 1024 * 1024 || req.child_code.len() > 1024 * 1024 {
+    // Normalize: either `children: [...]` or fall back to the legacy
+    // single `child_code`. At least one child is required.
+    let mut children: Vec<ForkChild> = req.children.clone();
+    if children.is_empty() {
+        let Some(c) = req.child_code.clone() else {
+            return Err(CtlError::BadRequest("children or child_code is required".into()));
+        };
+        children.push(ForkChild { code: c, memory_mb: None });
+    }
+    if children.len() > 16 {
+        return Err(CtlError::BadRequest("at most 16 children per fork".into()));
+    }
+    if req.parent_code.len() > 1024 * 1024
+        || children.iter().any(|c| c.code.len() > 1024 * 1024)
+    {
         return Err(CtlError::BadRequest("code exceeds 1 MB".into()));
     }
-    let timeout = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs).clamp(1, 3600);
-    let memory  = req.memory_mb.unwrap_or(exec_cfg.default_memory_mb).min(8192);
-    // Default waits 1.5s so the parent namespaces + chroot + cgroup finish
-    // setting up before we freeze and cow_clone. Clamped to 30s.
+    let timeout    = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs).clamp(1, 3600);
+    let memory     = req.memory_mb.unwrap_or(exec_cfg.default_memory_mb).min(8192);
     let fork_after = req.fork_after_ms.unwrap_or(1500).min(30_000);
 
-    // Two slots: one for parent, one for child, both through the same permit.
     let _permit = state.exec_semaphore.try_acquire()
         .map_err(|_| CtlError::BadRequest("too many concurrent executions".into()))?;
     let _guard = state.exec_metrics.start();
 
     let (filename, cmd) = language_runtime(&req.language)?;
 
-    // Parent source + output dirs. Write BOTH parent and child files into the
-    // same source dir so the forked jail can read child.js via /workspace.
-    let source_dir  = tempfile::tempdir().map_err(CtlError::Io)?;
-    let parent_out  = tempfile::tempdir().map_err(CtlError::Io)?;
-    let fork_parent = std::path::Path::new("child_").to_path_buf();
-    let child_name  = format!("child_{filename}");
+    let source_dir = tempfile::tempdir().map_err(CtlError::Io)?;
+    let parent_out = tempfile::tempdir().map_err(CtlError::Io)?;
 
+    if let Some(g) = &req.git { git_clone(g, source_dir.path()).await?; }
+
+    // Write parent + each child file into the same source dir so the forked
+    // jails all see them via /workspace.
     std::fs::write(source_dir.path().join(filename), &req.parent_code).map_err(CtlError::Io)?;
-    std::fs::write(source_dir.path().join(&child_name), &req.child_code).map_err(CtlError::Io)?;
+    for (i, c) in children.iter().enumerate() {
+        let name = format!("child_{i}_{filename}");
+        std::fs::write(source_dir.path().join(&name), &c.code).map_err(CtlError::Io)?;
+    }
 
     let run_env = vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())];
-    let config  = jail_config(source_dir.path(), parent_out.path(), memory, timeout, run_env, &req.options)?;
+    let parent_config = jail_config(source_dir.path(), parent_out.path(), memory, timeout, run_env.clone(), &req.options)?;
 
-    let parent_jail = agentjail::Jail::new(config)?;
-    let parent_rec  = state.jails.start(JailKind::Fork, format!("{} · parent", req.language), None).await;
-    let child_rec   = state.jails.start(JailKind::Fork, format!("{} · child",  req.language), None).await;
+    let parent_jail   = agentjail::Jail::new(parent_config)?;
+    let parent_rec    = state.jails.start(JailKind::Fork, format!("{} · parent", req.language), None, None).await;
     let parent_handle = parent_jail.spawn(cmd, &[&format!("/workspace/{filename}")])?;
 
-    // Live-stats sampler for the parent while it runs toward the fork.
     let parent_sampler = parent_handle.cgroup_path().map(|p| {
         let jails = state.jails.clone();
         sampler::spawn(p, std::time::Duration::from_millis(500), move |s| {
@@ -809,54 +1002,88 @@ pub(crate) async fn create_fork_run(
         })
     });
 
-    // Give parent time to write its checkpoint before we fork.
+    // Let the parent do its setup (write checkpoint, etc.) before we fork.
     tokio::time::sleep(std::time::Duration::from_millis(fork_after)).await;
 
-    // Fork — COW-clone the output mid-run.
-    let child_out = tempfile::tempdir().map_err(CtlError::Io)?;
-    let (child_jail, fork_info) = parent_jail
-        .live_fork(Some(&parent_handle), child_out.path())?;
+    // Fork once per child — each gets its own COW clone of the parent output.
+    // We keep each child's output tempdir alive for the duration of the run.
+    let mut child_outs: Vec<tempfile::TempDir> = Vec::with_capacity(children.len());
+    let mut child_jails: Vec<agentjail::Jail>  = Vec::with_capacity(children.len());
+    let mut forks_meta: Vec<ForkMeta>          = Vec::with_capacity(children.len());
+    for _ in &children {
+        let out = tempfile::tempdir().map_err(CtlError::Io)?;
+        let (jail, info) = parent_jail.live_fork(Some(&parent_handle), out.path())?;
+        child_outs.push(out);
+        child_jails.push(jail);
+        forks_meta.push(info.into());
+    }
 
-    // Run child in the fork + await parent in parallel.
-    let child_args = vec![format!("/workspace/{child_name}")];
-    let child_args_refs: Vec<&str> = child_args.iter().map(|s| s.as_str()).collect();
-    let jails_for_child = state.jails.clone();
-    let (child_res, parent_res) = tokio::join!(
-        run_with_sampler(&jails_for_child, child_rec, &child_jail, cmd, &child_args_refs),
+    // Record child rows (each linked to parent_rec).
+    let mut child_recs: Vec<i64> = Vec::with_capacity(children.len());
+    for i in 0..children.len() {
+        let label = if children.len() == 1 {
+            format!("{} · child", req.language)
+        } else {
+            format!("{} · child {}", req.language, i)
+        };
+        let id = state.jails.start(JailKind::Fork, label, None, Some(parent_rec)).await;
+        child_recs.push(id);
+    }
+
+    // Run all children in parallel + parent's wait.
+    let child_futures: Vec<_> = (0..children.len()).map(|i| {
+        let jails = state.jails.clone();
+        let rec   = child_recs[i];
+        let jail  = &child_jails[i];
+        let name  = format!("/workspace/child_{i}_{filename}");
+        async move {
+            let args = [name.as_str()];
+            run_monitored(&jails, rec, jail, cmd, &args).await
+        }
+    }).collect();
+
+    let (parent_res, child_ress) = tokio::join!(
         parent_handle.wait(),
+        futures::future::join_all(child_futures),
     );
     if let Some(h) = parent_sampler { h.abort(); }
-    let child_output = match child_res {
-        Ok(r)  => { state.jails.finish(child_rec, &r).await; r }
-        Err(e) => { state.jails.error(child_rec, e.to_string()).await; return Err(e.into()); }
-    };
+
+    // Collect results and record outcomes.
     let parent_output = match parent_res {
         Ok(r)  => { state.jails.finish(parent_rec, &r).await; r }
         Err(e) => { state.jails.error(parent_rec, e.to_string()).await; return Err(e.into()); }
     };
+    let mut child_outputs: Vec<agentjail::Output> = Vec::with_capacity(child_ress.len());
+    for (i, r) in child_ress.into_iter().enumerate() {
+        match r {
+            Ok(o)  => { state.jails.finish(child_recs[i], &o).await; child_outputs.push(o); }
+            Err(e) => { state.jails.error(child_recs[i], e.to_string()).await; return Err(e.into()); }
+        }
+    }
 
-    // Keep dirs + _ = fork_parent alive; drop at end of scope.
-    let _ = fork_parent;
     drop(source_dir);
     drop(parent_out);
-    drop(child_out);
+    drop(child_outs);
 
     tracing::info!(
-        language     = %req.language,
-        parent_exit  = parent_output.exit_code,
-        child_exit   = child_output.exit_code,
-        fork_ms      = fork_info.clone_duration.as_millis() as u64,
-        files_cow    = fork_info.files_cow,
-        files_cloned = fork_info.files_cloned,
+        language    = %req.language,
+        parent_exit = parent_output.exit_code,
+        children    = child_outputs.len(),
         "fork run completed"
     );
+
+    let all: Vec<ExecResponse> = child_outputs.into_iter().map(output_to_response).collect();
+    let first_child = all[0].clone();
+    let first_fork  = forks_meta[0].clone();
 
     Ok((
         StatusCode::CREATED,
         Json(ForkResponse {
-            parent: output_to_response(parent_output),
-            child:  output_to_response(child_output),
-            fork:   fork_info.into(),
+            parent:   output_to_response(parent_output),
+            child:    first_child,
+            children: all,
+            fork:     first_fork,
+            forks:    forks_meta,
         }),
     ))
 }
@@ -938,28 +1165,49 @@ pub(crate) struct JailsQuery {
     #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    /// Case-insensitive substring over label / session_id / error.
+    #[serde(default)]
+    q: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct JailsList {
     rows:  Vec<JailRecord>,
     total: u64,
+    limit: usize,
+    offset: usize,
 }
 
 pub(crate) async fn list_jails(
     State(state): State<AppState>,
     Query(q):     Query<JailsQuery>,
 ) -> Json<JailsList> {
-    let limit = q.limit.unwrap_or(100).min(1000);
+    let limit  = q.limit.unwrap_or(50).min(500);
+    let offset = q.offset.unwrap_or(0);
     let status = match q.status.as_deref() {
         Some("running")   => Some(JailStatus::Running),
         Some("completed") => Some(JailStatus::Completed),
         Some("error")     => Some(JailStatus::Error),
         _ => None,
     };
-    let (rows, total) = state.jails.recent(limit, status).await;
-    Json(JailsList { rows, total })
+    let kind = match q.kind.as_deref() {
+        Some("run")    => Some(JailKind::Run),
+        Some("exec")   => Some(JailKind::Exec),
+        Some("fork")   => Some(JailKind::Fork),
+        Some("stream") => Some(JailKind::Stream),
+        _ => None,
+    };
+    let query = JailQuery {
+        limit, offset, status, kind,
+        q: q.q.clone().filter(|s| !s.trim().is_empty()),
+    };
+    let (rows, total) = state.jails.page(query).await;
+    Json(JailsList { rows, total, limit, offset })
 }
 
 pub(crate) async fn get_jail(
