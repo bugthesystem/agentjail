@@ -5,3 +5,6 @@ target/
 **/*.tsbuildinfo
 .DS_Store
 .claude/
+.env
+.env.*
+!.env.template
