@@ -1,4 +1,4 @@
-/** Composable UI primitives. No boolean prop soup. */
+/** Composable UI primitives — refined, no bloat. */
 
 import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type HTMLAttributes } from "react";
 import { cn } from "../lib/cn";
@@ -8,16 +8,22 @@ import { cn } from "../lib/cn";
 // ---------------------------------------------------------------------------
 
 const buttonVariants = {
-  primary: "bg-accent text-text-inverse hover:bg-accent-hover font-medium",
-  secondary: "bg-bg-muted text-text border border-border hover:bg-bg-emphasis",
-  ghost: "text-text-secondary hover:text-text hover:bg-bg-muted",
-  danger: "bg-error/10 text-error hover:bg-error/20 border border-error/20",
+  primary:
+    "bg-gradient-to-b from-accent to-accent-dim text-text-inverse font-semibold " +
+    "hover:from-accent-hover hover:to-accent shadow-sm shadow-accent/10 " +
+    "active:shadow-none active:translate-y-px",
+  secondary:
+    "bg-bg-muted text-text border border-border hover:border-text-tertiary hover:bg-bg-emphasis",
+  ghost:
+    "text-text-secondary hover:text-text hover:bg-bg-muted",
+  danger:
+    "bg-error/8 text-error hover:bg-error/15 border border-error/15",
 } as const;
 
 const buttonSizes = {
-  sm: "h-8 px-3 text-sm rounded-md gap-1.5",
+  sm: "h-8 px-3 text-[13px] rounded-lg gap-1.5",
   md: "h-9 px-4 text-sm rounded-lg gap-2",
-  lg: "h-10 px-5 text-base rounded-lg gap-2",
+  lg: "h-10 px-5 text-sm rounded-lg gap-2",
 } as const;
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -30,9 +36,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     <button
       ref={ref}
       className={cn(
-        "inline-flex items-center justify-center font-medium transition-colors duration-150",
-        "disabled:opacity-50 disabled:pointer-events-none",
-        "focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
+        "inline-flex items-center justify-center font-medium",
+        "transition-all duration-150 ease-out",
+        "disabled:opacity-40 disabled:pointer-events-none",
         buttonVariants[variant],
         buttonSizes[size],
         className,
@@ -55,9 +61,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
   ({ className, label, error, id, ...props }, ref) => {
     const inputId = id ?? label?.toLowerCase().replace(/\s+/g, "-");
     return (
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         {label && (
-          <label htmlFor={inputId} className="text-sm font-medium text-text-secondary">
+          <label htmlFor={inputId} className="block text-[13px] font-medium text-text-secondary">
             {label}
           </label>
         )}
@@ -65,10 +71,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           ref={ref}
           id={inputId}
           className={cn(
-            "w-full h-9 px-3 rounded-lg text-sm bg-bg-subtle border transition-colors duration-150",
+            "w-full h-10 px-3 rounded-lg text-sm bg-bg border transition-all duration-150",
             "placeholder:text-text-tertiary",
-            "focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-1 focus:ring-offset-bg",
-            error ? "border-error" : "border-border hover:border-text-tertiary",
+            "focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent/30",
+            error ? "border-error/40" : "border-border hover:border-text-tertiary/50",
             className,
           )}
           {...props}
@@ -87,7 +93,8 @@ export function Card({ className, children, ...props }: HTMLAttributes<HTMLDivEl
   return (
     <div
       className={cn(
-        "rounded-xl border border-border bg-bg-subtle",
+        "rounded-xl border border-border bg-bg-subtle/80 backdrop-blur-sm",
+        "transition-colors duration-200",
         className,
       )}
       {...props}
@@ -99,7 +106,7 @@ export function Card({ className, children, ...props }: HTMLAttributes<HTMLDivEl
 
 export function CardHeader({ className, children, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={cn("px-5 py-4 border-b border-border", className)} {...props}>
+    <div className={cn("px-5 py-3.5 border-b border-border", className)} {...props}>
       {children}
     </div>
   );
@@ -118,11 +125,11 @@ export function CardBody({ className, children, ...props }: HTMLAttributes<HTMLD
 // ---------------------------------------------------------------------------
 
 const badgeVariants = {
-  default: "bg-bg-emphasis text-text-secondary",
-  success: "bg-success/10 text-success",
-  warning: "bg-warning/10 text-warning",
-  error: "bg-error/10 text-error",
-  accent: "bg-accent/10 text-accent",
+  default: "bg-bg-emphasis text-text-secondary border border-border",
+  success: "bg-success/8 text-success border border-success/15",
+  warning: "bg-warning/8 text-warning border border-warning/15",
+  error: "bg-error/8 text-error border border-error/15",
+  accent: "bg-accent-subtle text-accent border border-accent/15",
 } as const;
 
 interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
@@ -133,7 +140,7 @@ export function Badge({ className, variant = "default", ...props }: BadgeProps) 
   return (
     <span
       className={cn(
-        "inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium",
+        "inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium tracking-wide",
         badgeVariants[variant],
         className,
       )}
@@ -148,7 +155,7 @@ export function Badge({ className, variant = "default", ...props }: BadgeProps) 
 
 export function Kbd({ children }: { children: string }) {
   return (
-    <kbd className="ml-auto text-2xs text-text-tertiary bg-bg-emphasis px-1.5 py-0.5 rounded font-mono border border-border-subtle">
+    <kbd className="ml-auto text-[10px] text-text-tertiary bg-bg-emphasis/50 px-1.5 py-0.5 rounded font-mono border border-border-subtle">
       {children}
     </kbd>
   );
@@ -167,11 +174,15 @@ interface EmptyStateProps {
 
 export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 px-4 text-center animate-fade-in">
-      {icon && <div className="mb-4 text-text-tertiary">{icon}</div>}
-      <h3 className="text-sm font-medium text-text">{title}</h3>
-      {description && <p className="mt-1 text-sm text-text-tertiary max-w-sm">{description}</p>}
-      {action && <div className="mt-4">{action}</div>}
+    <div className="flex flex-col items-center justify-center py-20 px-4 text-center animate-fade-in">
+      {icon && (
+        <div className="mb-4 p-3 rounded-2xl bg-bg-muted border border-border text-text-tertiary">
+          {icon}
+        </div>
+      )}
+      <h3 className="text-sm font-medium text-text-secondary">{title}</h3>
+      {description && <p className="mt-1.5 text-sm text-text-tertiary max-w-sm">{description}</p>}
+      {action && <div className="mt-5">{action}</div>}
     </div>
   );
 }
@@ -183,33 +194,27 @@ export function EmptyState({ icon, title, description, action }: EmptyStateProps
 interface CodeBlockProps {
   children: string;
   language?: string;
-  copyable?: boolean;
 }
 
-export function CodeBlock({ children, language, copyable = true }: CodeBlockProps) {
+export function CodeBlock({ children, language }: CodeBlockProps) {
   const copy = () => navigator.clipboard.writeText(children);
   return (
-    <div className="relative group rounded-lg border border-border bg-bg overflow-hidden">
+    <div className="relative group rounded-xl border border-border bg-bg overflow-hidden">
       {language && (
-        <div className="px-3 py-1.5 border-b border-border text-2xs text-text-tertiary font-mono uppercase tracking-wider">
-          {language}
+        <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+          <span className="text-[11px] text-text-tertiary font-mono uppercase tracking-widest">{language}</span>
+          <button
+            onClick={copy}
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-[11px] text-text-tertiary hover:text-text px-2 py-0.5 rounded-md hover:bg-bg-emphasis"
+            aria-label="Copy code"
+          >
+            Copy
+          </button>
         </div>
       )}
-      <pre className="p-3 text-sm font-mono text-text-secondary overflow-x-auto">
+      <pre className="p-4 text-[13px] font-mono text-text-secondary leading-relaxed overflow-x-auto">
         <code>{children}</code>
       </pre>
-      {copyable && (
-        <button
-          onClick={copy}
-          className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-md bg-bg-emphasis hover:bg-bg-muted text-text-tertiary hover:text-text"
-          aria-label="Copy code"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="9" y="9" width="13" height="13" rx="2" />
-            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-          </svg>
-        </button>
-      )}
     </div>
   );
 }
@@ -222,16 +227,24 @@ interface MetricProps {
   label: string;
   value: number | string;
   hint?: string;
-  trend?: "up" | "down" | "neutral";
+  accent?: boolean;
 }
 
-export function Metric({ label, value, hint }: MetricProps) {
+export function Metric({ label, value, hint, accent }: MetricProps) {
   return (
-    <Card className="px-5 py-4">
-      <p className="text-xs font-medium text-text-tertiary uppercase tracking-wider">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
-      {hint && <p className="mt-0.5 text-xs text-text-tertiary">{hint}</p>}
-    </Card>
+    <div className={cn(
+      "rounded-xl border bg-bg-subtle/80 px-5 py-4 transition-colors duration-200",
+      accent ? "border-accent/20 bg-accent-subtle" : "border-border hover:border-border-accent",
+    )}>
+      <p className="text-[11px] font-medium text-text-tertiary uppercase tracking-widest">{label}</p>
+      <p className={cn(
+        "mt-1.5 text-2xl font-bold tabular-nums tracking-tight",
+        accent && "text-accent",
+      )}>
+        {value}
+      </p>
+      {hint && <p className="mt-1 text-[11px] text-text-tertiary">{hint}</p>}
+    </div>
   );
 }
 
@@ -241,9 +254,9 @@ export function Metric({ label, value, hint }: MetricProps) {
 
 export function StatusDot({ status }: { status: "active" | "idle" | "error" }) {
   const colors = {
-    active: "bg-success",
+    active: "bg-success shadow-sm shadow-success/50",
     idle: "bg-text-tertiary",
-    error: "bg-error",
+    error: "bg-error shadow-sm shadow-error/50",
   };
   return (
     <span className={cn("inline-block w-2 h-2 rounded-full", colors[status])} />

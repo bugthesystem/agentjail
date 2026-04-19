@@ -24,6 +24,7 @@ export function DashboardPage() {
           label="Active Execs"
           value={s?.active_execs ?? 0}
           hint={s?.active_execs ? "jails running" : "idle"}
+          accent={!!s?.active_execs}
         />
         <Metric label="Total Execs" value={s?.total_execs ?? 0} />
         <Metric label="Sessions" value={s?.sessions ?? 0} />
