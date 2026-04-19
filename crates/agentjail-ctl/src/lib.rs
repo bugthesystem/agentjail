@@ -41,9 +41,12 @@
 mod audit;
 mod auth;
 mod credential;
+pub mod db;
 mod error;
 mod exec;
+mod jails;
 mod routes;
+mod sampler;
 mod session;
 
 use std::sync::Arc;
@@ -61,6 +64,7 @@ pub use auth::ApiKeys;
 pub use credential::{CredentialRecord, CredentialStore, InMemoryCredentialStore};
 pub use error::{CtlError, Result};
 pub use exec::{ExecConfig, ExecMetrics};
+pub use jails::{InMemoryJailStore, JailKind, JailRecord, JailStatus, JailStore};
 pub use session::{InMemorySessionStore, Session, SessionStore};
 
 /// Configuration for a [`ControlPlane`].
@@ -80,6 +84,35 @@ pub struct ControlPlaneConfig {
     /// and `/v1/runs`. When `None`, those endpoints return 501.
     pub exec: Option<ExecConfig>,
 }
+
+/// Opaque wrapper for a configured Postgres pool. Passed to
+/// [`ControlPlane::with_postgres`] to swap the credential/audit/jail stores
+/// to DB-backed implementations.
+pub struct Postgres {
+    /// Underlying pool. Public so callers can build their own store
+    /// implementations (e.g. the server's bespoke audit sink).
+    pub pool: sqlx::PgPool,
+}
+
+impl Postgres {
+    /// Connect + run the embedded migrations.
+    pub async fn connect(database_url: &str) -> Result<Self, sqlx::Error> {
+        let pool = db::connect(database_url).await?;
+        Ok(Self { pool })
+    }
+
+    /// Populate the given in-memory `KeyStore` from persisted credentials.
+    pub async fn rehydrate_keys(
+        &self,
+        keys: &Arc<InMemoryKeyStore>,
+    ) -> Result<usize, sqlx::Error> {
+        db::rehydrate_keystore(&self.pool, keys).await
+    }
+}
+
+// Re-export the rehydration helper so callers can reach it without opening
+// the db submodule.
+pub use db::rehydrate_keystore;
 
 /// Assembled control plane. Call [`Self::router`] for the axum router.
 pub struct ControlPlane {
@@ -109,6 +142,20 @@ impl ControlPlane {
         credentials: Arc<dyn CredentialStore>,
         audit: Arc<dyn AuditStore>,
     ) -> Self {
+        let jails: Arc<dyn JailStore> = Arc::new(InMemoryJailStore::new());
+        Self::with_all_stores(config, sessions, credentials, audit, jails)
+    }
+
+    /// Build with explicit stores *including* the jail ledger — the most
+    /// granular constructor. Used by the Postgres-backed wiring.
+    #[must_use]
+    pub fn with_all_stores(
+        config: ControlPlaneConfig,
+        sessions: Arc<dyn SessionStore>,
+        credentials: Arc<dyn CredentialStore>,
+        audit: Arc<dyn AuditStore>,
+        jails: Arc<dyn JailStore>,
+    ) -> Self {
         let proxy_base_url = config.proxy_base_url.trim_end_matches('/').to_string();
         let max_concurrent = config.exec.as_ref().map(|e| e.max_concurrent).unwrap_or(16);
         let exec_semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
@@ -123,11 +170,25 @@ impl ControlPlane {
             exec_config: config.exec,
             exec_semaphore,
             exec_metrics,
+            jails,
         };
         Self {
             state,
             api_keys: ApiKeys::new(config.api_keys),
         }
+    }
+
+    /// Build with Postgres-backed stores for credentials, audit, and jails.
+    /// Sessions stay in-memory because they have TTL-based eviction and
+    /// they're short-lived. Call `Postgres::rehydrate_keys` separately
+    /// before serving traffic if you want to seed the phantom key store.
+    #[must_use]
+    pub fn with_postgres(config: ControlPlaneConfig, pg: &Postgres) -> Self {
+        let sessions:    Arc<dyn SessionStore>    = Arc::new(InMemorySessionStore::new());
+        let credentials: Arc<dyn CredentialStore> = Arc::new(db::PgCredentialStore::new(pg.pool.clone()));
+        let audit:       Arc<dyn AuditStore>      = Arc::new(db::PgAuditStore::new(pg.pool.clone()));
+        let jails:       Arc<dyn JailStore>       = Arc::new(db::PgJailStore::new(pg.pool.clone()));
+        Self::with_all_stores(config, sessions, credentials, audit, jails)
     }
 
     /// Build the axum router.
@@ -159,6 +220,8 @@ impl ControlPlane {
             .route("/v1/runs/fork", post(routes::create_fork_run))
             .route("/v1/runs/stream", post(routes::create_stream_run))
             .route("/v1/audit", get(routes::list_audit))
+            .route("/v1/jails", get(routes::list_jails))
+            .route("/v1/jails/:id", get(routes::get_jail))
             .layer(RequestBodyLimitLayer::new(1024 * 1024)) // 1 MB
             .layer(middleware::from_fn_with_state(
                 self.api_keys.clone(),

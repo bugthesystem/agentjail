@@ -296,8 +296,8 @@ spawn("node", ["agent.js"], { env: { ...process.env, ...session.env } });
 ```
 
 Surface area: `credentials`, `sessions`, `runs` (`create` / `fork` / `stream`),
-`audit`. See [packages/sdk-node/README.md](packages/sdk-node/README.md)
-and [PLATFORM.md](PLATFORM.md) for the full platform story.
+`audit`. See [packages/sdk-node/README.md](packages/sdk-node/README.md) for
+the full SDK reference.
 
 ## Web UI
 

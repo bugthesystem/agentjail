@@ -46,7 +46,8 @@ setup:
 	  KEY="aj_local_$$(openssl rand -hex 16 2>/dev/null || date +%s%N | sha256sum | head -c 32)"; \
 	  printf "AGENTJAIL_API_KEY=%s\n" "$$KEY" > $(ENV_FILE); \
 	  printf "PROXY_BASE_URL=http://server:8443\n" >> $(ENV_FILE); \
-	  printf "  $(C_GREEN)✓$(C_RESET) wrote $(ENV_FILE) with a fresh API key\n"; \
+	  printf "DATABASE_URL=postgres://agentjail:agentjail@postgres:5432/agentjail\n" >> $(ENV_FILE); \
+	  printf "  $(C_GREEN)✓$(C_RESET) wrote $(ENV_FILE) with a fresh API key + DATABASE_URL\n"; \
 	else \
 	  printf "  $(C_DIM)•$(C_RESET) $(ENV_FILE) already exists (left as-is)\n"; \
 	fi
@@ -87,9 +88,17 @@ doctor:
 	@printf "\n$(C_DIM)ports$(C_RESET)\n"
 	@$(call probe_port,3000,web ui)
 	@$(call probe_port,5173,vite dev)
+	@$(call probe_port,5433,postgres)
 	@$(call probe_port,7070,control plane)
 	@$(call probe_port,8443,phantom proxy)
 	@printf "\n$(C_DIM)services$(C_RESET)\n"
+	@if docker exec agentjail-postgres-1 pg_isready -U agentjail -d agentjail >/dev/null 2>&1; then \
+	  CREDS=$$(docker exec agentjail-postgres-1 psql -U agentjail -d agentjail -At -c "SELECT COUNT(*) FROM credentials" 2>/dev/null); \
+	  JAILS=$$(docker exec agentjail-postgres-1 psql -U agentjail -d agentjail -At -c "SELECT COUNT(*) FROM jails"       2>/dev/null); \
+	  printf "  $(C_GREEN)✓$(C_RESET) postgres healthy     $(C_DIM)(creds=%s jails=%s)$(C_RESET)\n" "$${CREDS:-?}" "$${JAILS:-?}"; \
+	else \
+	  printf "  $(C_AMBER)•$(C_RESET) postgres not reachable\n"; \
+	fi
 	@if curl -fsS --max-time 1 http://localhost:7070/healthz >/dev/null 2>&1; then \
 	  TOTAL=$$(curl -fsS --max-time 1 http://localhost:7070/v1/stats 2>/dev/null | grep -oE '"total_execs":[0-9]+' | cut -d: -f2); \
 	  printf "  $(C_GREEN)✓$(C_RESET) control plane alive  $(C_DIM)(total_execs=%s)$(C_RESET)\n" "$${TOTAL:-?}"; \

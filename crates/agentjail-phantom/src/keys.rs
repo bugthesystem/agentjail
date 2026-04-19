@@ -61,6 +61,13 @@ impl InMemoryKeyStore {
         }
     }
 
+    /// Remove a key. No-op if it wasn't set.
+    pub fn unset(&self, service: ServiceId) {
+        if let Ok(mut g) = self.inner.write() {
+            g.remove(&service);
+        }
+    }
+
     /// Populate from environment variables:
     /// `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Missing vars are skipped.
     #[must_use]

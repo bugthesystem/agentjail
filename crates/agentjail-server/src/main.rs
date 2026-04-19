@@ -29,7 +29,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use agentjail_ctl::{AuditStoreSink, ControlPlane, ControlPlaneConfig, InMemoryAuditStore};
+use agentjail_ctl::{
+    AuditStoreSink, ControlPlane, ControlPlaneConfig, InMemoryAuditStore, Postgres,
+    db::PgAuditStore,
+};
 use agentjail_phantom::providers::{
     AnthropicProvider, GitHubProvider, OpenAiProvider, StripeProvider,
 };
@@ -53,11 +56,33 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     let stores = Stores::new_from_env();
 
+    // Optional Postgres. When DATABASE_URL is set we hydrate the phantom
+    // key store from persisted credentials and route credential/audit/jail
+    // writes through the DB.
+    let pg = match std::env::var("DATABASE_URL").ok().filter(|s| !s.trim().is_empty()) {
+        Some(url) => {
+            tracing::info!("connecting to postgres");
+            let pg = Postgres::connect(&url).await.context("postgres connect")?;
+            let rehydrated = pg.rehydrate_keys(&stores.keys).await.context("rehydrate keys")?;
+            tracing::info!(%rehydrated, "postgres ready");
+            Some(pg)
+        }
+        None => {
+            tracing::warn!("DATABASE_URL unset — using in-memory stores (state is lost on restart)");
+            None
+        }
+    };
+
     // Cross-service shutdown signal.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Build the phantom proxy.
-    let audit_sink = Arc::new(AuditStoreSink::new(stores.audit.clone()));
+    // Build the phantom proxy. When Postgres is on, the proxy still reads
+    // keys from the in-memory store (hot path) but the audit sink writes
+    // directly to the DB.
+    let audit_sink: Arc<dyn agentjail_phantom::AuditSink> = match pg.as_ref() {
+        Some(p) => Arc::new(AuditStoreSink::new(Arc::new(PgAuditStore::new(p.pool.clone())))),
+        None    => Arc::new(AuditStoreSink::new(stores.audit.clone())),
+    };
     let proxy = PhantomProxy::builder()
         .provider(Arc::new(OpenAiProvider::new()))?
         .provider(Arc::new(AnthropicProvider::new()))?
@@ -80,18 +105,22 @@ async fn main() -> Result<()> {
     });
 
     // Build the control plane.
-    let ctl = ControlPlane::with_stores(
-        ControlPlaneConfig {
-            tokens: stores.tokens.clone(),
-            keys: stores.keys.clone(),
-            proxy_base_url: config.proxy_base_url.clone(),
-            api_keys: config.api_keys.clone(),
-            exec: Some(agentjail_ctl::ExecConfig::default()),
-        },
-        Arc::new(agentjail_ctl::InMemorySessionStore::new()),
-        Arc::new(agentjail_ctl::InMemoryCredentialStore::new()),
-        stores.audit.clone(),
-    );
+    let cfg = ControlPlaneConfig {
+        tokens: stores.tokens.clone(),
+        keys: stores.keys.clone(),
+        proxy_base_url: config.proxy_base_url.clone(),
+        api_keys: config.api_keys.clone(),
+        exec: Some(agentjail_ctl::ExecConfig::default()),
+    };
+    let ctl = match pg.as_ref() {
+        Some(p) => ControlPlane::with_postgres(cfg, p),
+        None    => ControlPlane::with_stores(
+            cfg,
+            Arc::new(agentjail_ctl::InMemorySessionStore::new()),
+            Arc::new(agentjail_ctl::InMemoryCredentialStore::new()),
+            stores.audit.clone(),
+        ),
+    };
     let router = ctl.router();
 
     let ctl_listener = TcpListener::bind(config.ctl_addr)

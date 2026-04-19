@@ -5,6 +5,7 @@ import { cn } from "../lib/cn";
 
 const NAV = [
   { to: "/",            label: "Overview"    },
+  { to: "/jails",       label: "Jails"       },
   { to: "/sessions",    label: "Sessions"    },
   { to: "/credentials", label: "Credentials" },
   { to: "/stream",      label: "Stream"      },
@@ -74,7 +75,7 @@ export function Shell() {
       </header>
 
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-[1360px] mx-auto px-6 py-6 fade-up">
+        <div className="max-w-[1680px] mx-auto px-8 py-5 fade-up">
           <Outlet />
         </div>
       </main>

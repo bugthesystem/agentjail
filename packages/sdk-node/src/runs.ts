@@ -127,6 +127,7 @@ function parseFrame(frame: string): StreamEvent | null {
     case "stdout":   return { type: "stdout", line: data };
     case "stderr":   return { type: "stderr", line: data };
     case "started":
+    case "stats":
     case "completed":
     case "error": {
       try {

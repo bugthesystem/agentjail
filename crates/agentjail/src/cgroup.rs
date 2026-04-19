@@ -12,6 +12,13 @@ pub struct Cgroup {
 }
 
 impl Cgroup {
+    /// Path to this cgroup directory — callers can read the file-based
+    /// metrics directly (e.g. from a detached sampler task).
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Create a new cgroup with the given name.
     ///
     /// The cgroup is created under the current user's cgroup (for rootless)

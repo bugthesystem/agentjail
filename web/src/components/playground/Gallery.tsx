@@ -1,7 +1,11 @@
 import { useMemo, useState } from "react";
 import { Panel } from "../Panel";
 import { cn } from "../../lib/cn";
+import { LangBadge, type Lang } from "../LangBadge";
 import { RECIPES, GROUPS, type Recipe } from "../../lib/recipes";
+
+const KNOWN_LANGS: ReadonlySet<Lang> = new Set(["rust", "ts", "js", "py", "sh"]);
+const isLang = (s: string | undefined): s is Lang => !!s && KNOWN_LANGS.has(s as Lang);
 
 export function Gallery({
   activeId,
@@ -57,6 +61,11 @@ export function Gallery({
                 </span>
                 <span className="text-[10px] text-ink-600 mono">{items.length}</span>
               </div>
+              {g.hint && (
+                <div className="px-4 pb-1 text-[10.5px] leading-snug text-ink-500">
+                  {g.hint}
+                </div>
+              )}
               <ul className="px-2 space-y-0.5">
                 {items.map((r) => (
                   <li key={r.id}>
@@ -129,7 +138,9 @@ function RecipeButton({
         <span className={cn("text-[12.5px] truncate", on ? "text-ink-100" : "text-ink-200")}>
           {recipe.title}
         </span>
-        {recipe.display && (
+        {isLang(recipe.display) ? (
+          <LangBadge lang={recipe.display} size={16} />
+        ) : recipe.display ? (
           <span
             className={cn(
               "text-[9px] mono px-1.5 h-4 rounded tracking-wider",
@@ -140,7 +151,7 @@ function RecipeButton({
           >
             {recipe.display}
           </span>
-        )}
+        ) : null}
       </div>
       <div
         className={cn(

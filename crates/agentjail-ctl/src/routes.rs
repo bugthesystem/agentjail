@@ -17,6 +17,8 @@ use time::OffsetDateTime;
 use crate::audit::{AuditRow, AuditStore};
 use crate::credential::{CredentialRecord, CredentialStore, fingerprint};
 use crate::error::{CtlError, Result};
+use crate::jails::{JailKind, JailRecord, JailStatus, JailStore};
+use crate::sampler;
 use crate::session::{Session, SessionStore, new_session_id};
 
 /// Shared service state passed to every handler.
@@ -31,6 +33,7 @@ pub(crate) struct AppState {
     pub(crate) exec_config: Option<crate::exec::ExecConfig>,
     pub(crate) exec_semaphore: Arc<tokio::sync::Semaphore>,
     pub(crate) exec_metrics: Arc<crate::exec::ExecMetrics>,
+    pub(crate) jails: Arc<dyn JailStore>,
 }
 
 // ---------- health ----------
@@ -65,7 +68,6 @@ pub(crate) async fn put_credential(
         return Err(CtlError::BadRequest("secret must be non-empty".into()));
     }
     let fp = fingerprint(&req.secret);
-    state.keys.set(req.service, SecretString::new(req.secret));
     let now = OffsetDateTime::now_utc();
     let existing = state.credentials.get(req.service).await;
     let rec = CredentialRecord {
@@ -74,7 +76,10 @@ pub(crate) async fn put_credential(
         updated_at: now,
         fingerprint: fp,
     };
-    state.credentials.upsert(rec.clone()).await;
+    // Persist first (DB is the source of truth when enabled), then update
+    // the in-memory key the phantom proxy reads on the hot path.
+    state.credentials.upsert_with_secret(rec.clone(), &req.secret).await;
+    state.keys.set(req.service, SecretString::new(req.secret));
     Ok(Json(rec))
 }
 
@@ -88,7 +93,10 @@ pub(crate) async fn delete_credential(
 ) -> Result<StatusCode> {
     let svc = parse_service(&service)?;
     match state.credentials.remove(svc).await {
-        Some(_) => Ok(StatusCode::NO_CONTENT),
+        Some(_) => {
+            state.keys.unset(svc);
+            Ok(StatusCode::NO_CONTENT)
+        }
         None => Err(CtlError::NotFound(format!("credential {service}"))),
     }
 }
@@ -454,7 +462,13 @@ pub(crate) async fn exec_in_session(
     let config = jail_config(source.path(), output.path(), memory, timeout, env, &req.options)?;
     let jail = agentjail::Jail::new(config)?;
     let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
-    let result = jail.run(&req.cmd, &args_refs).await?;
+
+    let rec_id = state.jails.start(JailKind::Exec, req.cmd.clone(), Some(id.clone())).await;
+    let result = run_with_sampler(&state.jails, rec_id, &jail, &req.cmd, &args_refs).await;
+    let result = match result {
+        Ok(r)  => { state.jails.finish(rec_id, &r).await; r }
+        Err(e) => { state.jails.error(rec_id, e.to_string()).await; return Err(e.into()); }
+    };
 
     tracing::info!(
         session_id = %id,
@@ -500,7 +514,14 @@ pub(crate) async fn create_run(
     let config = jail_config(source.path(), output_dir.path(), memory, timeout, run_env, &req.options)?;
 
     let jail = agentjail::Jail::new(config)?;
-    let result = jail.run(cmd, &[&format!("/workspace/{filename}")]).await?;
+    let rec_id = state.jails.start(JailKind::Run, req.language.clone(), None).await;
+    let args: Vec<String> = vec![format!("/workspace/{filename}")];
+    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let result = run_with_sampler(&state.jails, rec_id, &jail, cmd, &args_ref).await;
+    let result = match result {
+        Ok(r)  => { state.jails.finish(rec_id, &r).await; r }
+        Err(e) => { state.jails.error(rec_id, e.to_string()).await; return Err(e.into()); }
+    };
 
     tracing::info!(
         language = %req.language,
@@ -563,6 +584,27 @@ pub(crate) async fn create_stream_run(
     let pid: u32 = handle.pid().as_raw();
 
     let started_guard = state.exec_metrics.clone().start_owned();
+    let stream_rec    = state.jails.start(JailKind::Stream, req.language.clone(), None).await;
+    let jails_store   = state.jails.clone();
+
+    // Persist mid-flight stats so the Jails detail view stays live even
+    // for clients that aren't consuming the SSE stream.
+    let stats_sampler = handle.cgroup_path().map(|p| {
+        let js = jails_store.clone();
+        sampler::spawn(p, std::time::Duration::from_millis(500), move |s| {
+            let js = js.clone();
+            tokio::spawn(async move { js.sample_stats(stream_rec, &s).await; });
+        })
+    });
+
+    // Separate sampler for SSE emission — same cadence, same source. The
+    // SSE stream owns its own channel so backpressure is per-client.
+    let (sse_tx, mut sse_rx) = tokio::sync::mpsc::channel::<agentjail::ResourceStats>(16);
+    let sse_sampler = handle.cgroup_path().map(|p| {
+        sampler::spawn(p, std::time::Duration::from_millis(500), move |s| {
+            let _ = sse_tx.try_send(s);
+        })
+    });
 
     // Keep tempdirs + permit alive for the whole stream lifetime.
     let keepalive = (permit, started_guard, source_dir, output_dir);
@@ -574,7 +616,7 @@ pub(crate) async fn create_stream_run(
             yield Ok(ev);
         }
 
-        // 2. drain stdout + stderr line-by-line until both EOF
+        // 2. drain stdout + stderr + stats until both EOFs
         let mut stdout_done = false;
         let mut stderr_done = false;
         while !stdout_done || !stderr_done {
@@ -592,12 +634,25 @@ pub(crate) async fn create_stream_run(
                         None    => { stderr_done = true; }
                     }
                 }
+                Some(s) = sse_rx.recv() => {
+                    let payload = serde_json::json!({
+                        "memory_peak_bytes": s.memory_peak_bytes,
+                        "cpu_usage_usec":    s.cpu_usage_usec,
+                        "io_read_bytes":     s.io_read_bytes,
+                        "io_write_bytes":    s.io_write_bytes,
+                    });
+                    if let Ok(ev) = Event::default().event("stats").json_data(payload) {
+                        yield Ok(ev);
+                    }
+                }
             }
         }
 
-        // 3. wait for exit + collect stats
+        // 3. wait for exit + collect stats — stop both samplers.
+        if let Some(h) = stats_sampler { h.abort(); }
+        if let Some(h) = sse_sampler   { h.abort(); }
         let output = handle.wait().await;
-        let ev = match output {
+        let ev = match &output {
             Ok(o) => {
                 let payload = serde_json::json!({
                     "exit_code":         o.exit_code,
@@ -613,6 +668,10 @@ pub(crate) async fn create_stream_run(
                 serde_json::json!({ "message": e.to_string() })
             ),
         };
+        match &output {
+            Ok(o)  => jails_store.finish(stream_rec, o).await,
+            Err(e) => jails_store.error(stream_rec, e.to_string()).await,
+        }
         if let Ok(ev) = ev { yield Ok(ev); }
 
         drop(keepalive);
@@ -625,6 +684,28 @@ fn trim_nl(mut s: String) -> String {
     if s.ends_with('\n') { s.pop(); }
     if s.ends_with('\r') { s.pop(); }
     s
+}
+
+/// Spawn + background-sample + wait. Publishes a stats row every 500ms to
+/// `JailStore::sample_stats` so the dashboard sees memory/cpu climb live.
+async fn run_with_sampler(
+    jails: &std::sync::Arc<dyn JailStore>,
+    rec_id: i64,
+    jail: &agentjail::Jail,
+    cmd: &str,
+    args: &[&str],
+) -> agentjail::Result<agentjail::Output> {
+    let handle = jail.spawn(cmd, args)?;
+    let sampler_handle = handle.cgroup_path().map(|p| {
+        let js = jails.clone();
+        sampler::spawn(p, std::time::Duration::from_millis(500), move |s| {
+            let js = js.clone();
+            tokio::spawn(async move { js.sample_stats(rec_id, &s).await; });
+        })
+    });
+    let out = handle.wait().await;
+    if let Some(h) = sampler_handle { h.abort(); }
+    out
 }
 
 // ---------- fork ----------
@@ -715,7 +796,18 @@ pub(crate) async fn create_fork_run(
     let config  = jail_config(source_dir.path(), parent_out.path(), memory, timeout, run_env, &req.options)?;
 
     let parent_jail = agentjail::Jail::new(config)?;
+    let parent_rec  = state.jails.start(JailKind::Fork, format!("{} · parent", req.language), None).await;
+    let child_rec   = state.jails.start(JailKind::Fork, format!("{} · child",  req.language), None).await;
     let parent_handle = parent_jail.spawn(cmd, &[&format!("/workspace/{filename}")])?;
+
+    // Live-stats sampler for the parent while it runs toward the fork.
+    let parent_sampler = parent_handle.cgroup_path().map(|p| {
+        let jails = state.jails.clone();
+        sampler::spawn(p, std::time::Duration::from_millis(500), move |s| {
+            let jails = jails.clone();
+            tokio::spawn(async move { jails.sample_stats(parent_rec, &s).await; });
+        })
+    });
 
     // Give parent time to write its checkpoint before we fork.
     tokio::time::sleep(std::time::Duration::from_millis(fork_after)).await;
@@ -728,12 +820,20 @@ pub(crate) async fn create_fork_run(
     // Run child in the fork + await parent in parallel.
     let child_args = vec![format!("/workspace/{child_name}")];
     let child_args_refs: Vec<&str> = child_args.iter().map(|s| s.as_str()).collect();
+    let jails_for_child = state.jails.clone();
     let (child_res, parent_res) = tokio::join!(
-        child_jail.run(cmd, &child_args_refs),
+        run_with_sampler(&jails_for_child, child_rec, &child_jail, cmd, &child_args_refs),
         parent_handle.wait(),
     );
-    let child_output  = child_res?;
-    let parent_output = parent_res?;
+    if let Some(h) = parent_sampler { h.abort(); }
+    let child_output = match child_res {
+        Ok(r)  => { state.jails.finish(child_rec, &r).await; r }
+        Err(e) => { state.jails.error(child_rec, e.to_string()).await; return Err(e.into()); }
+    };
+    let parent_output = match parent_res {
+        Ok(r)  => { state.jails.finish(parent_rec, &r).await; r }
+        Err(e) => { state.jails.error(parent_rec, e.to_string()).await; return Err(e.into()); }
+    };
 
     // Keep dirs + _ = fork_parent alive; drop at end of scope.
     let _ = fork_parent;
@@ -829,6 +929,46 @@ fn validate_domains(domains: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ---------- jails ----------
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct JailsQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct JailsList {
+    rows:  Vec<JailRecord>,
+    total: u64,
+}
+
+pub(crate) async fn list_jails(
+    State(state): State<AppState>,
+    Query(q):     Query<JailsQuery>,
+) -> Json<JailsList> {
+    let limit = q.limit.unwrap_or(100).min(1000);
+    let status = match q.status.as_deref() {
+        Some("running")   => Some(JailStatus::Running),
+        Some("completed") => Some(JailStatus::Completed),
+        Some("error")     => Some(JailStatus::Error),
+        _ => None,
+    };
+    let (rows, total) = state.jails.recent(limit, status).await;
+    Json(JailsList { rows, total })
+}
+
+pub(crate) async fn get_jail(
+    State(state): State<AppState>,
+    Path(id):     Path<String>,
+) -> Result<Json<JailRecord>> {
+    let id: i64 = id.parse().map_err(|_| CtlError::BadRequest("invalid id".into()))?;
+    state.jails.get(id).await.map(Json)
+        .ok_or_else(|| CtlError::NotFound(format!("jail {id}")))
 }
 
 // ---------- tests ----------

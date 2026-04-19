@@ -495,6 +495,13 @@ impl JailHandle {
         self.collect_stats()
     }
 
+    /// Path to the underlying cgroup directory, suitable for a detached
+    /// background sampler. Returns `None` when cgroups aren't configured.
+    #[must_use]
+    pub fn cgroup_path(&self) -> Option<std::path::PathBuf> {
+        self.cgroup.as_ref().map(|c| c.path().to_path_buf())
+    }
+
     fn collect_stats(&self) -> Option<ResourceStats> {
         let cg = self.cgroup.as_ref()?;
         let io = cg.io_stats().unwrap_or_default();

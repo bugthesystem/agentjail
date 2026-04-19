@@ -25,7 +25,7 @@ export function Credentials() {
   const existing = new Set(byService.keys());
 
   return (
-    <div className="grid grid-cols-[1fr_380px] gap-5">
+    <div className="grid grid-cols-[1fr_420px] gap-4">
       <Panel padded={false}>
         <div className="px-5 py-4">
           <PanelHeader

@@ -23,6 +23,7 @@
 import { Audit } from "./audit.js";
 import { Credentials } from "./credentials.js";
 import { HttpClient, type HttpConfig } from "./http.js";
+import { Jails } from "./jails.js";
 import { Runs } from "./runs.js";
 import { Sessions } from "./sessions.js";
 
@@ -36,6 +37,10 @@ export type {
   ForkMeta,
   ForkRequest,
   ForkResult,
+  JailKind,
+  JailRecord,
+  JailsList,
+  JailStatus,
   NetworkSpec,
   ResourceStats,
   RunRequest,
@@ -55,6 +60,8 @@ export class Agentjail {
   public readonly runs: Runs;
   /** Audit sub-API. */
   public readonly audit: Audit;
+  /** Jail-run ledger sub-API. */
+  public readonly jails: Jails;
 
   constructor(config: HttpConfig) {
     const http = new HttpClient(config);
@@ -62,5 +69,6 @@ export class Agentjail {
     this.sessions = new Sessions(http);
     this.runs = new Runs(http);
     this.audit = new Audit(http);
+    this.jails = new Jails(http);
   }
 }

@@ -20,8 +20,8 @@ export function Overview() {
   const rate = Math.max(0, Math.min(6, Math.round(recentOk / 3)));
 
   return (
-    <div className="grid gap-5" style={{ gridTemplateColumns: "minmax(0,1fr) 360px" }}>
-      <div className="space-y-5 min-w-0">
+    <div className="grid gap-4" style={{ gridTemplateColumns: "minmax(0,1fr) 380px" }}>
+      <div className="space-y-4 min-w-0">
         <Hero totalEvents={audit?.total ?? 0} rate={rate} />
         <MetricGrid
           sessions={sessions?.length ?? 0}
@@ -31,7 +31,7 @@ export function Overview() {
         />
         <StreamBlock rows={audit?.rows ?? []} />
       </div>
-      <div className="space-y-5">
+      <div className="space-y-4">
         <VaultPanel creds={creds} />
         <ActiveSessionsPanel sessions={sessions} />
       </div>

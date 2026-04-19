@@ -44,7 +44,7 @@ export function Playground() {
   return (
     <div
       className="grid gap-4"
-      style={{ gridTemplateColumns: "240px minmax(0,1fr)", height: "calc(100vh - 112px)" }}
+      style={{ gridTemplateColumns: "260px minmax(0,1fr)", height: "calc(100vh - 100px)" }}
     >
       <Gallery activeId={recipeId} onPick={pick} />
       <div className="flex flex-col gap-4 min-h-0">

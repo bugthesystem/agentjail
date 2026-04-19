@@ -41,6 +41,35 @@ export interface Stats {
   credentials: number;
 }
 
+export type JailKind   = "run" | "exec" | "fork" | "stream";
+export type JailStatus = "running" | "completed" | "error";
+
+export interface JailRecord {
+  id: number;
+  kind: JailKind;
+  started_at: string;
+  ended_at: string | null;
+  status: JailStatus;
+  session_id: string | null;
+  label: string;
+  exit_code:   number | null;
+  duration_ms: number | null;
+  timed_out:   boolean | null;
+  oom_killed:  boolean | null;
+  memory_peak_bytes: number | null;
+  cpu_usage_usec:    number | null;
+  io_read_bytes:     number | null;
+  io_write_bytes:    number | null;
+  stdout: string | null;
+  stderr: string | null;
+  error:  string | null;
+}
+
+export interface JailsList {
+  rows:  JailRecord[];
+  total: number;
+}
+
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -132,6 +161,17 @@ export function createApi(baseUrl: string, apiKey: string) {
     audit: {
       recent: (limit = 100) =>
         call<AuditList>("GET", `/v1/audit?limit=${limit}`),
+    },
+
+    jails: {
+      list: (params?: { limit?: number; status?: JailStatus }) => {
+        const q = new URLSearchParams();
+        if (params?.limit)  q.set("limit",  String(params.limit));
+        if (params?.status) q.set("status", params.status);
+        const qs = q.toString();
+        return call<JailsList>("GET", `/v1/jails${qs ? `?${qs}` : ""}`);
+      },
+      get: (id: number) => call<JailRecord>("GET", `/v1/jails/${id}`),
     },
   };
 }

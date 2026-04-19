@@ -518,7 +518,7 @@ let jail = Jail::new(config)?;
 ];
 
 export const GROUPS = [
-  { id: "run",      label: "Execute",  hint: "runs in a fresh jail via /v1/runs"          },
-  { id: "sdk",      label: "SDK",      hint: "plug @agentjail/sdk into your agent"        },
-  { id: "advanced", label: "Advanced", hint: "Rust library features beyond the HTTP API"  },
+  { id: "run",      label: "Execute",  hint: "runs in a fresh jail via /v1/runs from this browser"                                              },
+  { id: "sdk",      label: "SDK",      hint: "@agentjail/sdk — HTTP client for the control plane. Plug into any agent."                         },
+  { id: "advanced", label: "Advanced", hint: "Rust library — open source, link directly. Low-level primitives the HTTP API doesn't expose yet." },
 ] as const;

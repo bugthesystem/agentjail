@@ -33,6 +33,16 @@ pub struct CredentialRecord {
 pub trait CredentialStore: Send + Sync + 'static {
     /// Add or replace the metadata for a service.
     async fn upsert(&self, rec: CredentialRecord);
+    /// Add or replace metadata AND the real secret. Default impl just
+    /// defers to `upsert`; Postgres backend overrides to persist the
+    /// secret in the DB (so it survives restart).
+    async fn upsert_with_secret(
+        &self,
+        rec: CredentialRecord,
+        _secret: &str,
+    ) {
+        self.upsert(rec).await;
+    }
     /// Remove metadata for a service.
     async fn remove(&self, service: ServiceId) -> Option<CredentialRecord>;
     /// List all records.
