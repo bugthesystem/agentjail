@@ -2,22 +2,20 @@
 # Sandbox execution is *not* in this image — this is the credential-broker
 # service. Pair it with the agentjail engine or any sandbox you already trust.
 
-FROM rust:1.85-slim-bookworm AS build
+FROM rust:1.88-slim-bookworm AS build
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev ca-certificates \
+    pkg-config libssl-dev libseccomp-dev ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
+COPY crates/agentjail crates/agentjail
 COPY crates/agentjail-phantom crates/agentjail-phantom
 COPY crates/agentjail-ctl crates/agentjail-ctl
 COPY crates/agentjail-server crates/agentjail-server
-# The sandbox-engine crate lives alongside in the workspace but we don't
-# need it in this image. Stub it so cargo accepts the workspace.
-RUN mkdir -p crates/agentjail/src crates/agentjail-cli/src \
-  && echo 'fn main() {}' > crates/agentjail-cli/src/main.rs \
-  && echo '' > crates/agentjail/src/lib.rs
-COPY crates/agentjail/Cargo.toml crates/agentjail/Cargo.toml
+# CLI not needed in this image — stub it for workspace resolution.
+RUN mkdir -p crates/agentjail-cli/src \
+  && echo 'fn main() {}' > crates/agentjail-cli/src/main.rs
 COPY crates/agentjail-cli/Cargo.toml crates/agentjail-cli/Cargo.toml
 
 RUN cargo build --release -p agentjail-server
