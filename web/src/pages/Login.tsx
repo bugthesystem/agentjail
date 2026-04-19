@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "../lib/auth";
 import { Button, Input } from "../components/ui";
-import { ArrowRight, Shield, Cpu, Lock, Terminal } from "lucide-react";
+import { ArrowRight, Shield, Cpu, Lock, Terminal, Sparkles } from "lucide-react";
 
 export function LoginPage() {
   const { login, isLoading, error } = useAuth();
@@ -10,120 +10,132 @@ export function LoginPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    try { await login(baseUrl, apiKey); } catch { /* handled by context */ }
+    try { await login(baseUrl, apiKey); } catch { /* handled */ }
   }
 
   return (
-    <div className="min-h-dvh flex noise">
-      {/* Left — immersive brand */}
-      <div className="hidden lg:flex lg:w-[55%] relative overflow-hidden flex-col justify-between p-12">
-        {/* Gradient orbs */}
-        <div className="absolute -top-32 -left-32 w-96 h-96 rounded-full bg-accent/5 blur-3xl animate-glow" />
-        <div className="absolute bottom-20 right-10 w-64 h-64 rounded-full bg-accent/3 blur-3xl animate-glow" style={{ animationDelay: "1.5s" }} />
+    <div className="min-h-dvh flex bg-bg">
+      {/* Left — brand panel */}
+      <div className="hidden lg:flex lg:w-[56%] relative overflow-hidden">
+        {/* Background effects */}
+        <div className="absolute inset-0">
+          {/* Radial gradient center */}
+          <div className="absolute top-1/3 left-1/3 w-[600px] h-[600px] rounded-full bg-accent/[0.04] blur-[120px]" />
+          <div className="absolute bottom-0 right-0 w-[400px] h-[400px] rounded-full bg-accent/[0.03] blur-[100px]" />
+          {/* Subtle grid */}
+          <div className="absolute inset-0 opacity-[0.025]" style={{
+            backgroundImage: `linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)`,
+            backgroundSize: "80px 80px",
+          }} />
+        </div>
 
-        {/* Grid lines */}
-        <div className="absolute inset-0 opacity-[0.02]" style={{
-          backgroundImage: "linear-gradient(var(--color-text) 1px, transparent 1px), linear-gradient(90deg, var(--color-text) 1px, transparent 1px)",
-          backgroundSize: "60px 60px",
-        }} />
-
-        {/* Content */}
-        <div className="relative z-10">
+        {/* Content — vertically centered */}
+        <div className="relative z-10 flex flex-col justify-between w-full px-16 py-14">
+          {/* Top: brand */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-accent-dim flex items-center justify-center shadow-lg shadow-accent/20">
-              <Shield size={18} className="text-text-inverse" />
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-accent via-accent to-accent-dim flex items-center justify-center shadow-lg shadow-accent/25">
+              <Shield size={16} className="text-text-inverse" />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight">agentjail</h1>
-          </div>
-        </div>
-
-        <div className="relative z-10 space-y-10">
-          <div className="max-w-lg">
-            <h2 className="text-4xl font-bold tracking-tight leading-[1.1]">
-              Let your agents build.
-              <br />
-              <span className="text-accent">You stay in control.</span>
-            </h2>
-            <p className="mt-4 text-text-secondary leading-relaxed max-w-md">
-              Give AI agents the freedom to execute code, call APIs, and ship —
-              without ever risking your credentials. Every session is isolated.
-              Every secret is protected.
-            </p>
+            <span className="text-lg font-bold tracking-tight">agentjail</span>
           </div>
 
-          {/* Feature pills */}
-          <div className="flex flex-wrap gap-2">
-            {[
-              { icon: Lock, text: "Zero-trust credentials" },
-              { icon: Cpu, text: "Isolated sandboxes" },
-              { icon: Terminal, text: "Live code execution" },
-              { icon: Shield, text: "Built-in guardrails" },
-            ].map(({ icon: Icon, text }) => (
-              <div key={text} className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-border bg-bg-subtle/50 text-sm text-text-secondary">
-                <Icon size={13} className="text-accent" />
-                {text}
+          {/* Middle: hero */}
+          <div className="space-y-8 max-w-lg">
+            <div>
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-accent/20 bg-accent/5 text-accent text-xs font-medium mb-6">
+                <Sparkles size={12} />
+                Open source sandbox platform
               </div>
-            ))}
-          </div>
-
-          {/* Code preview */}
-          <div className="max-w-lg rounded-xl border border-border bg-bg/80 backdrop-blur-sm overflow-hidden card-glow">
-            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border">
-              <div className="flex gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-error/50" />
-                <div className="w-2.5 h-2.5 rounded-full bg-warning/50" />
-                <div className="w-2.5 h-2.5 rounded-full bg-success/50" />
-              </div>
-              <span className="text-2xs text-text-tertiary font-mono ml-2">quickstart.ts</span>
+              <h1 className="text-[2.75rem] font-extrabold tracking-tight leading-[1.08]">
+                Let your agents build.
+                <br />
+                <span className="bg-gradient-to-r from-accent via-accent-hover to-accent bg-clip-text text-transparent">
+                  You stay in control.
+                </span>
+              </h1>
+              <p className="mt-5 text-[15px] text-text-secondary leading-relaxed max-w-md">
+                Give AI agents the freedom to execute code, call APIs, and ship —
+                without ever risking your credentials.
+              </p>
             </div>
-            <pre className="p-4 text-[13px] font-mono leading-relaxed text-text-secondary overflow-x-auto">
-<span className="text-text-tertiary">{"// credentials stay on the host\n"}</span>
-<span className="text-accent">{"await"}</span>{" aj.credentials.put({\n  service: "}
-<span className="text-success">{"\"openai\""}</span>{",\n  secret: "}
-<span className="text-success">{"\"sk-...\""}</span>{"\n});\n\n"}
-<span className="text-text-tertiary">{"// sandbox only sees phantom tokens\n"}</span>
-<span className="text-accent">{"const"}</span>{" result = "}
-<span className="text-accent">{"await"}</span>{" aj.sessions.exec(\n  session.id,\n  { cmd: "}
-<span className="text-success">{"\"node\""}</span>{", args: ["}
-<span className="text-success">{"\"agent.js\""}</span>{"] },\n);"}
-            </pre>
-          </div>
-        </div>
 
-        <div className="relative z-10 flex items-center gap-4 text-2xs text-text-tertiary">
-          <span>Open source</span>
-          <span className="w-px h-3 bg-border" />
-          <span>MIT license</span>
-          <span className="w-px h-3 bg-border" />
-          <span>Self-hosted</span>
+            {/* Features */}
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { icon: Lock, label: "Zero-trust credentials", desc: "Keys never enter sandboxes" },
+                { icon: Cpu, label: "Isolated execution", desc: "Linux namespace per session" },
+                { icon: Terminal, label: "Live code runs", desc: "JS, Python, Bash in jails" },
+                { icon: Shield, label: "Built-in guardrails", desc: "Memory, CPU, timeout limits" },
+              ].map(({ icon: Icon, label, desc }) => (
+                <div key={label} className="flex gap-3 p-3 rounded-xl border border-border/50 bg-bg-subtle/30">
+                  <div className="w-8 h-8 rounded-lg bg-accent/8 flex items-center justify-center flex-shrink-0">
+                    <Icon size={14} className="text-accent" />
+                  </div>
+                  <div>
+                    <p className="text-[13px] font-medium text-text">{label}</p>
+                    <p className="text-[11px] text-text-tertiary mt-0.5">{desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Code preview */}
+            <div className="rounded-2xl border border-border/60 bg-bg/60 backdrop-blur-sm overflow-hidden">
+              <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/40">
+                <div className="flex gap-1.5">
+                  <div className="w-[9px] h-[9px] rounded-full bg-[#ff5f57]" />
+                  <div className="w-[9px] h-[9px] rounded-full bg-[#febc2e]" />
+                  <div className="w-[9px] h-[9px] rounded-full bg-[#28c840]" />
+                </div>
+                <span className="text-[10px] text-text-tertiary font-mono ml-3 tracking-wide">quickstart.ts</span>
+              </div>
+              <pre className="px-5 py-4 text-[12.5px] font-mono leading-[1.7] text-text-tertiary overflow-x-auto">
+<span className="text-text-tertiary/60">{"// your keys stay on the host\n"}</span>
+<span className="text-accent/90">{"await"}</span><span className="text-text-secondary">{" aj.credentials.put({\n"}</span>
+<span className="text-text-secondary">{"  service: "}</span><span className="text-success/80">{'"openai"'}</span><span className="text-text-secondary">{", secret: "}</span><span className="text-success/80">{'"sk-..."'}</span>
+<span className="text-text-secondary">{"\n});\n\n"}</span>
+<span className="text-text-tertiary/60">{"// agents only see phantom tokens\n"}</span>
+<span className="text-accent/90">{"const"}</span><span className="text-text-secondary">{" result = "}</span><span className="text-accent/90">{"await"}</span><span className="text-text-secondary">{" aj.sessions.exec(\n"}</span>
+<span className="text-text-secondary">{"  session.id, { cmd: "}</span><span className="text-success/80">{'"node"'}</span><span className="text-text-secondary">{", args: ["}</span><span className="text-success/80">{'"agent.js"'}</span><span className="text-text-secondary">{"] }\n);"}</span>
+              </pre>
+            </div>
+          </div>
+
+          {/* Bottom */}
+          <div className="flex items-center gap-4 text-[11px] text-text-tertiary/60">
+            <span>Open source</span>
+            <span className="w-1 h-1 rounded-full bg-text-tertiary/30" />
+            <span>MIT license</span>
+            <span className="w-1 h-1 rounded-full bg-text-tertiary/30" />
+            <span>Self-hosted</span>
+          </div>
         </div>
       </div>
 
-      {/* Right — login form */}
-      <div className="flex-1 flex items-center justify-center p-8 bg-bg-subtle/30">
-        <div className="w-full max-w-sm space-y-8 animate-fade-in">
+      {/* Right — form */}
+      <div className="flex-1 flex items-center justify-center p-8 border-l border-border/40 bg-gradient-to-b from-bg-subtle/50 to-bg">
+        <div className="w-full max-w-[340px] animate-fade-in">
           {/* Mobile brand */}
-          <div className="lg:hidden flex items-center gap-3 mb-4">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-accent to-accent-dim flex items-center justify-center">
-              <Shield size={16} className="text-text-inverse" />
+          <div className="lg:hidden flex items-center gap-2.5 mb-10">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-accent-dim flex items-center justify-center">
+              <Shield size={14} className="text-text-inverse" />
             </div>
-            <span className="font-bold text-lg tracking-tight">agentjail</span>
+            <span className="font-bold tracking-tight">agentjail</span>
           </div>
 
-          <div>
-            <h2 className="text-xl font-semibold tracking-tight">Connect</h2>
-            <p className="mt-1.5 text-sm text-text-secondary">
-              Enter your server URL and API key to get started.
-            </p>
-          </div>
+          <h2 className="text-lg font-semibold tracking-tight">Connect</h2>
+          <p className="mt-1.5 text-[13px] text-text-secondary">
+            Enter your server URL and API key to get started.
+          </p>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} className="mt-7 space-y-5">
             <Input
               label="Server URL"
               placeholder="http://localhost:7070"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              autoComplete="url"
+              autoComplete="off"
               spellCheck={false}
               required
             />
@@ -133,17 +145,17 @@ export function LoginPage() {
               placeholder="aj_…"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              autoComplete="off"
+              autoComplete="new-password"
               spellCheck={false}
             />
 
             {error && (
-              <div className="rounded-lg bg-error/8 border border-error/15 px-3 py-2.5 text-sm text-error animate-slide-up">
+              <div className="rounded-lg bg-error/6 border border-error/12 px-3.5 py-2.5 text-[13px] text-error/90 animate-slide-up">
                 {error}
               </div>
             )}
 
-            <Button type="submit" className="w-full group" disabled={isLoading}>
+            <Button type="submit" className="w-full h-10 group" disabled={isLoading}>
               {isLoading ? (
                 <span className="flex items-center gap-2">
                   <span className="w-3.5 h-3.5 border-2 border-text-inverse/30 border-t-text-inverse rounded-full animate-spin" />
@@ -152,13 +164,13 @@ export function LoginPage() {
               ) : (
                 <>
                   Connect
-                  <ArrowRight size={14} className="transition-transform group-hover:translate-x-0.5" />
+                  <ArrowRight size={14} className="transition-transform duration-200 group-hover:translate-x-0.5" />
                 </>
               )}
             </Button>
           </form>
 
-          <p className="text-center text-2xs text-text-tertiary">
+          <p className="mt-6 text-center text-[11px] text-text-tertiary/60">
             No account needed &middot; connects directly to your server
           </p>
         </div>
