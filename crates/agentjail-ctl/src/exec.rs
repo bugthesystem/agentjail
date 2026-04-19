@@ -1,5 +1,6 @@
 //! Jail execution configuration.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Controls how the `/v1/sessions/:id/exec` and `/v1/runs` endpoints
@@ -45,6 +46,14 @@ impl ExecMetrics {
         ExecGuard(self)
     }
 
+    /// Like [`start`], but returns a `'static` guard — suitable for handing
+    /// into spawned tasks or SSE streams that outlive the request handler.
+    pub fn start_owned(self: Arc<Self>) -> ExecOwnedGuard {
+        self.active.fetch_add(1, Ordering::Relaxed);
+        self.total.fetch_add(1, Ordering::Relaxed);
+        ExecOwnedGuard(self)
+    }
+
     /// Current active executions.
     pub fn active(&self) -> u64 {
         self.active.load(Ordering::Relaxed)
@@ -60,6 +69,15 @@ impl ExecMetrics {
 pub struct ExecGuard<'a>(&'a ExecMetrics);
 
 impl Drop for ExecGuard<'_> {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// `'static` guard — decrements on drop, owns its Arc.
+pub struct ExecOwnedGuard(Arc<ExecMetrics>);
+
+impl Drop for ExecOwnedGuard {
     fn drop(&mut self) {
         self.0.active.fetch_sub(1, Ordering::Relaxed);
     }

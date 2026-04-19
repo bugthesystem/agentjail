@@ -1,5 +1,6 @@
 import type { HttpClient } from "./http.js";
-import type { ExecResult, ServiceId, Session } from "./types.js";
+import type { ExecOptions, ExecResult, ServiceId, Session } from "./types.js";
+import { encodeExecOptions } from "./exec_options.js";
 
 /**
  * Sessions bundle a set of phantom tokens that can be handed to a sandbox.
@@ -48,12 +49,18 @@ export class Sessions {
   /** Execute a command inside this session's jail. */
   async exec(
     id: string,
-    params: { cmd: string; args?: string[]; timeoutSecs?: number; memoryMb?: number },
+    params: {
+      cmd: string;
+      args?: string[];
+      timeoutSecs?: number;
+      memoryMb?: number;
+    } & ExecOptions,
   ): Promise<ExecResult> {
     const body: Record<string, unknown> = { cmd: params.cmd };
     if (params.args) body.args = params.args;
     if (params.timeoutSecs !== undefined) body.timeout_secs = params.timeoutSecs;
-    if (params.memoryMb !== undefined) body.memory_mb = params.memoryMb;
+    if (params.memoryMb !== undefined)    body.memory_mb    = params.memoryMb;
+    encodeExecOptions(body, params);
     return this.http.request<ExecResult>({
       method: "POST",
       path: `/v1/sessions/${encodeURIComponent(id)}/exec`,

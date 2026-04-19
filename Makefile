@@ -1,0 +1,131 @@
+# agentjail — three commands, all you need.
+#
+#   make setup    install web deps, generate a dev API key
+#   make dev      start the full stack (control plane + phantom proxy + web)
+#   make doctor   diagnose prerequisites, ports, and running services
+
+SHELL        := /bin/bash
+ENV_FILE     := .env.local
+COMPOSE      := docker compose -f docker-compose.platform.yml
+WEB_DIR      := web
+
+# Prefer bun if present, fall back to npm.
+PKG := $(shell command -v bun >/dev/null 2>&1 && echo bun || echo npm)
+
+# Terminal colors (fall back to no-color if not a tty).
+ifneq (,$(findstring xterm,$(TERM)))
+  C_RESET := \033[0m
+  C_BOLD  := \033[1m
+  C_DIM   := \033[2m
+  C_GREEN := \033[32m
+  C_AMBER := \033[33m
+  C_RED   := \033[31m
+  C_CYAN  := \033[36m
+endif
+
+.DEFAULT_GOAL := help
+.PHONY: help setup dev doctor
+
+help:
+	@printf "$(C_BOLD)agentjail$(C_RESET) $(C_DIM)— phantom control plane$(C_RESET)\n\n"
+	@printf "  $(C_GREEN)make setup$(C_RESET)    install deps, generate dev API key\n"
+	@printf "  $(C_GREEN)make dev$(C_RESET)      start the full stack (server + web)\n"
+	@printf "  $(C_GREEN)make doctor$(C_RESET)   check prerequisites and running services\n\n"
+
+# ─── setup ──────────────────────────────────────────────────────────────────
+
+setup:
+	@printf "$(C_BOLD)→ setup$(C_RESET)\n"
+	@command -v docker >/dev/null 2>&1 || { printf "  $(C_RED)✗$(C_RESET) docker not found — install Docker Desktop\n"; exit 1; }
+	@command -v $(PKG) >/dev/null 2>&1 || { printf "  $(C_RED)✗$(C_RESET) $(PKG) not found\n"; exit 1; }
+	@printf "  $(C_GREEN)✓$(C_RESET) docker\n"
+	@printf "  $(C_GREEN)✓$(C_RESET) $(PKG) $$($(PKG) --version | head -1)\n"
+	@printf "  $(C_DIM)→$(C_RESET) installing web deps (via $(PKG))…\n"
+	@cd $(WEB_DIR) && $(PKG) install --silent 2>&1 | tail -5 || cd $(WEB_DIR) && $(PKG) install
+	@if [ ! -f $(ENV_FILE) ]; then \
+	  KEY="aj_local_$$(openssl rand -hex 16 2>/dev/null || date +%s%N | sha256sum | head -c 32)"; \
+	  printf "AGENTJAIL_API_KEY=%s\n" "$$KEY" > $(ENV_FILE); \
+	  printf "PROXY_BASE_URL=http://server:8443\n" >> $(ENV_FILE); \
+	  printf "  $(C_GREEN)✓$(C_RESET) wrote $(ENV_FILE) with a fresh API key\n"; \
+	else \
+	  printf "  $(C_DIM)•$(C_RESET) $(ENV_FILE) already exists (left as-is)\n"; \
+	fi
+	@printf "\n  $(C_BOLD)next:$(C_RESET) $(C_CYAN)make dev$(C_RESET)\n\n"
+
+# ─── dev ────────────────────────────────────────────────────────────────────
+
+dev:
+	@if [ ! -f $(ENV_FILE) ]; then \
+	  printf "$(C_AMBER)!$(C_RESET) no $(ENV_FILE) — run $(C_CYAN)make setup$(C_RESET) first\n"; exit 1; \
+	fi
+	@printf "$(C_BOLD)→ dev$(C_RESET)  $(C_DIM)control plane + phantom proxy (docker) · web (vite HMR)$(C_RESET)\n"
+	@set -a; source $(ENV_FILE); set +a; \
+	  $(COMPOSE) up -d --build server 2>&1 | tail -10 ; \
+	  printf "\n  $(C_GREEN)✓$(C_RESET) control plane  $(C_CYAN)http://localhost:7070$(C_RESET)\n"; \
+	  printf "  $(C_GREEN)✓$(C_RESET) phantom proxy  $(C_CYAN)http://localhost:8443$(C_RESET)\n"; \
+	  printf "  $(C_GREEN)✓$(C_RESET) web (HMR)      $(C_CYAN)http://localhost:5173$(C_RESET)  $(C_BOLD)← open this$(C_RESET)\n"; \
+	  printf "\n  $(C_DIM)api key is in $(ENV_FILE) — paste it on the login screen$(C_RESET)\n"; \
+	  printf "  $(C_DIM)ctrl-c stops the server container and vite dev$(C_RESET)\n\n"; \
+	  trap '$(COMPOSE) stop server >/dev/null 2>&1' INT TERM EXIT; \
+	  cd $(WEB_DIR) && $(PKG) run dev
+
+# ─── doctor ─────────────────────────────────────────────────────────────────
+
+doctor:
+	@printf "$(C_BOLD)→ doctor$(C_RESET)\n\n"
+	@printf "$(C_DIM)tooling$(C_RESET)\n"
+	@$(call probe_bin,docker)
+	@$(call probe_bin,$(PKG))
+	@$(call probe_bin,openssl)
+	@$(call probe_bin,curl)
+	@printf "\n$(C_DIM)docker daemon$(C_RESET)\n"
+	@if docker info >/dev/null 2>&1; then \
+	  printf "  $(C_GREEN)✓$(C_RESET) running\n"; \
+	else \
+	  printf "  $(C_RED)✗$(C_RESET) not reachable — start Docker Desktop\n"; \
+	fi
+	@printf "\n$(C_DIM)ports$(C_RESET)\n"
+	@$(call probe_port,3000,web ui)
+	@$(call probe_port,5173,vite dev)
+	@$(call probe_port,7070,control plane)
+	@$(call probe_port,8443,phantom proxy)
+	@printf "\n$(C_DIM)services$(C_RESET)\n"
+	@if curl -fsS --max-time 1 http://localhost:7070/healthz >/dev/null 2>&1; then \
+	  TOTAL=$$(curl -fsS --max-time 1 http://localhost:7070/v1/stats 2>/dev/null | grep -oE '"total_execs":[0-9]+' | cut -d: -f2); \
+	  printf "  $(C_GREEN)✓$(C_RESET) control plane alive  $(C_DIM)(total_execs=%s)$(C_RESET)\n" "$${TOTAL:-?}"; \
+	else \
+	  printf "  $(C_AMBER)•$(C_RESET) control plane not responding on :7070\n"; \
+	fi
+	@if curl -fsS --max-time 1 http://localhost:3000 >/dev/null 2>&1; then \
+	  printf "  $(C_GREEN)✓$(C_RESET) web (prod) alive on :3000\n"; \
+	else \
+	  printf "  $(C_AMBER)•$(C_RESET) web (prod) not responding on :3000\n"; \
+	fi
+	@printf "\n$(C_DIM)config$(C_RESET)\n"
+	@if [ -f $(ENV_FILE) ]; then \
+	  KEY=$$(grep -E '^AGENTJAIL_API_KEY=' $(ENV_FILE) | cut -d= -f2); \
+	  printf "  $(C_GREEN)✓$(C_RESET) $(ENV_FILE) present  $(C_DIM)(key=%s…)$(C_RESET)\n" "$${KEY:0:16}"; \
+	else \
+	  printf "  $(C_AMBER)•$(C_RESET) no $(ENV_FILE) — run $(C_CYAN)make setup$(C_RESET)\n"; \
+	fi
+	@printf "\n"
+
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+define probe_bin
+	if command -v $(1) >/dev/null 2>&1; then \
+	  V=$$($(1) --version 2>&1 | head -1 | tr -d '\n'); \
+	  printf "  $(C_GREEN)✓$(C_RESET) %-8s  $(C_DIM)%s$(C_RESET)\n" "$(1)" "$$V"; \
+	else \
+	  printf "  $(C_RED)✗$(C_RESET) %-8s  $(C_DIM)not installed$(C_RESET)\n" "$(1)"; \
+	fi
+endef
+
+define probe_port
+	if lsof -nP -iTCP:$(1) -sTCP:LISTEN >/dev/null 2>&1; then \
+	  OWNER=$$(lsof -nP -iTCP:$(1) -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $$1}'); \
+	  printf "  $(C_AMBER)•$(C_RESET) :%-5s  $(C_DIM)taken by %s ($(2))$(C_RESET)\n" "$(1)" "$$OWNER"; \
+	else \
+	  printf "  $(C_GREEN)✓$(C_RESET) :%-5s  $(C_DIM)free ($(2))$(C_RESET)\n" "$(1)"; \
+	fi
+endef

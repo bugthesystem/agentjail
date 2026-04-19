@@ -29,6 +29,15 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/** Raw fetch — used for non-JSON responses like SSE. */
+export interface RawOptions {
+  method: string;
+  path: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
 /** Per-client HTTP config. */
 export interface HttpConfig {
   /** Base URL of the control plane, no trailing slash. */
@@ -93,5 +102,18 @@ export class HttpClient {
       throw new AgentjailError(res.status, parsed, res.statusText);
     }
     return parsed as T;
+  }
+
+  /**
+   * Raw fetch. Returns the `Response` directly so callers can stream the
+   * body (e.g. SSE). Adds `Authorization` automatically.
+   */
+  async rawFetch(opts: RawOptions): Promise<Response> {
+    const headers: Record<string, string> = { ...(opts.headers ?? {}) };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    const init: RequestInit = { method: opts.method, headers };
+    if (opts.body !== undefined) init.body = opts.body;
+    if (opts.signal) init.signal = opts.signal;
+    return this.fetchFn(`${this.baseUrl}${opts.path}`, init);
   }
 }

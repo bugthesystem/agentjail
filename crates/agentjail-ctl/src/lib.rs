@@ -156,6 +156,8 @@ impl ControlPlane {
             )
             .route("/v1/sessions/:id/exec", post(routes::exec_in_session))
             .route("/v1/runs", post(routes::create_run))
+            .route("/v1/runs/fork", post(routes::create_fork_run))
+            .route("/v1/runs/stream", post(routes::create_stream_run))
             .route("/v1/audit", get(routes::list_audit))
             .layer(RequestBodyLimitLayer::new(1024 * 1024)) // 1 MB
             .layer(middleware::from_fn_with_state(

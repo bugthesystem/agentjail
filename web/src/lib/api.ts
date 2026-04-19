@@ -1,10 +1,6 @@
-/** Typed API client for the agentjail control plane. */
+import type { ServiceId } from "./format";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type ServiceId = "openai" | "anthropic" | "github" | "stripe";
+export type { ServiceId };
 
 export interface CredentialRecord {
   service: ServiceId;
@@ -60,10 +56,6 @@ export interface ExecResult {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Client
-// ---------------------------------------------------------------------------
-
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -87,15 +79,23 @@ export function createApi(baseUrl: string, apiKey: string) {
 
     if (res.status === 204) return undefined as T;
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = text ? safeParse(text) : null;
     if (!res.ok) {
       const msg =
         parsed && typeof parsed === "object" && "error" in parsed
-          ? String(parsed.error)
-          : res.statusText;
+          ? String((parsed as { error: unknown }).error)
+          : res.statusText || `HTTP ${res.status}`;
       throw new ApiError(res.status, msg);
     }
-    return parsed as T;
+    return (parsed ?? text) as T;
+  }
+
+  function safeParse(text: string): unknown {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
   }
 
   return {
@@ -117,10 +117,7 @@ export function createApi(baseUrl: string, apiKey: string) {
           services,
           ...(ttlSecs !== undefined ? { ttl_secs: ttlSecs } : {}),
         }),
-      get: (id: string) => call<Session>("GET", `/v1/sessions/${id}`),
       close: (id: string) => call<void>("DELETE", `/v1/sessions/${id}`),
-      exec: (id: string, cmd: string, args?: string[]) =>
-        call<ExecResult>("POST", `/v1/sessions/${id}/exec`, { cmd, args }),
     },
 
     runs: {

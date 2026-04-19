@@ -14,6 +14,8 @@ agentjail-phantom.workspace = true
 libc = "0.2"
 tempfile = "3"
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "json", "matched-path", "query"] }
+async-stream = "0.3"
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "signal"] }
 tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.6", default-features = false, features = ["cors", "trace", "limit"] }

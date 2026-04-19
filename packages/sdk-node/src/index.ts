@@ -31,11 +31,18 @@ export type {
   AuditList,
   AuditRow,
   CredentialRecord,
+  ExecOptions,
   ExecResult,
+  ForkMeta,
+  ForkRequest,
+  ForkResult,
+  NetworkSpec,
   ResourceStats,
   RunRequest,
+  SeccompSpec,
   ServiceId,
   Session,
+  StreamEvent,
 } from "./types.js";
 
 /** Top-level client. Sub-namespaces are independently usable. */

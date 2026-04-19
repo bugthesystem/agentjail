@@ -72,10 +72,85 @@ export interface ResourceStats {
   io_write_bytes: number;
 }
 
+/**
+ * Network policy for a jail. Match the shapes on the wire:
+ *   { mode: "none" }
+ *   { mode: "loopback" }
+ *   { mode: "allowlist", domains: string[] }
+ */
+export type NetworkSpec =
+  | { mode: "none" }
+  | { mode: "loopback" }
+  | { mode: "allowlist"; domains: string[] };
+
+/** Seccomp level exposed on the wire. `"disabled"` is intentionally omitted. */
+export type SeccompSpec = "standard" | "strict";
+
+/**
+ * Optional jail tuning shared by `sessions.exec` and `runs.create`.
+ *
+ * - `cpuPercent` is clamped server-side to `1..=800` (800 = 8 cores).
+ * - `maxPids` is clamped to `1..=1024`.
+ * - `network` defaults to `{ mode: "none" }`; `allowlist` domains must be
+ *   hostnames or trailing-`*` globs (no scheme).
+ */
+export interface ExecOptions {
+  network?: NetworkSpec;
+  seccomp?: SeccompSpec;
+  cpuPercent?: number;
+  maxPids?: number;
+}
+
 /** Parameters for a one-shot run. */
-export interface RunRequest {
+export interface RunRequest extends ExecOptions {
   code: string;
   language?: "javascript" | "python" | "bash";
   timeoutSecs?: number;
   memoryMb?: number;
 }
+
+/** Parameters for `aj.runs.fork` — live-forks the parent jail mid-run. */
+export interface ForkRequest extends ExecOptions {
+  parentCode: string;
+  childCode: string;
+  language?: "javascript" | "python" | "bash";
+  /** How long the parent runs before we freeze + fork. Default 200ms. */
+  forkAfterMs?: number;
+  timeoutSecs?: number;
+  memoryMb?: number;
+}
+
+/** Metadata for a completed live_fork. */
+export interface ForkMeta {
+  clone_ms: number;
+  files_cloned: number;
+  files_cow: number;
+  bytes_cloned: number;
+  method: string;
+  was_frozen: boolean;
+}
+
+/** Response from `aj.runs.fork`. */
+export interface ForkResult {
+  parent: ExecResult;
+  child: ExecResult;
+  fork: ForkMeta;
+}
+
+/**
+ * One event from `aj.runs.stream`. Maps to the server's SSE `event:` frames.
+ * `completed` is always the last event before the stream closes.
+ */
+export type StreamEvent =
+  | { type: "started";   pid: number }
+  | { type: "stdout";    line: string }
+  | { type: "stderr";    line: string }
+  | { type: "completed";
+      exit_code: number;
+      duration_ms: number;
+      timed_out: boolean;
+      oom_killed: boolean;
+      memory_peak_bytes: number;
+      cpu_usage_usec: number;
+    }
+  | { type: "error";     message: string };

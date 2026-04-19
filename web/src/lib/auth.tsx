@@ -16,7 +16,6 @@ interface AuthContext {
 }
 
 const Ctx = createContext<AuthContext | null>(null);
-
 const STORAGE_KEY = "agentjail_auth";
 
 function loadSaved(): { baseUrl: string; apiKey: string } | null {
@@ -43,7 +42,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const url = baseUrl.replace(/\/+$/, "");
-      // Validate connection with a raw fetch (healthz returns plain text)
       const res = await fetch(`${url}/healthz`);
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const api = createApi(url, apiKey);

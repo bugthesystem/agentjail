@@ -290,6 +290,152 @@ describe("Runs", () => {
     });
     expect(r.stdout).toBe("hello\n");
   });
+
+  it("forwards ExecOptions (network allowlist, seccomp, cpu, pids) in snake_case", async () => {
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ init }) => {
+        bodyText = init.body as string;
+        return json({
+          stdout: "", stderr: "", exit_code: 0,
+          duration_ms: 1, timed_out: false, oom_killed: false,
+        });
+      }),
+    });
+    await aj.runs.create({
+      code: "fetch('https://api.openai.com')",
+      language: "javascript",
+      network: { mode: "allowlist", domains: ["api.openai.com"] },
+      seccomp: "strict",
+      cpuPercent: 200,
+      maxPids: 128,
+    });
+    expect(JSON.parse(bodyText)).toEqual({
+      code: "fetch('https://api.openai.com')",
+      language: "javascript",
+      network: { mode: "allowlist", domains: ["api.openai.com"] },
+      seccomp: "strict",
+      cpu_percent: 200,
+      max_pids: 128,
+    });
+  });
+
+  it("fork sends POST /v1/runs/fork with parent_code/child_code + options", async () => {
+    let seenUrl = "";
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url, init }) => {
+        seenUrl = url;
+        bodyText = init.body as string;
+        const parentExec = {
+          stdout: "parent\n", stderr: "", exit_code: 0,
+          duration_ms: 220, timed_out: false, oom_killed: false,
+        };
+        const childExec = {
+          stdout: "child\n", stderr: "", exit_code: 0,
+          duration_ms: 180, timed_out: false, oom_killed: false,
+        };
+        return json({
+          parent: parentExec,
+          child: childExec,
+          fork: {
+            clone_ms: 3, files_cloned: 1, files_cow: 1,
+            bytes_cloned: 42, method: "reflink", was_frozen: true,
+          },
+        });
+      }),
+    });
+    const r = await aj.runs.fork({
+      parentCode: 'require("fs").writeFileSync("/output/ckpt","42")',
+      childCode:  'console.log(require("fs").readFileSync("/output/ckpt","utf8"))',
+      language: "javascript",
+      forkAfterMs: 300,
+      memoryMb: 256,
+      seccomp: "strict",
+    });
+    expect(seenUrl).toBe("http://api/v1/runs/fork");
+    expect(JSON.parse(bodyText)).toEqual({
+      parent_code: 'require("fs").writeFileSync("/output/ckpt","42")',
+      child_code:  'console.log(require("fs").readFileSync("/output/ckpt","utf8"))',
+      language: "javascript",
+      fork_after_ms: 300,
+      memory_mb: 256,
+      seccomp: "strict",
+    });
+    expect(r.parent.stdout).toBe("parent\n");
+    expect(r.child.stdout).toBe("child\n");
+    expect(r.fork.method).toBe("reflink");
+    expect(r.fork.was_frozen).toBe(true);
+  });
+
+  it("stream parses SSE frames into typed events", async () => {
+    const sse =
+      `event: started\ndata: {"pid":1234}\n\n` +
+      `event: stdout\ndata: hello\n\n` +
+      `event: stdout\ndata: world\n\n` +
+      `event: stderr\ndata: warn\n\n` +
+      `event: completed\ndata: {"exit_code":0,"duration_ms":42,"timed_out":false,"oom_killed":false,"memory_peak_bytes":1048576,"cpu_usage_usec":1000}\n\n`;
+
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(() =>
+        new Response(sse, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        })
+      ),
+    });
+
+    const events = [];
+    for await (const ev of aj.runs.stream({ code: "console.log('hi')", language: "javascript" })) {
+      events.push(ev);
+    }
+    expect(events).toEqual([
+      { type: "started", pid: 1234 },
+      { type: "stdout", line: "hello" },
+      { type: "stdout", line: "world" },
+      { type: "stderr", line: "warn" },
+      {
+        type: "completed", exit_code: 0, duration_ms: 42,
+        timed_out: false, oom_killed: false,
+        memory_peak_bytes: 1048576, cpu_usage_usec: 1000,
+      },
+    ]);
+  });
+
+  it("sessions.exec forwards ExecOptions too", async () => {
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ init }) => {
+        bodyText = init.body as string;
+        return json({
+          stdout: "", stderr: "", exit_code: 0,
+          duration_ms: 1, timed_out: false, oom_killed: false,
+        });
+      }),
+    });
+    await aj.sessions.exec("sess_x", {
+      cmd: "node",
+      args: ["-e", "1+1"],
+      memoryMb: 256,
+      network: { mode: "loopback" },
+      seccomp: "standard",
+    });
+    expect(JSON.parse(bodyText)).toEqual({
+      cmd: "node",
+      args: ["-e", "1+1"],
+      memory_mb: 256,
+      network: { mode: "loopback" },
+      seccomp: "standard",
+    });
+  });
 });
 
 describe("Audit", () => {
