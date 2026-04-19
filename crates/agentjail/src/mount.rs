@@ -116,8 +116,7 @@ pub fn setup_root(new_root: &Path, source: &Path, output: &Path) -> Result<()> {
     for dir in &system_dirs {
         let src = Path::new(dir);
         if !src.exists() {
-            eprintln!("warning: system directory {dir} does not exist, skipping mount");
-            continue;
+            continue; // lib64 doesn't exist on aarch64, etc.
         }
         let dst = new_root.join(dir.trim_start_matches('/'));
         bind_mount(src, &dst, Access::ReadOnly)?;
