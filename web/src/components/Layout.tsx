@@ -3,12 +3,7 @@ import { cn } from "../lib/cn";
 import { useAuth } from "../lib/auth";
 import { Kbd } from "./ui";
 import {
-  LayoutDashboard,
-  Key,
-  Shield,
-  ScrollText,
-  Terminal,
-  LogOut,
+  LayoutDashboard, Key, Shield, ScrollText, Terminal, LogOut, Zap,
 } from "lucide-react";
 
 const nav = [
@@ -19,22 +14,22 @@ const nav = [
   { to: "/audit", icon: ScrollText, label: "Audit", kbd: "g a" },
 ] as const;
 
-function SidebarLink({ to, icon: Icon, label, kbd }: (typeof nav)[number]) {
+function NavItem({ to, icon: Icon, label, kbd }: (typeof nav)[number]) {
   return (
     <NavLink
       to={to}
       end={to === "/"}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] transition-all duration-100",
+          "flex items-center gap-2.5 px-2.5 py-[7px] rounded-[var(--radius-lg)] text-[13px] transition-colors duration-100",
           isActive
-            ? "bg-accent-subtle text-accent font-medium border border-accent/10"
-            : "text-text-secondary hover:text-text hover:bg-bg-muted",
+            ? "bg-bg-emphasis text-text font-medium"
+            : "text-text-tertiary hover:text-text-secondary hover:bg-bg-emphasis/40",
         )
       }
     >
-      <Icon size={15} strokeWidth={1.75} />
-      <span>{label}</span>
+      <Icon size={15} strokeWidth={1.5} />
+      <span className="flex-1">{label}</span>
       <Kbd>{kbd}</Kbd>
     </NavLink>
   );
@@ -44,48 +39,42 @@ export function Layout() {
   const { auth, logout } = useAuth();
 
   return (
-    <div className="flex h-dvh noise">
+    <div className="flex h-dvh">
       {/* Sidebar */}
-      <aside className="w-56 flex-shrink-0 border-r border-border flex flex-col bg-bg-subtle/50 backdrop-blur-sm">
+      <aside className="w-[220px] flex-shrink-0 border-r border-border flex flex-col">
         {/* Brand */}
-        <div className="px-4 py-5">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent to-accent-dim flex items-center justify-center shadow-sm shadow-accent/20">
-              <Shield size={13} className="text-text-inverse" />
-            </div>
-            <span className="font-bold text-[15px] tracking-tight">agentjail</span>
+        <div className="h-14 flex items-center gap-2.5 px-4 border-b border-border">
+          <div className="w-6 h-6 rounded-md bg-accent flex items-center justify-center">
+            <Zap size={12} className="text-text-inverse" />
           </div>
-          <p className="mt-2 text-[11px] text-text-tertiary truncate pl-[38px]">
-            {auth?.baseUrl.replace(/^https?:\/\//, "")}
-          </p>
+          <span className="font-semibold text-[14px] tracking-tight">agentjail</span>
         </div>
 
-        {/* Divider */}
-        <div className="mx-4 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
-
         {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-0.5">
+        <nav className="flex-1 px-2.5 py-3 space-y-px">
           {nav.map((item) => (
-            <SidebarLink key={item.to} {...item} />
+            <NavItem key={item.to} {...item} />
           ))}
         </nav>
 
         {/* Footer */}
-        <div className="px-3 py-3">
-          <div className="mx-1 mb-2 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
+        <div className="px-2.5 py-2.5 border-t border-border">
           <button
             onClick={logout}
-            className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-[13px] text-text-tertiary hover:text-error hover:bg-error/5 transition-all duration-150"
+            className="flex items-center gap-2.5 w-full px-2.5 py-[7px] rounded-[var(--radius-lg)] text-[13px] text-text-tertiary hover:text-text-secondary hover:bg-bg-emphasis/40 transition-colors"
           >
-            <LogOut size={14} />
+            <LogOut size={14} strokeWidth={1.5} />
             <span>Disconnect</span>
           </button>
+          <p className="mt-1.5 px-2.5 text-[10px] text-text-tertiary/40 tracking-wide">
+            {auth?.baseUrl.replace(/^https?:\/\//, "")}
+          </p>
         </div>
       </aside>
 
       {/* Main */}
-      <main className="flex-1 overflow-y-auto bg-bg">
-        <div className="max-w-5xl mx-auto px-8 py-8">
+      <main className="flex-1 overflow-y-auto">
+        <div className="max-w-4xl mx-auto px-8 py-8">
           <Outlet />
         </div>
       </main>

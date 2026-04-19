@@ -1,4 +1,4 @@
-/** Composable UI primitives — refined, no bloat. */
+/** UI primitives — shadcn-grade, composable, typed. */
 
 import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type HTMLAttributes } from "react";
 import { cn } from "../lib/cn";
@@ -7,23 +7,28 @@ import { cn } from "../lib/cn";
 // Button
 // ---------------------------------------------------------------------------
 
+const buttonBase =
+  "inline-flex items-center justify-center font-medium transition-all duration-150 " +
+  "disabled:opacity-40 disabled:pointer-events-none select-none";
+
 const buttonVariants = {
   primary:
-    "bg-gradient-to-b from-accent to-accent-dim text-text-inverse font-semibold " +
-    "hover:from-accent-hover hover:to-accent shadow-sm shadow-accent/10 " +
-    "active:shadow-none active:translate-y-px",
+    "bg-text text-text-inverse hover:bg-text/90 active:bg-text/80",
+  accent:
+    "bg-accent text-text-inverse font-semibold hover:bg-accent-hover active:bg-accent-dim",
   secondary:
-    "bg-bg-muted text-text border border-border hover:border-text-tertiary hover:bg-bg-emphasis",
+    "bg-bg-emphasis text-text hover:bg-bg-emphasis/80 border border-border",
   ghost:
-    "text-text-secondary hover:text-text hover:bg-bg-muted",
+    "text-text-secondary hover:text-text hover:bg-bg-emphasis/50",
   danger:
-    "bg-error/8 text-error hover:bg-error/15 border border-error/15",
+    "text-error hover:bg-error/10 border border-transparent hover:border-error/20",
 } as const;
 
 const buttonSizes = {
-  sm: "h-8 px-3 text-[13px] rounded-lg gap-1.5",
-  md: "h-9 px-4 text-sm rounded-lg gap-2",
-  lg: "h-10 px-5 text-sm rounded-lg gap-2",
+  xs: "h-7 px-2.5 text-xs rounded-md gap-1",
+  sm: "h-8 px-3 text-[13px] rounded-[var(--radius-lg)] gap-1.5",
+  md: "h-9 px-4 text-sm rounded-[var(--radius-lg)] gap-2",
+  lg: "h-10 px-5 text-sm rounded-[var(--radius-lg)] gap-2",
 } as const;
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -35,14 +40,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = "primary", size = "md", ...props }, ref) => (
     <button
       ref={ref}
-      className={cn(
-        "inline-flex items-center justify-center font-medium",
-        "transition-all duration-150 ease-out",
-        "disabled:opacity-40 disabled:pointer-events-none",
-        buttonVariants[variant],
-        buttonSizes[size],
-        className,
-      )}
+      className={cn(buttonBase, buttonVariants[variant], buttonSizes[size], className)}
       {...props}
     />
   ),
@@ -71,10 +69,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           ref={ref}
           id={inputId}
           className={cn(
-            "w-full h-10 px-3 rounded-lg text-sm bg-bg border transition-all duration-150",
+            "w-full h-9 px-3 rounded-[var(--radius-lg)] text-sm bg-bg border transition-colors duration-150",
             "placeholder:text-text-tertiary",
-            "focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent/30",
-            error ? "border-error/40" : "border-border hover:border-text-tertiary/50",
+            "focus:outline-none focus:ring-1 focus:ring-accent/40 focus:border-accent/30",
+            error ? "border-error/40" : "border-border hover:border-border/80",
             className,
           )}
           {...props}
@@ -92,11 +90,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
 export function Card({ className, children, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn(
-        "rounded-xl border border-border bg-bg-subtle/80 backdrop-blur-sm",
-        "transition-colors duration-200",
-        className,
-      )}
+      className={cn("rounded-xl border border-border bg-bg-subtle", className)}
       {...props}
     >
       {children}
@@ -113,11 +107,7 @@ export function CardHeader({ className, children, ...props }: HTMLAttributes<HTM
 }
 
 export function CardBody({ className, children, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return (
-    <div className={cn("px-5 py-4", className)} {...props}>
-      {children}
-    </div>
-  );
+  return <div className={cn("px-5 py-4", className)} {...props}>{children}</div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,11 +115,11 @@ export function CardBody({ className, children, ...props }: HTMLAttributes<HTMLD
 // ---------------------------------------------------------------------------
 
 const badgeVariants = {
-  default: "bg-bg-emphasis text-text-secondary border border-border",
-  success: "bg-success/8 text-success border border-success/15",
-  warning: "bg-warning/8 text-warning border border-warning/15",
-  error: "bg-error/8 text-error border border-error/15",
-  accent: "bg-accent-subtle text-accent border border-accent/15",
+  default: "bg-bg-emphasis text-text-secondary",
+  success: "bg-success/10 text-success",
+  warning: "bg-warning/10 text-warning",
+  error: "bg-error/10 text-error",
+  accent: "bg-accent/8 text-accent",
 } as const;
 
 interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
@@ -140,7 +130,7 @@ export function Badge({ className, variant = "default", ...props }: BadgeProps) 
   return (
     <span
       className={cn(
-        "inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium tracking-wide",
+        "inline-flex items-center px-1.5 py-px rounded text-[11px] font-medium",
         badgeVariants[variant],
         className,
       )}
@@ -155,7 +145,7 @@ export function Badge({ className, variant = "default", ...props }: BadgeProps) 
 
 export function Kbd({ children }: { children: string }) {
   return (
-    <kbd className="ml-auto text-[10px] text-text-tertiary bg-bg-emphasis/50 px-1.5 py-0.5 rounded font-mono border border-border-subtle">
+    <kbd className="ml-auto text-[10px] text-text-tertiary/60 font-mono tracking-wider">
       {children}
     </kbd>
   );
@@ -174,15 +164,11 @@ interface EmptyStateProps {
 
 export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-20 px-4 text-center animate-fade-in">
-      {icon && (
-        <div className="mb-4 p-3 rounded-2xl bg-bg-muted border border-border text-text-tertiary">
-          {icon}
-        </div>
-      )}
-      <h3 className="text-sm font-medium text-text-secondary">{title}</h3>
-      {description && <p className="mt-1.5 text-sm text-text-tertiary max-w-sm">{description}</p>}
-      {action && <div className="mt-5">{action}</div>}
+    <div className="flex flex-col items-center justify-center py-16 px-4 text-center animate-fade-in">
+      {icon && <div className="mb-3 text-text-tertiary/50">{icon}</div>}
+      <h3 className="text-[13px] font-medium text-text-secondary">{title}</h3>
+      {description && <p className="mt-1 text-[13px] text-text-tertiary max-w-xs">{description}</p>}
+      {action && <div className="mt-4 w-full max-w-sm">{action}</div>}
     </div>
   );
 }
@@ -199,20 +185,20 @@ interface CodeBlockProps {
 export function CodeBlock({ children, language }: CodeBlockProps) {
   const copy = () => navigator.clipboard.writeText(children);
   return (
-    <div className="relative group rounded-xl border border-border bg-bg overflow-hidden">
+    <div className="relative group rounded-[var(--radius-lg)] border border-border bg-bg overflow-hidden">
       {language && (
-        <div className="px-4 py-2 border-b border-border flex items-center justify-between">
-          <span className="text-[11px] text-text-tertiary font-mono uppercase tracking-widest">{language}</span>
+        <div className="px-3.5 py-2 border-b border-border flex items-center justify-between">
+          <span className="text-[10px] text-text-tertiary font-mono uppercase tracking-widest">{language}</span>
           <button
             onClick={copy}
-            className="opacity-0 group-hover:opacity-100 transition-opacity text-[11px] text-text-tertiary hover:text-text px-2 py-0.5 rounded-md hover:bg-bg-emphasis"
-            aria-label="Copy code"
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-[11px] text-text-tertiary hover:text-text"
+            aria-label="Copy"
           >
             Copy
           </button>
         </div>
       )}
-      <pre className="p-4 text-[13px] font-mono text-text-secondary leading-relaxed overflow-x-auto">
+      <pre className="px-3.5 py-3 text-[13px] font-mono text-text-secondary leading-relaxed overflow-x-auto">
         <code>{children}</code>
       </pre>
     </div>
@@ -233,17 +219,12 @@ interface MetricProps {
 export function Metric({ label, value, hint, accent }: MetricProps) {
   return (
     <div className={cn(
-      "rounded-xl border bg-bg-subtle/80 px-5 py-4 transition-colors duration-200",
-      accent ? "border-accent/20 bg-accent-subtle" : "border-border hover:border-border-accent",
+      "rounded-xl border px-4 py-3.5",
+      accent ? "border-accent/20 bg-accent/[0.03]" : "border-border bg-bg-subtle",
     )}>
-      <p className="text-[11px] font-medium text-text-tertiary uppercase tracking-widest">{label}</p>
-      <p className={cn(
-        "mt-1.5 text-2xl font-bold tabular-nums tracking-tight",
-        accent && "text-accent",
-      )}>
-        {value}
-      </p>
-      {hint && <p className="mt-1 text-[11px] text-text-tertiary">{hint}</p>}
+      <p className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider">{label}</p>
+      <p className={cn("mt-1 text-xl font-semibold tabular-nums", accent && "text-accent")}>{value}</p>
+      {hint && <p className="mt-0.5 text-[11px] text-text-tertiary">{hint}</p>}
     </div>
   );
 }
@@ -253,12 +234,6 @@ export function Metric({ label, value, hint, accent }: MetricProps) {
 // ---------------------------------------------------------------------------
 
 export function StatusDot({ status }: { status: "active" | "idle" | "error" }) {
-  const colors = {
-    active: "bg-success shadow-sm shadow-success/50",
-    idle: "bg-text-tertiary",
-    error: "bg-error shadow-sm shadow-error/50",
-  };
-  return (
-    <span className={cn("inline-block w-2 h-2 rounded-full", colors[status])} />
-  );
+  const c = { active: "bg-success", idle: "bg-text-tertiary/50", error: "bg-error" };
+  return <span className={cn("inline-block w-1.5 h-1.5 rounded-full", c[status])} />;
 }
