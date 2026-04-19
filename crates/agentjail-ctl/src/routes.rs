@@ -444,8 +444,8 @@ pub(crate) async fn create_run(
     let output_dir = tempfile::tempdir().map_err(CtlError::Io)?;
 
     let (filename, cmd) = match req.language.as_str() {
-        "javascript" | "js" => ("main.js", "node"),
-        "python" | "py" => ("main.py", "python3"),
+        "javascript" | "js" => ("main.js", "/usr/bin/node"),
+        "python" | "py" => ("main.py", "/usr/bin/python3"),
         "bash" | "sh" => ("main.sh", "/bin/sh"),
         other => return Err(CtlError::BadRequest(format!("unsupported language: {other}"))),
     };

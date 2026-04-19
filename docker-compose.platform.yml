@@ -1,22 +1,26 @@
-# One-shot bring-up for the agentjail platform (control plane + phantom
-# proxy + admin UI). The sandbox engine itself is not in this compose file —
-# this stack is the credential broker and dashboard; pair it with the
-# agentjail engine or any sandbox you already trust.
+# agentjail platform: control plane + phantom proxy + sandbox engine + UI.
 #
 # Usage:
-#   export OPENAI_API_KEY=sk-...
-#   export AGENTJAIL_API_KEY=aj_local_secret
+#   export AGENTJAIL_API_KEY=aj_local_$(openssl rand -hex 16)
 #   docker compose -f docker-compose.platform.yml up --build
 #
 # Then:
 #   open http://localhost:3000     # admin UI
-#   curl http://localhost:7000/healthz
+#   curl http://localhost:7070/healthz
 
 services:
   server:
     build:
       context: .
       dockerfile: Dockerfile.server
+    # Sandbox execution requires Linux namespaces + cgroups.
+    privileged: true
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
     environment:
       # Control plane API key. Leave empty to disable auth (dev only).
       AGENTJAIL_API_KEY: ${AGENTJAIL_API_KEY:-}

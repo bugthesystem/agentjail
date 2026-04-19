@@ -22,11 +22,12 @@ RUN cargo build --release -p agentjail-server
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && useradd -r -u 10001 -m agentjail
-USER agentjail
-WORKDIR /home/agentjail
+    ca-certificates libseccomp2 \
+    nodejs npm python3 \
+  && rm -rf /var/lib/apt/lists/*
+# Run as root — sandbox execution needs namespaces + cgroups.
+# The jail engine provides isolation (namespaces, seccomp, cgroups).
+WORKDIR /srv
 
 COPY --from=build /src/target/release/agentjail-server /usr/local/bin/agentjail-server
 
