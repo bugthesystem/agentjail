@@ -135,7 +135,10 @@ pub(crate) async fn create_fork_run(
     }
 
     let run_env = vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())];
-    let parent_config = jail_config(source_dir.path(), parent_out.path(), memory, timeout, run_env.clone(), &req.options)?;
+    let parent_config = jail_config(
+        source_dir.path(), parent_out.path(), memory, timeout, run_env.clone(), &req.options,
+        /* source_rw */ false,
+    )?;
 
     let parent_jail   = agentjail::Jail::new(parent_config)?;
     let parent_rec    = state.jails.start(JailKind::Fork, format!("{} · parent", req.language), None, None).await;

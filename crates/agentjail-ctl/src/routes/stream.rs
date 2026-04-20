@@ -50,7 +50,10 @@ pub(crate) async fn create_stream_run(
     std::fs::write(source_dir.path().join(filename), &req.code).map_err(CtlError::Io)?;
 
     let run_env = vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())];
-    let config  = jail_config(source_dir.path(), output_dir.path(), memory, timeout, run_env, &req.options)?;
+    let config  = jail_config(
+        source_dir.path(), output_dir.path(), memory, timeout, run_env, &req.options,
+        /* source_rw */ false,
+    )?;
 
     let jail = agentjail::Jail::new(config)?;
     let mut handle = jail.spawn(cmd, &[&format!("/workspace/{filename}")])?;

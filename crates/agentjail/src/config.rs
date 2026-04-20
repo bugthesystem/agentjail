@@ -63,11 +63,19 @@ pub struct GpuConfig {
 /// ```
 #[derive(Debug, Clone)]
 pub struct JailConfig {
-    /// Source directory (mounted read-only inside jail).
+    /// Source directory (mounted at `/workspace`). Read-only by default
+    /// — flip [`source_rw`](Self::source_rw) to `true` for persistent
+    /// workspaces where the jail is expected to mutate its own tree
+    /// (install deps, run builds, etc.).
     pub source: PathBuf,
 
-    /// Output directory (mounted read-write inside jail).
+    /// Output directory (mounted read-write inside jail at `/output`).
     pub output: PathBuf,
+
+    /// When `true`, the source mount at `/workspace` is read-write.
+    /// Defaults to `false` so one-shot runs preserve the safer split of
+    /// "seed dir is immutable, artifacts go to /output".
+    pub source_rw: bool,
 
     /// Network policy.
     pub network: Network,
@@ -120,6 +128,7 @@ impl Default for JailConfig {
         Self {
             source: PathBuf::new(),
             output: PathBuf::new(),
+            source_rw: false,
             network: Network::None,
             seccomp: SeccompLevel::Standard,
             landlock: true,

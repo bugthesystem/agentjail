@@ -73,7 +73,7 @@ pub(crate) fn setup_child(
     // 3. Filesystem
     mount::make_root_private()?;
     let new_root = std::env::temp_dir().join(format!("agentjail-{}", std::process::id()));
-    mount::setup_root(&new_root, &config.source, &config.output)?;
+    mount::setup_root(&new_root, &config.source, &config.output, config.source_rw)?;
 
     if let Some(res) = &gpu_resources {
         gpu::setup_mounts(&new_root, res)?;

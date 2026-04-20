@@ -182,7 +182,9 @@ pub(crate) async fn exec_in_session(
     let source = tempfile::tempdir().map_err(CtlError::Io)?;
     let output = tempfile::tempdir().map_err(CtlError::Io)?;
 
-    let config = jail_config(source.path(), output.path(), memory, timeout, env, &req.options)?;
+    let config = jail_config(
+        source.path(), output.path(), memory, timeout, env, &req.options, /* source_rw */ false,
+    )?;
     let jail = agentjail::Jail::new(config)?;
     let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
 
@@ -237,7 +239,10 @@ pub(crate) async fn create_run(
     std::fs::write(source.path().join(filename), &req.code).map_err(CtlError::Io)?;
 
     let run_env = vec![("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into())];
-    let config = jail_config(source.path(), output_dir.path(), memory, timeout, run_env, &req.options)?;
+    let config = jail_config(
+        source.path(), output_dir.path(), memory, timeout, run_env, &req.options,
+        /* source_rw */ false,
+    )?;
 
     let jail = agentjail::Jail::new(config)?;
     let rec_id = state.jails.start(JailKind::Run, req.language.clone(), None, None).await;
@@ -478,6 +483,10 @@ fn push_capped(buf: &mut String, line: &str) {
 
 /// Build a JailConfig with sensible defaults for API-driven execution.
 /// Options are clamped; illegal allowlists return `400`.
+///
+/// `source_rw` switches the `/workspace` mount between read-only (the
+/// default — one-shot runs where the seed is immutable) and read-write
+/// (persistent workspaces, where the jail mutates its own tree).
 pub(super) fn jail_config(
     source: &std::path::Path,
     output: &std::path::Path,
@@ -485,6 +494,7 @@ pub(super) fn jail_config(
     timeout_secs: u64,
     env: Vec<(String, String)>,
     options: &ExecOptions,
+    source_rw: bool,
 ) -> Result<agentjail::JailConfig> {
     let network = match options.network.as_ref() {
         None | Some(NetworkSpec::None) => agentjail::Network::None,
@@ -505,6 +515,7 @@ pub(super) fn jail_config(
     Ok(agentjail::JailConfig {
         source: source.into(),
         output: output.into(),
+        source_rw,
         network,
         seccomp,
         landlock: false,
@@ -560,7 +571,7 @@ mod tests {
         let c = jail_config(
             &PathBuf::from("/tmp/src"),
             &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &opts(),
+            256, 60, vec![], &opts(), false,
         ).unwrap();
         assert!(matches!(c.network, agentjail::Network::None));
         assert!(matches!(c.seccomp, agentjail::SeccompLevel::Standard));
@@ -582,7 +593,7 @@ mod tests {
         let c = jail_config(
             &PathBuf::from("/tmp/src"),
             &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &o,
+            256, 60, vec![], &o, false,
         ).unwrap();
         match c.network {
             agentjail::Network::Allowlist(d) => assert_eq!(d.len(), 2),
@@ -603,7 +614,7 @@ mod tests {
         let c = jail_config(
             &PathBuf::from("/tmp/src"),
             &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &o,
+            256, 60, vec![], &o, false,
         ).unwrap();
         assert_eq!(c.cpu_percent, 800);
         assert_eq!(c.max_pids, 1024);
@@ -617,7 +628,7 @@ mod tests {
         };
         assert!(jail_config(
             &PathBuf::from("/tmp/src"), &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &o,
+            256, 60, vec![], &o, false,
         ).is_err());
     }
 
@@ -631,7 +642,7 @@ mod tests {
         };
         assert!(jail_config(
             &PathBuf::from("/tmp/src"), &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &o,
+            256, 60, vec![], &o, false,
         ).is_err());
     }
 

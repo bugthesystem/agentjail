@@ -94,20 +94,27 @@ pub fn make_root_private() -> Result<()> {
 /// Setup minimal root filesystem for the jail.
 ///
 /// Creates:
-/// - /workspace (source, read-only)
+/// - /workspace (source, read-only by default; read-write when
+///   `source_rw` is true — used for persistent workspaces)
 /// - /output (artifacts, read-write)
 /// - /bin, /lib, /lib64, /usr (system binaries, read-only)
 /// - /tmp (tmpfs)
 /// - /proc
 /// - /dev (minimal)
-pub fn setup_root(new_root: &Path, source: &Path, output: &Path) -> Result<()> {
+pub fn setup_root(
+    new_root: &Path,
+    source: &Path,
+    output: &Path,
+    source_rw: bool,
+) -> Result<()> {
     fs::create_dir_all(new_root).map_err(JailError::Io)?;
 
     // User directories
     let workspace = new_root.join("workspace");
     let output_dir = new_root.join("output");
 
-    bind_mount(source, &workspace, Access::ReadOnly)?;
+    let source_access = if source_rw { Access::ReadWrite } else { Access::ReadOnly };
+    bind_mount(source, &workspace, source_access)?;
     bind_mount(output, &output_dir, Access::ReadWrite)?;
 
     // System directories (read-only). Warn on missing so operators notice

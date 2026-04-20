@@ -259,7 +259,13 @@ pub(crate) async fn exec_in_workspace(
     env.extend(req.env.iter().cloned());
 
     let options = spec_to_options(&ws.config)?;
-    let config = jail_config(&ws.source_dir, &ws.output_dir, memory_mb, timeout, env, &options)?;
+    // Workspaces are the freestyle-style "one persistent dir" model —
+    // /workspace is read-write so `bun install`, `cargo build`, etc. can
+    // mutate the source tree directly.
+    let config = jail_config(
+        &ws.source_dir, &ws.output_dir, memory_mb, timeout, env, &options,
+        /* source_rw */ true,
+    )?;
     let jail = agentjail::Jail::new(config)?;
     let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
 
