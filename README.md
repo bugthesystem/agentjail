@@ -13,7 +13,7 @@
 Built for AI agents, build systems, and any scenario where you need to execute code you didn't write.
 
 > **Status — beta.** The Rust core (`crates/agentjail`) is the only piece
-> currently running in production. The control plane, TypeScript SDK, and
+> currently running in production. The control plane, TypeScript and Python SDK, and
 > web UI are open-source work-in-progress — useful, but expect rough
 > edges. Hardening is continuous; review the threat model and pin a
 > version before depending on it.
