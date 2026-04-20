@@ -235,12 +235,11 @@ impl ControlPlane {
         let exec_semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
         let exec_metrics = Arc::new(ExecMetrics::new());
         let state_dir = ensure_state_dir(config.state_dir);
-        let snapshot_pool_dir = config.snapshot_pool_dir.map(|p| {
-            if let Err(e) = std::fs::create_dir_all(&p) {
+        let snapshot_pool_dir = config.snapshot_pool_dir.inspect(|p| {
+            if let Err(e) = std::fs::create_dir_all(p) {
                 tracing::warn!(path = %p.display(), error = %e,
                     "failed to create snapshot pool dir");
             }
-            p
         });
         let workspace_locks = Arc::new(WorkspaceLocks::new());
         let active_cgroups  = Arc::new(ActiveCgroups::new());

@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::error::{CtlError, Result};
-use crate::snapshots::{SnapshotRecord, new_snapshot_id};
+use crate::snapshots::SnapshotRecord;
+pub(super) use crate::snapshots::new_snapshot_id;
 use crate::workspaces::{Workspace, new_workspace_id};
 
 use super::AppState;
@@ -212,7 +213,7 @@ pub(crate) async fn create_workspace_from_snapshot(
         git_repo: parent.as_ref().and_then(|p| p.git_repo.clone()),
         git_ref:  parent.as_ref().and_then(|p| p.git_ref.clone()),
         label:    req.label.or_else(|| {
-            parent.as_ref().map(|p| format!("restored from {}", snap.id))
+            parent.as_ref().map(|_| format!("restored from {}", snap.id))
         }),
         domains:       Vec::new(),
         last_exec_at:  None,
@@ -233,7 +234,7 @@ pub(crate) async fn create_workspace_from_snapshot(
 /// Returns `(engine_snapshot, reported_size_bytes)`. For incremental
 /// snapshots the size is the manifest's logical sum; for full copies
 /// it's the actual on-disk footprint.
-fn capture_snapshot(
+pub(super) fn capture_snapshot(
     cgroup_path: Option<&std::path::Path>,
     output_dir: &std::path::Path,
     snap_dir: &std::path::Path,
@@ -262,36 +263,10 @@ fn capture_snapshot(
     }
 }
 
-/// Re-exports for sibling modules (workspaces, etc.) that share the
-/// snapshot capture + restore plumbing.
-pub(super) use crate::snapshots::new_snapshot_id as new_snapshot_id_public;
-
-/// Sibling-visible wrapper around [`capture_snapshot`] so the
-/// workspace-fork handler can reuse the freeze-around-copy plumbing.
-pub(super) fn capture_snapshot_public(
-    cgroup_path: Option<&std::path::Path>,
-    output_dir: &std::path::Path,
-    snap_dir: &std::path::Path,
-    pool_dir: Option<&std::path::Path>,
-) -> Result<(agentjail::Snapshot, u64)> {
-    capture_snapshot(cgroup_path, output_dir, snap_dir, pool_dir)
-}
-
 /// Counterpart to [`capture_snapshot`]. Picks full-vs-incremental based
 /// on whether the snapshot dir holds a `manifest.json` (authoritative
 /// marker regardless of what the server was started with).
-///
-/// Exposed (via [`restore_snapshot_public`]) so workspace auto-resume
-/// can share the same full/incremental dispatch logic.
-pub(super) fn restore_snapshot_public(
-    snap_dir: &std::path::Path,
-    target_dir: &std::path::Path,
-    pool_dir: Option<&std::path::Path>,
-) -> Result<()> {
-    restore_snapshot(snap_dir, target_dir, pool_dir)
-}
-
-fn restore_snapshot(
+pub(super) fn restore_snapshot(
     snap_dir: &std::path::Path,
     target_dir: &std::path::Path,
     pool_dir: Option<&std::path::Path>,

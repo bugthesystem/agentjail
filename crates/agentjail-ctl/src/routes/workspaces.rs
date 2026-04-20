@@ -201,10 +201,10 @@ pub(crate) async fn fork_workspace(
 
     // 1. Capture one snapshot of the parent. Freeze iff an exec is in
     //    flight so the forks get a consistent filesystem view.
-    let snap_id = super::snapshots::new_snapshot_id_public();
+    let snap_id = super::snapshots::new_snapshot_id();
     let snap_dir = state.state_dir.join("snapshots").join(&snap_id);
     let active = state.active_cgroups.get(&parent.id);
-    let (snap, size_bytes) = super::snapshots::capture_snapshot_public(
+    let (snap, size_bytes) = super::snapshots::capture_snapshot(
         active.as_deref(),
         &parent.source_dir,
         &snap_dir,
@@ -239,7 +239,7 @@ pub(crate) async fn fork_workspace(
         std::fs::create_dir_all(&source_dir).map_err(CtlError::Io)?;
         std::fs::create_dir_all(&output_dir).map_err(CtlError::Io)?;
 
-        super::snapshots::restore_snapshot_public(
+        super::snapshots::restore_snapshot(
             snap.path(),
             &source_dir,
             state.snapshot_pool_dir.as_deref(),

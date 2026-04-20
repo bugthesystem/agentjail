@@ -186,7 +186,7 @@ impl JailStore for PgJailStore {
             args.push(format!("%{}%", n.replace('%', "\\%")));
         }
 
-        let limit  = q.limit.max(1).min(500) as i64;
+        let limit  = q.limit.clamp(1, 500) as i64;
         let offset = q.offset as i64;
         sql.push_str(&format!(" ORDER BY id DESC LIMIT {limit} OFFSET {offset}"));
 

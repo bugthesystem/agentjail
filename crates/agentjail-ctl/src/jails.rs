@@ -61,8 +61,12 @@ impl JailKind {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JailStatus {
+    /// Jail is spawned and the process is still being waited on.
     Running,
+    /// Process exited normally; `exit_code` + timing are populated.
     Completed,
+    /// Jail failed to spawn or was killed by the engine (OOM, timeout,
+    /// seccomp violation); `error` carries the reason.
     Error,
 }
 
@@ -332,7 +336,7 @@ impl JailStore for InMemoryJailStore {
         };
         let total = g.next_id as u64;
         let rows = g.rows.iter().rev()
-            .filter(|r| status.map_or(true, |s| r.status == s))
+            .filter(|r| status.is_none_or(|s| r.status == s))
             .take(limit)
             .cloned()
             .collect();
@@ -362,7 +366,7 @@ impl JailStore for InMemoryJailStore {
         let total = filtered.len() as u64;
         let rows: Vec<JailRecord> = filtered.into_iter()
             .skip(q.offset)
-            .take(q.limit.max(1).min(500))
+            .take(q.limit.clamp(1, 500))
             .cloned()
             .collect();
         (rows, total)

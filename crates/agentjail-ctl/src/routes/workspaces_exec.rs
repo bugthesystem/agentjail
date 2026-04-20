@@ -52,7 +52,7 @@ pub(crate) async fn exec_in_workspace(
         && let Some(snap_id) = ws.auto_snapshot.as_deref()
         && let Some(snap) = state.snapshots.get(snap_id).await
     {
-        super::snapshots::restore_snapshot_public(
+        super::snapshots::restore_snapshot(
             &snap.path,
             &ws.source_dir,
             state.snapshot_pool_dir.as_deref(),

@@ -281,7 +281,7 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
         let rows = live
             .into_iter()
             .skip(offset)
-            .take(limit.max(1).min(500))
+            .take(limit.clamp(1, 500))
             .collect();
         (rows, total)
     }

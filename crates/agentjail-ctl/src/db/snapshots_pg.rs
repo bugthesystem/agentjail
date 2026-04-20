@@ -76,7 +76,7 @@ impl SnapshotStore for PgSnapshotStore {
         limit: usize,
         offset: usize,
     ) -> (Vec<SnapshotRecord>, u64) {
-        let limit_i = limit.max(1).min(500) as i64;
+        let limit_i = limit.clamp(1, 500) as i64;
         let offset_i = offset as i64;
 
         // Two branches to avoid binding-count mismatch between filtered

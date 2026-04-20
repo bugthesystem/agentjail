@@ -404,7 +404,6 @@ mod tests {
             seccomp: Some(SeccompSpec::Strict),
             cpu_percent: Some(200),
             max_pids: Some(128),
-            ..Default::default()
         };
         let c = jail_config(
             &PathBuf::from("/tmp/src"),

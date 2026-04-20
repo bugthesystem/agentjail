@@ -122,7 +122,7 @@ impl SnapshotStore for InMemorySnapshotStore {
         let page = rows
             .into_iter()
             .skip(offset)
-            .take(limit.max(1).min(500))
+            .take(limit.clamp(1, 500))
             .collect();
         (page, total)
     }

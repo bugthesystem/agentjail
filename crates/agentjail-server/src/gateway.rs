@@ -19,7 +19,7 @@ use std::sync::Arc;
 use agentjail_ctl::WorkspaceStore;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
@@ -102,9 +102,15 @@ async fn proxy(State(state): State<GatewayState>, req: Request) -> Response {
             upstream = upstream.header(n, v);
         }
     }
+    // `extract_host` normalizes the Host header to lowercase + strips
+    // the port, so only ASCII-letters/digits/`-`/`.` should remain —
+    // all valid HeaderValue bytes. Panic here would mean a broken
+    // invariant upstream, not user input.
+    let fwd_host = reqwest::header::HeaderValue::from_str(&host)
+        .expect("extract_host returns header-safe bytes");
     upstream = upstream.header(
         reqwest::header::HeaderName::from_static("x-forwarded-host"),
-        reqwest::header::HeaderValue::from_str(&host).unwrap_or_else(|_| HeaderValue::from_static("")),
+        fwd_host,
     );
 
     let resp = match upstream.send().await {

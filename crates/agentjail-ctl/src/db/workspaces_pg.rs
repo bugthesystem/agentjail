@@ -131,7 +131,7 @@ impl WorkspaceStore for PgWorkspaceStore {
     }
 
     async fn list(&self, limit: usize, offset: usize) -> (Vec<Workspace>, u64) {
-        let limit_i = limit.max(1).min(500) as i64;
+        let limit_i = limit.clamp(1, 500) as i64;
         let offset_i = offset as i64;
 
         let total: i64 = sqlx::query_scalar(

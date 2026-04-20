@@ -46,10 +46,15 @@ pub(crate) struct ForkRequest {
     git: Option<GitSpec>,
 }
 
+/// One child in an N-way fork. `memory_mb` is accepted on the wire for
+/// forward-compatibility with per-child limits; the current runner
+/// inherits the parent's cap, so the value is deserialized then ignored
+/// until per-child overrides actually plumb through `live_fork`.
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct ForkChild {
     code: String,
     #[serde(default)]
+    #[allow(dead_code)]
     memory_mb: Option<u64>,
 }
 
