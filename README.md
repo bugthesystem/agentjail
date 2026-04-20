@@ -5,7 +5,7 @@
 <h1 align="center">agentjail</h1>
 
 <p align="center">
-  Minimal Linux sandbox for running untrusted code
+  Minimal Linux sandboxes for running untrusted code
 </p>
 
 ---
