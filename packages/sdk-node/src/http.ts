@@ -2,9 +2,43 @@
  * Minimal HTTP client. Zero runtime deps — uses global `fetch`.
  */
 
+/**
+ * Categorical error code so callers can `switch` on the kind of failure
+ * without string-matching the message. Mapped from the HTTP status by
+ * {@link statusToCode}.
+ */
+export type AgentjailErrorCode =
+  | "BAD_REQUEST"
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "RATE_LIMITED"
+  | "TIMEOUT"
+  | "SERVER_ERROR"
+  | "NETWORK"
+  | "UNKNOWN";
+
+function statusToCode(status: number): AgentjailErrorCode {
+  if (status === 0) return "NETWORK";
+  if (status === 408 || status === 504) return "TIMEOUT";
+  if (status === 429) return "RATE_LIMITED";
+  switch (status) {
+    case 400: return "BAD_REQUEST";
+    case 401: return "UNAUTHORIZED";
+    case 403: return "FORBIDDEN";
+    case 404: return "NOT_FOUND";
+    case 409: return "CONFLICT";
+  }
+  if (status >= 500 && status < 600) return "SERVER_ERROR";
+  if (status >= 400 && status < 500) return "BAD_REQUEST";
+  return "UNKNOWN";
+}
+
 /** An error from the control plane. */
 export class AgentjailError extends Error {
   public readonly status: number;
+  public readonly code: AgentjailErrorCode;
   public readonly body: unknown;
 
   constructor(status: number, body: unknown, fallback: string) {
@@ -16,6 +50,7 @@ export class AgentjailError extends Error {
     super(`agentjail ${status}: ${message}`);
     this.name = "AgentjailError";
     this.status = status;
+    this.code = statusToCode(status);
     this.body = body;
   }
 }
@@ -97,7 +132,18 @@ export class HttpClient {
       return undefined as T;
     }
     const text = await res.text();
-    const parsed: unknown = text.length > 0 ? JSON.parse(text) : null;
+    // Prefer JSON, but tolerate plain-text responses (e.g. `/healthz`
+    // returns the string `ok`). Falling back to the raw text keeps the
+    // SDK useful for endpoints that intentionally aren't JSON without
+    // forcing callers to reach for `rawFetch`.
+    let parsed: unknown = null;
+    if (text.length > 0) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text;
+      }
+    }
     if (!res.ok) {
       throw new AgentjailError(res.status, parsed, res.statusText);
     }

@@ -58,7 +58,7 @@ export function Terminal({
       </button>
 
       {open && (
-        <div className="flex flex-col min-h-0" style={{ maxHeight: "46vh" }}>
+        <div className="flex flex-col min-h-0 max-h-[46vh]">
           {result && <StatsBar result={result} />}
           <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4 bg-ink-950/60">
             <Body recipe={recipe} result={result} pending={pending} error={error} />

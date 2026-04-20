@@ -79,12 +79,13 @@ pub(crate) async fn create_snapshot(
     let snap_id = new_snapshot_id();
     let snap_dir = state.state_dir.join("snapshots").join(&snap_id);
 
-    // Freeze iff an exec is in flight, then capture either as a plain
-    // copy (no pool configured) or into the content-addressed pool.
+    // Workspace state lives in `source_dir` (mounted at `/workspace`
+    // read-write); `output_dir` is the artifact drop zone. Snapshot the
+    // dir the jail actually mutates.
     let active = state.active_cgroups.get(&ws.id);
     let (snap, size_bytes) = capture_snapshot(
         active.as_deref(),
-        &ws.output_dir,
+        &ws.source_dir,
         &snap_dir,
         state.snapshot_pool_dir.as_deref(),
     )?;
@@ -185,11 +186,11 @@ pub(crate) async fn create_workspace_from_snapshot(
     std::fs::create_dir_all(&source_dir).map_err(CtlError::Io)?;
     std::fs::create_dir_all(&output_dir).map_err(CtlError::Io)?;
 
-    // Restore: pick incremental (manifest + pool) when the snapshot has
-    // a manifest on disk, else fall back to the full-copy path.
+    // Restore into the new workspace's `source_dir` — that's the
+    // writable surface the jail sees at `/workspace`.
     restore_snapshot(
         &snap.path,
-        &output_dir,
+        &source_dir,
         state.snapshot_pool_dir.as_deref(),
     )
     .inspect_err(|_| {
@@ -259,6 +260,21 @@ fn capture_snapshot(
             Ok((snap, size))
         }
     }
+}
+
+/// Re-exports for sibling modules (workspaces, etc.) that share the
+/// snapshot capture + restore plumbing.
+pub(super) use crate::snapshots::new_snapshot_id as new_snapshot_id_public;
+
+/// Sibling-visible wrapper around [`capture_snapshot`] so the
+/// workspace-fork handler can reuse the freeze-around-copy plumbing.
+pub(super) fn capture_snapshot_public(
+    cgroup_path: Option<&std::path::Path>,
+    output_dir: &std::path::Path,
+    snap_dir: &std::path::Path,
+    pool_dir: Option<&std::path::Path>,
+) -> Result<(agentjail::Snapshot, u64)> {
+    capture_snapshot(cgroup_path, output_dir, snap_dir, pool_dir)
 }
 
 /// Counterpart to [`capture_snapshot`]. Picks full-vs-incremental based

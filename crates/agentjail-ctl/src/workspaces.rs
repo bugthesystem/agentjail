@@ -306,12 +306,14 @@ pub mod idle {
         let snap_id = new_snapshot_id();
         let snap_dir = cfg.state_dir.join("snapshots").join(&snap_id);
 
-        // Snapshot the output dir — freeze isn't needed because the
-        // workspace is idle by definition.
+        // Workspace state lives in `source_dir` (the mutable
+        // `/workspace` mount); capture it, not the artifact `output_dir`.
+        // Freeze isn't needed because the workspace is idle by
+        // definition.
         let snap = match cfg.pool_dir.as_deref() {
-            Some(pool) => agentjail::Snapshot::create_incremental(&ws.output_dir, &snap_dir, pool)
+            Some(pool) => agentjail::Snapshot::create_incremental(&ws.source_dir, &snap_dir, pool)
                 .map_err(|e| format!("snapshot create: {e}"))?,
-            None => agentjail::Snapshot::create(&ws.output_dir, &snap_dir)
+            None => agentjail::Snapshot::create(&ws.source_dir, &snap_dir)
                 .map_err(|e| format!("snapshot create: {e}"))?,
         };
         let size_bytes = match cfg.pool_dir.as_deref() {
@@ -334,8 +336,10 @@ pub mod idle {
             return Err(format!("snapshot insert: {e}"));
         }
 
-        // Wipe output_dir to reclaim disk now that the snapshot is safe.
-        let _ = wipe_dir_contents(&ws.output_dir);
+        // Wipe source_dir to reclaim disk now that the snapshot is
+        // safe. The next exec auto-restores from the snapshot id
+        // recorded via `mark_paused`.
+        let _ = wipe_dir_contents(&ws.source_dir);
 
         cfg.workspaces.mark_paused(&ws.id, &snap_id).await;
         Ok(())

@@ -2,13 +2,54 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 
+AgentjailErrorCode = Literal[
+    "BAD_REQUEST",
+    "UNAUTHORIZED",
+    "FORBIDDEN",
+    "NOT_FOUND",
+    "CONFLICT",
+    "RATE_LIMITED",
+    "TIMEOUT",
+    "SERVER_ERROR",
+    "NETWORK",
+    "UNKNOWN",
+]
+
+
+def _status_to_code(status: int) -> AgentjailErrorCode:
+    if status == 0:
+        return "NETWORK"
+    if status in (408, 504):
+        return "TIMEOUT"
+    if status == 429:
+        return "RATE_LIMITED"
+    mapping: dict[int, AgentjailErrorCode] = {
+        400: "BAD_REQUEST",
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        409: "CONFLICT",
+    }
+    if status in mapping:
+        return mapping[status]
+    if 500 <= status < 600:
+        return "SERVER_ERROR"
+    if 400 <= status < 500:
+        return "BAD_REQUEST"
+    return "UNKNOWN"
+
+
 class AgentjailError(Exception):
-    """Raised when the control plane returns a non-2xx status."""
+    """Raised when the control plane returns a non-2xx status.
+
+    Inspect ``code`` for a stable categorical reason rather than parsing
+    ``message``. ``status`` is the raw HTTP code.
+    """
 
     def __init__(self, status: int, body: Any, fallback: str) -> None:
         if isinstance(body, dict) and isinstance(body.get("error"), str):
@@ -17,6 +58,7 @@ class AgentjailError(Exception):
             message = fallback
         super().__init__(f"agentjail {status}: {message}")
         self.status = status
+        self.code: AgentjailErrorCode = _status_to_code(status)
         self.body = body
 
 

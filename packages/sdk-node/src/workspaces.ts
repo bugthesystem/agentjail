@@ -4,6 +4,7 @@ import type {
   Workspace,
   WorkspaceCreateRequest,
   WorkspaceExecRequest,
+  WorkspaceForkResponse,
   WorkspaceList,
 } from "./types.js";
 import { encodeExecOptions } from "./exec_options.js";
@@ -36,9 +37,10 @@ export class Workspaces {
   async create(params: WorkspaceCreateRequest = {}): Promise<Workspace> {
     const body: Record<string, unknown> = {};
     if (params.git) {
-      const git: Record<string, unknown> = { repo: params.git.repo };
-      if (params.git.ref) git.ref = params.git.ref;
-      body.git = git;
+      // Pass the seed through verbatim — the server accepts both the
+      // single-repo (`{ repo, ref }`) and multi-repo (`{ repos: [] }`)
+      // shapes, so just forward whichever the caller supplied.
+      body.git = params.git;
     }
     if (params.label !== undefined)           body.label             = params.label;
     if (params.memoryMb !== undefined)        body.memory_mb         = params.memoryMb;
@@ -94,6 +96,36 @@ export class Workspaces {
     return this.http.request<ExecResult>({
       method: "POST",
       path: `/v1/workspaces/${encodeURIComponent(id)}/exec`,
+      body,
+    });
+  }
+
+  /**
+   * Atomic N-way fork of a persistent workspace — devin/cursor-style
+   * "give me N parallel agents off the same starting state". Captures
+   * one snapshot of the parent, spawns `count` fresh workspaces from
+   * it, returns them all. Each fork is fully independent; run execs
+   * against them in parallel.
+   *
+   * ```ts
+   * const { forks } = await aj.workspaces.fork(ws.id, { count: 3 });
+   * await Promise.all(forks.map((w, i) =>
+   *   aj.workspaces.exec(w.id, { cmd: "do-thing", args: [String(i)] }),
+   * ));
+   * ```
+   */
+  async fork(
+    id: string,
+    params: { count: number; label?: string },
+  ): Promise<WorkspaceForkResponse> {
+    if (params.count < 1 || params.count > 16) {
+      throw new Error("workspaces.fork: count must be 1..=16");
+    }
+    const body: Record<string, unknown> = { count: params.count };
+    if (params.label !== undefined) body.label = params.label;
+    return this.http.request<WorkspaceForkResponse>({
+      method: "POST",
+      path: `/v1/workspaces/${encodeURIComponent(id)}/fork`,
       body,
     });
   }

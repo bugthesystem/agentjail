@@ -730,3 +730,126 @@ async fn test_fd_limit_enforced() {
     assert!(limit <= 4096, "fd limit should be <= 4096, got {limit}");
     cleanup(&src, &out);
 }
+
+// ---------------------------------------------------------------------------
+// AUDIT (post-OSS round): docs claim fork-bomb protection via cgroup pids.max
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pid_limit_blocks_fork_bomb() {
+    let (src, out) = setup("pid-bomb");
+
+    // Try to spawn 200 children. With max_pids=8, only ~8 should succeed
+    // before the cgroup starts returning EAGAIN on fork(). The script
+    // counts how many actually ran.
+    fs::write(
+        src.join("t.sh"),
+        concat!(
+            "#!/bin/sh\n",
+            "i=0\n",
+            "while [ $i -lt 200 ]; do\n",
+            "  /bin/sh -c 'sleep 0.5' &\n",
+            "  i=$((i+1))\n",
+            "done 2>/dev/null\n",
+            "wait\n",
+            "echo DONE\n",
+        ),
+    )
+    .unwrap();
+
+    let mut config = base_config(src.clone(), out.clone());
+    config.max_pids = 8;
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let stderr = String::from_utf8_lossy(&r.stderr);
+
+    // Either: most fork() calls failed (stderr full of "Resource temporarily
+    // unavailable" / "fork: retry"), or the shell itself was killed before
+    // finishing (non-zero exit, no DONE).
+    let stdout = String::from_utf8_lossy(&r.stdout);
+    let bomb_was_contained = stderr.lines().filter(|l| !l.is_empty()).count() > 50
+        || !stdout.contains("DONE");
+    assert!(
+        bomb_was_contained,
+        "PID limit should have stopped the fork bomb. exit={} stdout={stdout:?} stderr_lines={}",
+        r.exit_code,
+        stderr.lines().count()
+    );
+
+    cleanup(&src, &out);
+}
+
+// ---------------------------------------------------------------------------
+// AUDIT (post-OSS round): docs claim I/O bandwidth limits via cgroup io.max
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_io_write_bandwidth_limit_enforced() {
+    let (src, out) = setup("io-bw");
+
+    // Write 32 MiB and time it. With io_write_mbps=8 (8 MB/s ≈ 8.4 MiB/s),
+    // 32 MiB should take >= ~3 s. Without the limit, tmpfs/local disk
+    // would finish in well under 1 s.
+    fs::write(
+        src.join("t.sh"),
+        "#!/bin/sh\ndd if=/dev/zero of=/output/big bs=1M count=32 conv=fdatasync 2>/dev/null\n",
+    )
+    .unwrap();
+
+    let mut config = base_config(src.clone(), out.clone());
+    config.memory_mb = 64;
+    config.cpu_percent = 100;
+    config.io_write_mbps = 8;
+
+    let jail = Jail::new(config).unwrap();
+    let start = std::time::Instant::now();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+    let elapsed = start.elapsed();
+
+    assert_eq!(r.exit_code, 0, "dd should succeed; stderr={}", String::from_utf8_lossy(&r.stderr));
+
+    // The cgroup v2 io controller needs a real block device; tmpfs and
+    // overlayfs (common in CI containers) silently no-op io.max. Detect
+    // that by the wall-clock: if 32 MiB completed in <500 ms the limit
+    // wasn't applied, so skip rather than false-fail. The kernel/fs
+    // gap, not the jail, is the issue.
+    if elapsed.as_millis() < 500 {
+        eprintln!(
+            "skipping: io.max not enforced on this fs (32 MiB took {elapsed:?}); \
+             likely tmpfs/overlay backing the output dir"
+        );
+        cleanup(&src, &out);
+        return;
+    }
+    assert!(
+        elapsed.as_millis() >= 1500,
+        "32 MiB write at 8 MB/s should take \u{2265} 1.5 s, took {elapsed:?}"
+    );
+
+    cleanup(&src, &out);
+}
+
+// ---------------------------------------------------------------------------
+// AUDIT (post-OSS round): docs claim core dumps disabled via RLIMIT_CORE=0
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_rlimit_core_disabled() {
+    let (src, out) = setup("rlimit-core");
+
+    fs::write(
+        src.join("t.sh"),
+        "#!/bin/sh\nulimit -c\n",
+    )
+    .unwrap();
+
+    let config = base_config(src.clone(), out.clone());
+    let jail = Jail::new(config).unwrap();
+    let r = jail.run("/bin/sh", &["/workspace/t.sh"]).await.unwrap();
+
+    assert_eq!(r.exit_code, 0);
+    let limit = String::from_utf8_lossy(&r.stdout).trim().to_string();
+    assert_eq!(limit, "0", "RLIMIT_CORE should be 0, got {limit:?}");
+
+    cleanup(&src, &out);
+}

@@ -85,11 +85,44 @@ pub(crate) struct RunRequest {
 
 #[derive(Debug, Deserialize, Clone)]
 pub(super) struct GitSpec {
-    /// `https://…` URL. ssh/git protocols are rejected at the edge.
-    pub(super) repo: String,
-    /// Optional branch / tag / commit.
+    /// Single-repo form: `https://…` URL. Mutually exclusive with `repos`.
+    #[serde(default)]
+    pub(super) repo: Option<String>,
+    /// Optional branch / tag / commit for the single-repo form.
     #[serde(default, rename = "ref")]
     pub(super) git_ref: Option<String>,
+    /// Multi-repo form — each entry clones into its own subdirectory
+    /// named after the repo basename. Use for cursor/devin-style agents
+    /// that work across several checkouts at once.
+    #[serde(default)]
+    pub(super) repos: Vec<GitRepoEntry>,
+}
+
+/// One entry in a multi-repo clone.
+#[derive(Debug, Deserialize, Clone)]
+pub(super) struct GitRepoEntry {
+    pub(super) repo: String,
+    #[serde(default, rename = "ref")]
+    pub(super) git_ref: Option<String>,
+    /// Directory name under the workspace root. Defaults to the last
+    /// path segment of `repo` (stripped of a trailing `.git`).
+    #[serde(default)]
+    pub(super) dir: Option<String>,
+}
+
+impl GitSpec {
+    /// Return `(primary_repo_url, primary_ref)` for the audit
+    /// `git_repo` / `git_ref` columns. Uses the single-repo fields when
+    /// set, else the first `repos[]` entry.
+    pub(super) fn primary(&self) -> (Option<String>, Option<String>) {
+        if let Some(repo) = &self.repo {
+            (Some(repo.clone()), self.git_ref.clone())
+        } else if let Some(first) = self.repos.first() {
+            (Some(first.repo.clone()), first.git_ref.clone())
+        } else {
+            (None, None)
+        }
+    }
 }
 
 pub(super) fn default_language() -> String {
@@ -415,38 +448,77 @@ pub(super) async fn run_monitored_with(
     })
 }
 
-/// Shallow-clone a repo into the jail's source directory. Runs on the
-/// host, *before* the jail locks down the filesystem.
+/// Shallow-clone one or more repos into the jail's source directory.
+/// Runs on the host, *before* the jail locks down the filesystem.
 ///
-/// Security:
-///  - scheme must be `https://` (no ssh/git/file)
-///  - URL length capped at 512 bytes; ref at 200
-///  - `git` runs with a 60s hard timeout and `--depth=1`
+/// - Single-repo form (`{ repo, ref? }`): contents land at the root of
+///   `dst` (back-compat with earlier versions).
+/// - Multi-repo form (`{ repos: [{ repo, ref?, dir? }] }`): each repo
+///   clones into its own subdirectory under `dst`. Default subdir name
+///   is the repo basename (with any `.git` suffix stripped).
+///
+/// Security: every URL must be `https://` (no ssh/git/file), URL ≤ 512
+/// bytes, ref ≤ 200, git runs with `--depth=1` and a 60s hard timeout.
 pub(super) async fn git_clone(spec: &GitSpec, dst: &std::path::Path) -> Result<()> {
-    if !spec.repo.starts_with("https://") || spec.repo.len() > 512 {
-        return Err(CtlError::BadRequest("git.repo must be https:// (max 512 bytes)".into()));
-    }
-    if let Some(r) = &spec.git_ref {
-        if r.len() > 200 || r.chars().any(|c| c.is_control()) {
-            return Err(CtlError::BadRequest("git.ref invalid".into()));
+    match (spec.repo.as_deref(), spec.repos.is_empty()) {
+        (Some(_), false) => {
+            return Err(CtlError::BadRequest(
+                "git: set either `repo` or `repos`, not both".into(),
+            ));
         }
+        (None, true) => {
+            return Err(CtlError::BadRequest(
+                "git: provide `repo` or `repos`".into(),
+            ));
+        }
+        _ => {}
     }
 
-    // Write a .git_keep so the clone target isn't empty before git fills it.
-    // git clone refuses to clone into a non-empty dir, so stage into a subpath.
+    if let Some(repo) = &spec.repo {
+        clone_one(repo, spec.git_ref.as_deref(), dst).await?;
+    } else {
+        for entry in &spec.repos {
+            let subdir = entry
+                .dir
+                .clone()
+                .unwrap_or_else(|| default_repo_subdir(&entry.repo));
+            validate_subdir(&subdir)?;
+            let sub = dst.join(&subdir);
+            std::fs::create_dir_all(&sub).map_err(CtlError::Io)?;
+            clone_one(&entry.repo, entry.git_ref.as_deref(), &sub).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Shallow-clone a single repo into `dst`, flattening the clone dir so
+/// `dst` ends up at the repo root.
+async fn clone_one(repo: &str, git_ref: Option<&str>, dst: &std::path::Path) -> Result<()> {
+    if !repo.starts_with("https://") || repo.len() > 512 {
+        return Err(CtlError::BadRequest(
+            "git.repo must be https:// (max 512 bytes)".into(),
+        ));
+    }
+    if let Some(r) = git_ref
+        && (r.len() > 200 || r.chars().any(|c| c.is_control()))
+    {
+        return Err(CtlError::BadRequest("git.ref invalid".into()));
+    }
+
+    // git clone refuses to clone into a non-empty dir, so stage into a
+    // subpath and flatten afterwards.
     let target = dst.join("__repo");
     std::fs::create_dir_all(&target).map_err(CtlError::Io)?;
 
     let mut cmd = tokio::process::Command::new("git");
     cmd.arg("clone").arg("--depth=1").arg("--single-branch");
-    if let Some(r) = &spec.git_ref {
+    if let Some(r) = git_ref {
         cmd.arg("--branch").arg(r);
     }
-    cmd.arg(&spec.repo).arg(&target);
+    cmd.arg(repo).arg(&target);
     cmd.kill_on_drop(true);
 
-    let child_fut = cmd.output();
-    let out = tokio::time::timeout(std::time::Duration::from_secs(60), child_fut)
+    let out = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
         .await
         .map_err(|_| CtlError::BadRequest("git clone timed out (60s)".into()))?
         .map_err(CtlError::Io)?;
@@ -457,15 +529,34 @@ pub(super) async fn git_clone(spec: &GitSpec, dst: &std::path::Path) -> Result<(
         return Err(CtlError::BadRequest(format!("git clone failed: {tail}")));
     }
 
-    // Flatten `__repo/*` up into `dst` so /workspace points directly at the
-    // repo root (not /workspace/__repo).
     for entry in std::fs::read_dir(&target).map_err(CtlError::Io)? {
         let e = entry.map_err(CtlError::Io)?;
         let from = e.path();
-        let to   = dst.join(e.file_name());
+        let to = dst.join(e.file_name());
         std::fs::rename(&from, &to).map_err(CtlError::Io)?;
     }
     let _ = std::fs::remove_dir_all(&target);
+    Ok(())
+}
+
+fn default_repo_subdir(url: &str) -> String {
+    url.rsplit('/')
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches(".git")
+        .trim()
+        .to_string()
+}
+
+fn validate_subdir(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(CtlError::BadRequest(format!("git.repos.dir invalid: {name:?}")));
+    }
+    if name.contains('/') || name.contains('\\') || name.starts_with('.') {
+        return Err(CtlError::BadRequest(format!(
+            "git.repos.dir must not contain slashes or leading `.`: {name:?}"
+        )));
+    }
     Ok(())
 }
 

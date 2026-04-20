@@ -193,9 +193,10 @@ e2e:
 	@if ! curl -fsS --max-time 1 http://localhost:7070/healthz >/dev/null 2>&1; then \
 	  printf "$(C_AMBER)!$(C_RESET) control plane not reachable on :7070 — run $(C_CYAN)make dev$(C_RESET) first\n"; exit 1; \
 	fi
-	@printf "$(C_BOLD)→ e2e$(C_RESET)  $(C_DIM)workspaces + snapshots smoke$(C_RESET)\n"
+	@command -v bun >/dev/null 2>&1 || { printf "$(C_RED)✗$(C_RESET) bun not found — install from https://bun.sh\n"; exit 1; }
+	@printf "$(C_BOLD)→ e2e$(C_RESET)  $(C_DIM)workspaces + snapshots + fork smoke (via @agentjail/sdk)$(C_RESET)\n"
 	@set -a; source $(ENV_FILE); set +a; \
-	  CTL_URL=http://localhost:7070 bash scripts/e2e-workspaces.sh
+	  CTL_URL=http://localhost:7070 bun scripts/e2e-workspaces.ts
 
 clean:
 	@printf "$(C_BOLD)→ clean$(C_RESET)  $(C_DIM)wiping build artifacts$(C_RESET)\n"

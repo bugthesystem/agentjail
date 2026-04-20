@@ -189,6 +189,22 @@ class WorkspaceList(TypedDict):
     offset: int
 
 
+class WorkspaceForkResponse(TypedDict):
+    """Response from ``workspaces.fork`` — parent + N children + snapshot id."""
+
+    parent: Workspace
+    forks: list[Workspace]
+    snapshot_id: str
+
+
+class GitRepoEntry(TypedDict, total=False):
+    """One entry in a multi-repo git seed."""
+
+    repo: str
+    ref: str
+    dir: str
+
+
 # ---- snapshots --------------------------------------------------------
 
 

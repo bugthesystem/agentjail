@@ -85,6 +85,30 @@ describe("HttpClient", () => {
       expect((err as AgentjailError).message).toContain("bad secret");
     }
   });
+
+  it.each([
+    [400, "BAD_REQUEST"],
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+    [404, "NOT_FOUND"],
+    [409, "CONFLICT"],
+    [429, "RATE_LIMITED"],
+    [504, "TIMEOUT"],
+    [500, "SERVER_ERROR"],
+    [502, "SERVER_ERROR"],
+  ])("maps status %i to code %s", async (status, code) => {
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(() => json({ error: "x" }, { status })),
+    });
+    try {
+      await aj.credentials.put({ service: "openai", secret: "x" });
+      throw new Error("expected to throw");
+    } catch (err) {
+      expect((err as AgentjailError).code).toBe(code);
+    }
+  });
 });
 
 describe("Credentials", () => {
@@ -608,6 +632,96 @@ describe("Workspaces", () => {
     const ws = await aj.workspaces.create({ idleTimeoutSecs: 90 });
     expect(JSON.parse(bodyText)).toEqual({ idle_timeout_secs: 90 });
     expect(ws.config.idle_timeout_secs).toBe(90);
+  });
+
+  it("create accepts multi-repo git seed", async () => {
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ init }) => {
+        bodyText = init.body as string;
+        return json({
+          id: "wrk_multi",
+          created_at: "2026-04-19T00:00:00Z",
+          deleted_at: null,
+          source_dir: "/s", output_dir: "/o",
+          config: {
+            memory_mb: 512, timeout_secs: 300, cpu_percent: 100,
+            max_pids: 64, network_mode: "none", network_domains: [],
+            seccomp: "standard", idle_timeout_secs: 0,
+          },
+          git_repo: "https://github.com/org/a", git_ref: null,
+          label: null, domains: [],
+          last_exec_at: null, paused_at: null, auto_snapshot: null,
+        });
+      }),
+    });
+    await aj.workspaces.create({
+      git: {
+        repos: [
+          { repo: "https://github.com/org/a" },
+          { repo: "https://github.com/org/b", ref: "main", dir: "b-main" },
+        ],
+      },
+    });
+    expect(JSON.parse(bodyText)).toEqual({
+      git: {
+        repos: [
+          { repo: "https://github.com/org/a" },
+          { repo: "https://github.com/org/b", ref: "main", dir: "b-main" },
+        ],
+      },
+    });
+  });
+
+  it("fork POSTs count + label and returns N forks", async () => {
+    let seenUrl = "";
+    let bodyText = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url, init }) => {
+        seenUrl = url;
+        bodyText = init.body as string;
+        const baseConfig = {
+          memory_mb: 512, timeout_secs: 300, cpu_percent: 100,
+          max_pids: 64, network_mode: "none", network_domains: [],
+          seccomp: "standard", idle_timeout_secs: 0,
+        };
+        const mk = (id: string) => ({
+          id,
+          created_at: "2026-04-19T00:00:00Z",
+          deleted_at: null,
+          source_dir: `/s/${id}`, output_dir: `/o/${id}`,
+          config: baseConfig,
+          git_repo: null, git_ref: null,
+          label: null, domains: [],
+          last_exec_at: null, paused_at: null, auto_snapshot: null,
+        });
+        return json({
+          parent: mk("wrk_parent"),
+          forks: [mk("wrk_f0"), mk("wrk_f1"), mk("wrk_f2")],
+          snapshot_id: "snap_origin",
+        });
+      }),
+    });
+    const r = await aj.workspaces.fork("wrk_parent", { count: 3, label: "agents" });
+    expect(seenUrl).toBe("http://api/v1/workspaces/wrk_parent/fork");
+    expect(JSON.parse(bodyText)).toEqual({ count: 3, label: "agents" });
+    expect(r.forks.length).toBe(3);
+    expect(r.forks.map((f) => f.id)).toEqual(["wrk_f0", "wrk_f1", "wrk_f2"]);
+    expect(r.snapshot_id).toBe("snap_origin");
+  });
+
+  it("fork rejects invalid count client-side", async () => {
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(() => json({})),
+    });
+    await expect(aj.workspaces.fork("wrk_x", { count: 0 })).rejects.toThrow();
+    await expect(aj.workspaces.fork("wrk_x", { count: 17 })).rejects.toThrow();
   });
 
   it("delete sends DELETE and returns void on 204", async () => {

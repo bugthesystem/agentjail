@@ -73,6 +73,29 @@ pub(crate) struct WorkspaceList {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct ForkWorkspaceRequest {
+    /// How many forks to create (1..=16).
+    count: usize,
+    /// Optional label prefix for the children. Each fork gets
+    /// `"{label}-{i}"` (or `"fork of {parent.id}-{i}"` when unset).
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ForkWorkspaceResponse {
+    /// Refreshed parent record (for the caller's convenience).
+    parent: Workspace,
+    /// New workspaces, in invocation order. Each is fully independent —
+    /// its own source+output dirs, its own exec mutex.
+    forks: Vec<Workspace>,
+    /// The snapshot captured on the parent. Kept around so callers can
+    /// `POST /v1/workspaces/from-snapshot` again later if they want more
+    /// copies of the same point-in-time state.
+    snapshot_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct WorkspaceExecRequest {
     cmd: String,
     #[serde(default)]
@@ -94,7 +117,7 @@ pub(crate) struct WorkspaceExecRequest {
     name = "workspace.create",
     skip_all,
     fields(
-        git_repo = req.git.as_ref().map(|g| g.repo.as_str()).unwrap_or(""),
+        git_repo = req.git.as_ref().and_then(|g| g.primary().0).unwrap_or_default(),
         label = req.label.as_deref().unwrap_or(""),
         idle_secs = req.idle_timeout_secs.unwrap_or(0),
     ),
@@ -124,7 +147,7 @@ pub(crate) async fn create_workspace(
         git_clone(g, &source_dir).await.inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&ws_root);
         })?;
-        (Some(g.repo.clone()), g.git_ref.clone())
+        g.primary()
     } else {
         (None, None)
     };
@@ -149,6 +172,123 @@ pub(crate) async fn create_workspace(
     })?;
 
     Ok((StatusCode::CREATED, Json(ws)))
+}
+
+/// `POST /v1/workspaces/:id/fork` — atomic N-way fork of a persistent
+/// workspace. Captures a single snapshot of the parent (freezing any
+/// in-flight exec for consistency via the engine's `snapshot_frozen`
+/// path), then spawns `count` new workspaces restored from that
+/// snapshot. Each child is fully independent — own source+output dirs,
+/// own exec mutex — so parallel execs against the forks are safe.
+#[tracing::instrument(
+    name = "workspace.fork",
+    skip_all,
+    fields(parent_id = %id, count = req.count),
+)]
+pub(crate) async fn fork_workspace(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<ForkWorkspaceRequest>,
+) -> Result<(StatusCode, Json<ForkWorkspaceResponse>)> {
+    if req.count == 0 || req.count > 16 {
+        return Err(CtlError::BadRequest(
+            "fork.count must be 1..=16".into(),
+        ));
+    }
+
+    let parent = state
+        .workspaces
+        .get(&id)
+        .await
+        .ok_or_else(|| CtlError::NotFound(format!("workspace {id}")))?;
+
+    // 1. Capture one snapshot of the parent. Freeze iff an exec is in
+    //    flight so the forks get a consistent filesystem view.
+    let snap_id = super::snapshots::new_snapshot_id_public();
+    let snap_dir = state.state_dir.join("snapshots").join(&snap_id);
+    let active = state.active_cgroups.get(&parent.id);
+    let (snap, size_bytes) = super::snapshots::capture_snapshot_public(
+        active.as_deref(),
+        &parent.source_dir,
+        &snap_dir,
+        state.snapshot_pool_dir.as_deref(),
+    )?;
+
+    let snap_record = crate::snapshots::SnapshotRecord {
+        id: snap_id.clone(),
+        workspace_id: Some(parent.id.clone()),
+        name: Some(format!("fork-origin:{}", parent.id)),
+        created_at: time::OffsetDateTime::now_utc(),
+        path: snap.path().to_path_buf(),
+        size_bytes,
+    };
+    state
+        .snapshots
+        .insert(snap_record)
+        .await
+        .inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&snap_dir);
+        })?;
+
+    // 2. Spawn `count` new workspaces from that snapshot. Each rehydrate
+    //    runs sequentially on-host (FS-bound; parallelism gains are
+    //    marginal and contention on the pool dir costs more).
+    let mut forks: Vec<Workspace> = Vec::with_capacity(req.count);
+    for i in 0..req.count {
+        let new_id = new_workspace_id();
+        let ws_root = state.state_dir.join("workspaces").join(&new_id);
+        let source_dir = ws_root.join("source");
+        let output_dir = ws_root.join("output");
+        std::fs::create_dir_all(&source_dir).map_err(CtlError::Io)?;
+        std::fs::create_dir_all(&output_dir).map_err(CtlError::Io)?;
+
+        super::snapshots::restore_snapshot_public(
+            snap.path(),
+            &source_dir,
+            state.snapshot_pool_dir.as_deref(),
+        )
+        .inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&ws_root);
+        })?;
+
+        let label = match &req.label {
+            Some(prefix) => format!("{prefix}-{i}"),
+            None => format!("fork of {}-{i}", parent.id),
+        };
+
+        let child = Workspace {
+            id: new_id.clone(),
+            created_at: time::OffsetDateTime::now_utc(),
+            deleted_at: None,
+            source_dir,
+            output_dir,
+            config: parent.config.clone(),
+            git_repo: parent.git_repo.clone(),
+            git_ref: parent.git_ref.clone(),
+            label: Some(label),
+            domains: Vec::new(),
+            last_exec_at: None,
+            paused_at: None,
+            auto_snapshot: None,
+        };
+        state
+            .workspaces
+            .insert(child.clone())
+            .await
+            .inspect_err(|_| {
+                let _ = std::fs::remove_dir_all(&ws_root);
+            })?;
+        forks.push(child);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ForkWorkspaceResponse {
+            parent,
+            forks,
+            snapshot_id: snap_id,
+        }),
+    ))
 }
 
 /// `GET /v1/workspaces`
@@ -228,13 +368,14 @@ pub(crate) async fn exec_in_workspace(
     // Auto-resume: if the reaper paused this workspace, restore its
     // auto-snapshot before running. The on-disk dir was emptied at
     // pause time, so we rehydrate here and clear the pause marker.
+    // Workspaces mutate `source_dir` — the same dir we snapshotted.
     if ws.paused_at.is_some()
         && let Some(snap_id) = ws.auto_snapshot.as_deref()
         && let Some(snap) = state.snapshots.get(snap_id).await
     {
         super::snapshots::restore_snapshot_public(
             &snap.path,
-            &ws.output_dir,
+            &ws.source_dir,
             state.snapshot_pool_dir.as_deref(),
         )?;
         state.workspaces.mark_resumed(&ws.id).await;

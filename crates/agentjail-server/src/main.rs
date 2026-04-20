@@ -39,10 +39,9 @@ use std::sync::Arc;
 use agentjail_ctl::{
     AuditStore, AuditStoreSink, ControlPlane, ControlPlaneConfig, CredentialStore,
     InMemoryAuditStore, InMemoryCredentialStore, InMemoryJailStore, InMemorySessionStore,
-    InMemorySnapshotStore, InMemoryWorkspaceStore, JailStore, Postgres, SessionStore,
-    SnapshotGcConfig, SnapshotStore, WorkspaceStore,
-    db::{PgAuditStore, PgCredentialStore, PgJailStore, PgSnapshotStore, PgWorkspaceStore},
-    snapshot_gc,
+    InMemorySnapshotStore, InMemoryWorkspaceStore, JailStore, PgAuditStore, PgCredentialStore,
+    PgJailStore, PgSnapshotStore, PgWorkspaceStore, Postgres, SessionStore, SnapshotGcConfig,
+    SnapshotStore, WorkspaceStore, snapshot_gc,
     workspace_idle::{IdleReaperConfig, spawn_sweeper as spawn_idle_sweeper},
 };
 
@@ -72,8 +71,10 @@ async fn main() -> Result<()> {
     let pg = match std::env::var("DATABASE_URL").ok().filter(|s| !s.trim().is_empty()) {
         Some(url) => {
             tracing::info!("connecting to postgres");
-            let pg = Postgres::connect(&url).await.context("postgres connect")?;
-            let rehydrated = pg.rehydrate_keys(&stores.keys).await.context("rehydrate keys")?;
+            let pg = Postgres::connect(&url)
+                .await
+                .with_context(|| format!("connecting to {url}"))?;
+            let rehydrated = pg.rehydrate_keys(&stores.keys).await?;
             tracing::info!(%rehydrated, "postgres ready");
             Some(pg)
         }
@@ -176,7 +177,8 @@ async fn main() -> Result<()> {
     // Hostname-routed reverse proxy (opt-in via AGENTJAIL_GATEWAY_ADDR).
     let gateway_handle = if let Some(addr) = config.gateway_addr {
         let gw_rx = shutdown_rx.clone();
-        let state = GatewayState::new(workspace_store.clone());
+        let state = GatewayState::new(workspace_store.clone())
+            .context("build gateway HTTP client")?;
         Some(tokio::spawn(async move {
             if let Err(e) = gateway::serve(addr, state, gw_rx).await {
                 tracing::error!(error = %e, "gateway listener ended");
@@ -254,11 +256,11 @@ impl Config {
         let ctl_addr: SocketAddr = std::env::var("CTL_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:7000".into())
             .parse()
-            .context("CTL_ADDR")?;
+            .context("parsing CTL_ADDR")?;
         let proxy_addr: SocketAddr = std::env::var("PROXY_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8443".into())
             .parse()
-            .context("PROXY_ADDR")?;
+            .context("parsing PROXY_ADDR")?;
         let proxy_base_url =
             std::env::var("PROXY_BASE_URL").unwrap_or_else(|_| format!("http://{proxy_addr}"));
         let api_keys = std::env::var("AGENTJAIL_API_KEY")

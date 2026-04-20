@@ -32,14 +32,13 @@ pub struct GatewayState {
 }
 
 impl GatewayState {
-    pub fn new(workspaces: Arc<dyn WorkspaceStore>) -> Self {
+    pub fn new(workspaces: Arc<dyn WorkspaceStore>) -> anyhow::Result<Self> {
         // Keep the client pooled + long-lived; each backend domain is
         // likely to be reused many times per workspace lifetime.
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("reqwest client");
-        Self { workspaces, client }
+            .build()?;
+        Ok(Self { workspaces, client })
     }
 }
 

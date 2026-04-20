@@ -288,8 +288,16 @@ export interface WorkspaceList {
  * Parameters accepted by `aj.workspaces.create`. Mirrors the jail-config
  * knobs of a one-shot run, plus an optional git clone into `source_dir`.
  */
+/**
+ * Git seed for a new workspace. Use the single-repo form for one
+ * checkout, or `repos` for a multi-repo agent dev environment.
+ */
+export type GitSeed =
+  | { repo: string; ref?: string }
+  | { repos: { repo: string; ref?: string; dir?: string }[] };
+
 export interface WorkspaceCreateRequest extends ExecOptions {
-  git?: { repo: string; ref?: string };
+  git?: GitSeed;
   label?: string;
   memoryMb?: number;
   timeoutSecs?: number;
@@ -297,6 +305,18 @@ export interface WorkspaceCreateRequest extends ExecOptions {
   idleTimeoutSecs?: number;
   /** Inbound hostname forwards served by the server's gateway listener. */
   domains?: WorkspaceDomain[];
+}
+
+/**
+ * Response from `workspaces.fork`. `forks.length === count`; each entry
+ * is a fully independent workspace. `snapshot_id` is the checkpoint
+ * captured on the parent — kept around so you can clone more copies
+ * later via `snapshots.createWorkspaceFrom`.
+ */
+export interface WorkspaceForkResponse {
+  parent: Workspace;
+  forks: Workspace[];
+  snapshot_id: string;
 }
 
 /** One exec against a workspace. */

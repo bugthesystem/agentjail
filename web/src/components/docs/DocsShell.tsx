@@ -67,8 +67,7 @@ export function DocsShell() {
         </div>
       </header>
 
-      <div className="max-w-[1280px] w-full mx-auto px-6 py-10 grid gap-10"
-           style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
+      <div className="max-w-[1280px] w-full mx-auto px-6 py-10 grid gap-10 grid-cols-[220px_minmax(0,1fr)]">
         <aside className="text-[13px]">
           {NAV.map((s) => (
             <div key={s.section} className="mb-6">

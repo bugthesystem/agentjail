@@ -254,9 +254,8 @@ impl Manifest {
     }
 
     /// Hex-encoded blob hashes referenced by this manifest. Useful for GC.
-    #[must_use]
-    pub fn referenced_blobs(&self) -> Vec<&str> {
-        self.entries.iter().map(|e| e.sha256.as_str()).collect()
+    pub fn referenced_blobs(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().map(|e| e.sha256.as_str())
     }
 }
 

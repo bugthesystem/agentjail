@@ -12,7 +12,7 @@ session = aj.sessions.create(services=["openai"], ttl_secs=600)
 ```
 """
 
-from ._http import AgentjailError, HttpClient
+from ._http import AgentjailError, AgentjailErrorCode, HttpClient
 from .audit import Audit
 from .credentials import Credentials
 from .jails import Jails
@@ -28,6 +28,7 @@ from .types import (
     ForkChild,
     ForkMeta,
     ForkResult,
+    GitRepoEntry,
     JailKind,
     JailRecord,
     JailsList,
@@ -43,6 +44,7 @@ from .types import (
     StreamEvent,
     Workspace,
     WorkspaceDomain,
+    WorkspaceForkResponse,
     WorkspaceList,
     WorkspaceSpec,
 )
@@ -51,6 +53,7 @@ from .workspaces import Workspaces
 __all__ = [
     "Agentjail",
     "AgentjailError",
+    "AgentjailErrorCode",
     # sub-APIs
     "Audit",
     "Credentials",
@@ -68,6 +71,7 @@ __all__ = [
     "ForkChild",
     "ForkMeta",
     "ForkResult",
+    "GitRepoEntry",
     "JailKind",
     "JailRecord",
     "JailsList",
@@ -83,6 +87,7 @@ __all__ = [
     "StreamEvent",
     "Workspace",
     "WorkspaceDomain",
+    "WorkspaceForkResponse",
     "WorkspaceList",
     "WorkspaceSpec",
 ]

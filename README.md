@@ -199,32 +199,33 @@ cgroup freezer and immediately resumed. Multiple forks work independently.
 
 ### What gets blocked
 
-| Attack | Protection |
-|--------|------------|
-| Read `~/.ssh`, `~/.aws` | Not mounted |
-| Read `/etc/shadow`, host keys | Minimal `/etc` (only ld.so, resolv.conf, ssl) |
-| Network exfiltration | Network namespace + allowlist proxy |
-| Fork bombs | PID limit via cgroup |
-| Memory exhaustion | Memory limit + OOM detection |
-| Disk thrashing | I/O bandwidth limits |
-| Signal host processes | PID namespace |
-| Mount manipulation | `mount`, `mount_setattr`, new mount API blocked |
-| io_uring bypass | `io_uring_setup`/`enter`/`register` blocked |
-| 32-bit compat escape | `personality()` blocked |
-| Namespace escape | `clone3`, `unshare`, `setns` blocked |
-| BPF / perf abuse | `bpf`, `perf_event_open`, `userfaultfd` blocked |
-| Executable memory | `memfd_create` blocked |
-| Write+execute on `/tmp` | NOEXEC mount flag |
-| Setuid escalation | `PR_SET_NO_NEW_PRIVS` before exec |
-| Core dump leaks | `RLIMIT_CORE=0` |
-| Stdout OOM of parent | Output capped at 256 MiB per stream |
-| FD exhaustion | `RLIMIT_NOFILE` capped at 4096 |
-| Symlink traversal | Skipped in snapshots, forks, cleanup |
-| Zombie / fd leak on crash | `PR_SET_PDEATHSIG` + kill+reap in `Drop` |
-| PID reuse kill | Reaped flag prevents killing recycled PIDs |
+Each row links to the regression test that proves it. Tests live in [crates/agentjail/tests/](crates/agentjail/tests/) and run on every build.
 
-Four rounds of security audit cover every source file; 72 regression
-tests verify the scenarios above on every build.
+| Attack | Protection | Verified by |
+|--------|------------|-------------|
+| Read `~/.ssh`, `~/.aws` | Not mounted | [`test_cannot_read_ssh_keys`](crates/agentjail/tests/security_test.rs) |
+| Read `/etc/shadow`, host keys | Minimal `/etc` (only ld.so, resolv.conf, ssl) | [`test_etc_shadow_not_accessible`](crates/agentjail/tests/audit_regression_test.rs) |
+| Network exfiltration | Network namespace + allowlist proxy | [`test_network_none_blocks_external`](crates/agentjail/tests/security_test.rs), [`test_allowlist_npm_install_blocked`](crates/agentjail/tests/security_test.rs), [`test_reverse_shell_blocked`](crates/agentjail/tests/security_test.rs) |
+| Fork bombs | PID limit via cgroup | [`test_pid_limit_blocks_fork_bomb`](crates/agentjail/tests/audit_regression_test.rs) |
+| Memory exhaustion | Memory limit + OOM detection | [`test_large_stdout_does_not_oom`](crates/agentjail/tests/audit_regression_test.rs) |
+| Disk thrashing | I/O bandwidth limits | [`test_io_write_bandwidth_limit_enforced`](crates/agentjail/tests/audit_regression_test.rs) |
+| Signal host processes | PID namespace | [`test_pid_namespace_full_sandbox`](crates/agentjail/tests/security_test.rs) |
+| Mount manipulation | `mount`, `mount_setattr`, new mount API blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| io_uring bypass | `io_uring_setup`/`enter`/`register` blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| 32-bit compat escape | `personality()` blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| Namespace escape | `clone3`, `unshare`, `setns` blocked | [`test_seccomp_blocks_unshare`](crates/agentjail/tests/audit_regression_test.rs), [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| BPF / perf abuse | `bpf`, `perf_event_open`, `userfaultfd` blocked | [`test_seccomp_blocks_bpf`](crates/agentjail/tests/audit_regression_test.rs), [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| Executable memory | `memfd_create` blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| Write+execute on `/tmp` | NOEXEC mount flag | [`test_tmp_noexec`](crates/agentjail/tests/audit_regression_test.rs) |
+| Setuid escalation | `PR_SET_NO_NEW_PRIVS` before exec | _no direct test (asserted by absence of namespace re-entry)_ |
+| Core dump leaks | `RLIMIT_CORE=0` | [`test_rlimit_core_disabled`](crates/agentjail/tests/audit_regression_test.rs) |
+| Stdout OOM of parent | Output capped at 256 MiB per stream | [`test_large_stdout_does_not_oom`](crates/agentjail/tests/audit_regression_test.rs) |
+| FD exhaustion | `RLIMIT_NOFILE` capped at 4096 | [`test_fd_limit_enforced`](crates/agentjail/tests/audit_regression_test.rs) |
+| Symlink traversal | Skipped in snapshots, forks, cleanup | [`test_snapshot_restore_does_not_follow_symlinks`](crates/agentjail/tests/audit_regression_test.rs), [`test_fork_symlink_in_output_not_followed`](crates/agentjail/tests/audit_regression_test.rs) |
+| Zombie / fd leak on crash | `PR_SET_PDEATHSIG` + kill+reap in `Drop` | [`test_drop_handle_kills_child`](crates/agentjail/tests/audit_regression_test.rs), [`test_no_zombie_after_drop`](crates/agentjail/tests/audit_regression_test.rs) |
+| PID reuse kill | Reaped flag prevents killing recycled PIDs | _internal invariant; no behavioral test_ |
+
+Four rounds of security audit cover every source file; **90 regression tests** in the agentjail crate verify the scenarios above on every build.
 
 ## Limitations
 

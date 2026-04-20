@@ -5,7 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from ._http import HttpClient
-from .types import ExecResult, Workspace, WorkspaceDomain, WorkspaceList
+from .types import (
+    ExecResult,
+    GitRepoEntry,
+    Workspace,
+    WorkspaceDomain,
+    WorkspaceForkResponse,
+    WorkspaceList,
+)
 
 
 class Workspaces:
@@ -15,7 +22,7 @@ class Workspaces:
     def create(
         self,
         *,
-        git: dict[str, str] | None = None,
+        git: dict[str, str] | dict[str, list[GitRepoEntry]] | None = None,
         label: str | None = None,
         memory_mb: int | None = None,
         timeout_secs: int | None = None,
@@ -26,6 +33,11 @@ class Workspaces:
         cpu_percent: int | None = None,
         max_pids: int | None = None,
     ) -> Workspace:
+        """Create a persistent workspace.
+
+        ``git`` accepts either the single-repo shape ``{"repo": url, "ref"?: ref}``
+        or the multi-repo shape ``{"repos": [{"repo": url, "ref"?: ref, "dir"?: subdir}]}``.
+        """
         body: dict[str, Any] = {}
         if git is not None:
             body["git"] = git
@@ -82,3 +94,32 @@ class Workspaces:
         if env is not None:
             body["env"] = [list(pair) for pair in env]
         return self._http.request("POST", f"/v1/workspaces/{workspace_id}/exec", json=body)
+
+    def fork(
+        self,
+        workspace_id: str,
+        *,
+        count: int,
+        label: str | None = None,
+    ) -> WorkspaceForkResponse:
+        """Atomic N-way fork of a persistent workspace.
+
+        Captures a single snapshot of the parent (freezing any in-flight
+        exec for consistency), spawns ``count`` independent workspaces
+        from it, and returns them all. Good for devin/cursor-style
+        "N agents off the same state" patterns:
+
+        .. code-block:: python
+
+           r = aj.workspaces.fork(ws["id"], count=3, label="agents")
+           for fork in r["forks"]:
+               aj.workspaces.exec(fork["id"], cmd="do-thing")
+        """
+        if count < 1 or count > 16:
+            raise ValueError("workspaces.fork: count must be 1..=16")
+        body: dict[str, Any] = {"count": count}
+        if label is not None:
+            body["label"] = label
+        return self._http.request(
+            "POST", f"/v1/workspaces/{workspace_id}/fork", json=body
+        )

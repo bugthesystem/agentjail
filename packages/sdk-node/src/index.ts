@@ -30,7 +30,7 @@ import { Sessions } from "./sessions.js";
 import { Snapshots } from "./snapshots.js";
 import { Workspaces } from "./workspaces.js";
 
-export { AgentjailError } from "./http.js";
+export { AgentjailError, type AgentjailErrorCode } from "./http.js";
 export type {
   AuditList,
   AuditRow,
@@ -56,9 +56,11 @@ export type {
   SnapshotRecord,
   StreamEvent,
   Workspace,
+  GitSeed,
   WorkspaceCreateRequest,
   WorkspaceDomain,
   WorkspaceExecRequest,
+  WorkspaceForkResponse,
   WorkspaceList,
   WorkspaceSpec,
 } from "./types.js";

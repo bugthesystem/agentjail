@@ -43,8 +43,8 @@ pub(crate) use snapshots::{
 };
 pub(crate) use stream::create_stream_run;
 pub(crate) use workspaces::{
-    create_workspace, delete_workspace, exec_in_workspace, get_workspace, list_workspaces,
-    reconcile_on_startup as reconcile_workspaces_on_startup,
+    create_workspace, delete_workspace, exec_in_workspace, fork_workspace, get_workspace,
+    list_workspaces, reconcile_on_startup as reconcile_workspaces_on_startup,
 };
 
 /// Shared service state passed to every handler.

@@ -14,10 +14,7 @@ export function Landing() {
       <Nav />
 
       <main className="flex-1 max-w-[1360px] w-full mx-auto px-6 pt-12 pb-20">
-        <div
-          className="grid gap-10 items-start"
-          style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)" }}
-        >
+        <div className="grid gap-10 items-start grid-cols-2">
           <Hero />
           <CodeShowcase />
         </div>

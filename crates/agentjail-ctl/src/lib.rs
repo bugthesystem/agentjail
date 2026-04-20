@@ -43,7 +43,7 @@
 mod audit;
 mod auth;
 mod credential;
-pub mod db;
+pub(crate) mod db;
 mod error;
 mod exec;
 mod jails;
@@ -65,6 +65,9 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 pub use audit::{AuditRow, AuditStore, AuditStoreSink, InMemoryAuditStore};
+pub use db::{
+    PgAuditStore, PgCredentialStore, PgJailStore, PgSnapshotStore, PgWorkspaceStore,
+};
 pub use auth::ApiKeys;
 pub use credential::{CredentialRecord, CredentialStore, InMemoryCredentialStore};
 pub use error::{CtlError, Result};
@@ -87,7 +90,11 @@ pub struct ControlPlaneConfig {
     pub keys: Arc<InMemoryKeyStore>,
     /// Base URL the sandbox uses to reach the phantom proxy.
     ///
-    /// Example: `"http://10.0.0.1:8443"`. Must not end with `/`.
+    /// Example: `"http://10.0.0.1:8443"`. Must start with `http://` or
+    /// `https://` and must not end with `/`. Call
+    /// [`ControlPlaneConfig::validate`] to surface bad values up-front;
+    /// the constructors accept any string and only normalize the trailing
+    /// slash defensively.
     pub proxy_base_url: String,
     /// API keys accepted by the control plane. Empty list disables auth
     /// (useful only for dev and tests).
@@ -108,6 +115,30 @@ pub struct ControlPlaneConfig {
     /// copies). Enables dedupe across snapshots + near-free restores via
     /// hardlink.
     pub snapshot_pool_dir: Option<PathBuf>,
+}
+
+impl ControlPlaneConfig {
+    /// Surface obvious misconfiguration up-front rather than at first
+    /// request. Called automatically by every `ControlPlane::with_*`
+    /// constructor.
+    pub fn validate(&self) -> Result<(), CtlError> {
+        if self.proxy_base_url.is_empty() {
+            return Err(CtlError::Config("proxy_base_url must not be empty".into()));
+        }
+        if !(self.proxy_base_url.starts_with("http://")
+            || self.proxy_base_url.starts_with("https://"))
+        {
+            return Err(CtlError::Config(
+                "proxy_base_url must start with http:// or https://".into(),
+            ));
+        }
+        if self.proxy_base_url.ends_with('/') {
+            return Err(CtlError::Config(
+                "proxy_base_url must not end with `/`".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Resolve a `state_dir` to an absolute path, creating the `workspaces/`
@@ -308,6 +339,10 @@ impl ControlPlane {
                 post(routes::exec_in_workspace),
             )
             .route(
+                "/v1/workspaces/:id/fork",
+                post(routes::fork_workspace),
+            )
+            .route(
                 "/v1/workspaces/:id/snapshot",
                 post(routes::create_snapshot),
             )
@@ -338,5 +373,46 @@ impl ControlPlane {
         public.merge(guarded)
             .layer(cors)
             .layer(TraceLayer::new_for_http())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentjail_phantom::InMemoryTokenStore;
+
+    fn cfg(url: &str) -> ControlPlaneConfig {
+        ControlPlaneConfig {
+            tokens: Arc::new(InMemoryTokenStore::new()),
+            keys: Arc::new(InMemoryKeyStore::new()),
+            proxy_base_url: url.into(),
+            api_keys: vec![],
+            exec: None,
+            state_dir: None,
+            snapshot_pool_dir: None,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_http_url_without_trailing_slash() {
+        assert!(cfg("http://localhost:8443").validate().is_ok());
+        assert!(cfg("https://proxy.example.com").validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_url() {
+        let err = cfg("").validate().unwrap_err();
+        assert!(matches!(err, CtlError::Config(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn validate_rejects_url_without_scheme() {
+        assert!(matches!(cfg("localhost:8443").validate(), Err(CtlError::Config(_))));
+        assert!(matches!(cfg("//proxy").validate(),         Err(CtlError::Config(_))));
+    }
+
+    #[test]
+    fn validate_rejects_trailing_slash() {
+        assert!(matches!(cfg("http://x/").validate(), Err(CtlError::Config(_))));
     }
 }

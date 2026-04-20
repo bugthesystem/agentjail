@@ -166,11 +166,7 @@ fn incremental_roundtrip_and_dedupes() {
     );
 
     // GC with both manifests referenced keeps everything.
-    let refs: HashSet<String> = m_a
-        .referenced_blobs()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let refs: HashSet<String> = m_a.referenced_blobs().map(str::to_string).collect();
     let (deleted, _) = gc_objects_pool(&pool, &refs).unwrap();
     assert_eq!(deleted, 0);
 

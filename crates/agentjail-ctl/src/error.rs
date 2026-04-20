@@ -37,6 +37,10 @@ pub enum CtlError {
     /// Catch-all for unexpected internal failure.
     #[error("internal: {0}")]
     Internal(String),
+
+    /// Invalid configuration surfaced by [`crate::ControlPlaneConfig::validate`].
+    #[error("config: {0}")]
+    Config(String),
 }
 
 impl CtlError {
@@ -47,6 +51,7 @@ impl CtlError {
             CtlError::NotFound(_) => StatusCode::NOT_FOUND,
             CtlError::Unauthorized => StatusCode::UNAUTHORIZED,
             CtlError::Conflict(_) => StatusCode::CONFLICT,
+            CtlError::Config(_) => StatusCode::BAD_REQUEST,
             CtlError::Jail(_)
             | CtlError::Phantom(_)
             | CtlError::Io(_)

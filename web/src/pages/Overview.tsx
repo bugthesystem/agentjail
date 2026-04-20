@@ -20,7 +20,7 @@ export function Overview() {
   const rate = Math.max(0, Math.min(6, Math.round(recentOk / 3)));
 
   return (
-    <div className="grid gap-4" style={{ gridTemplateColumns: "minmax(0,1fr) 380px" }}>
+    <div className="grid gap-4 grid-cols-[minmax(0,1fr)_380px]">
       <div className="space-y-4 min-w-0">
         <Hero totalEvents={audit?.total ?? 0} rate={rate} />
         <MetricGrid

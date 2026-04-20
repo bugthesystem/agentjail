@@ -69,6 +69,30 @@ def test_wraps_non_2xx_in_agentjail_error() -> None:
     assert "bad secret" in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (400, "BAD_REQUEST"),
+        (401, "UNAUTHORIZED"),
+        (403, "FORBIDDEN"),
+        (404, "NOT_FOUND"),
+        (409, "CONFLICT"),
+        (429, "RATE_LIMITED"),
+        (504, "TIMEOUT"),
+        (500, "SERVER_ERROR"),
+        (502, "SERVER_ERROR"),
+    ],
+)
+def test_status_maps_to_error_code(status: int, code: str) -> None:
+    def h(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": "x"})
+
+    aj = make(h)
+    with pytest.raises(AgentjailError) as excinfo:
+        aj.credentials.put(service="openai", secret="x")
+    assert excinfo.value.code == code
+
+
 # ---- credentials ------------------------------------------------------
 
 
@@ -255,6 +279,97 @@ def test_workspaces_create_nested_git_and_idle() -> None:
         "idle_timeout_secs": 60,
     }
     assert ws["id"] == "wrk_abc"
+
+
+def test_workspaces_create_accepts_multi_repo_git() -> None:
+    seen: dict[str, Any] = {}
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "wrk_multi",
+                "created_at": "2026-04-19T00:00:00Z",
+                "deleted_at": None,
+                "source_dir": "/s", "output_dir": "/o",
+                "config": {
+                    "memory_mb": 512, "timeout_secs": 300, "cpu_percent": 100,
+                    "max_pids": 64, "network_mode": "none", "network_domains": [],
+                    "seccomp": "standard", "idle_timeout_secs": 0,
+                },
+                "git_repo": None, "git_ref": None,
+                "label": None, "domains": [],
+                "last_exec_at": None, "paused_at": None, "auto_snapshot": None,
+            },
+        )
+
+    aj = make(h)
+    aj.workspaces.create(
+        git={
+            "repos": [
+                {"repo": "https://github.com/org/a"},
+                {"repo": "https://github.com/org/b", "ref": "main", "dir": "b-main"},
+            ],
+        },
+    )
+    assert seen["body"] == {
+        "git": {
+            "repos": [
+                {"repo": "https://github.com/org/a"},
+                {"repo": "https://github.com/org/b", "ref": "main", "dir": "b-main"},
+            ],
+        },
+    }
+
+
+def test_workspaces_fork_posts_count_and_returns_forks() -> None:
+    seen: dict[str, Any] = {}
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        seen["body"] = json.loads(req.content)
+        base_config = {
+            "memory_mb": 512, "timeout_secs": 300, "cpu_percent": 100,
+            "max_pids": 64, "network_mode": "none", "network_domains": [],
+            "seccomp": "standard", "idle_timeout_secs": 0,
+        }
+
+        def mk(wid: str) -> dict[str, Any]:
+            return {
+                "id": wid,
+                "created_at": "2026-04-19T00:00:00Z",
+                "deleted_at": None,
+                "source_dir": f"/s/{wid}", "output_dir": f"/o/{wid}",
+                "config": base_config,
+                "git_repo": None, "git_ref": None,
+                "label": None, "domains": [],
+                "last_exec_at": None, "paused_at": None, "auto_snapshot": None,
+            }
+
+        return httpx.Response(
+            200,
+            json={
+                "parent": mk("wrk_parent"),
+                "forks": [mk("wrk_f0"), mk("wrk_f1"), mk("wrk_f2")],
+                "snapshot_id": "snap_origin",
+            },
+        )
+
+    aj = make(h)
+    r = aj.workspaces.fork("wrk_parent", count=3, label="agents")
+    assert seen["url"] == "http://api/v1/workspaces/wrk_parent/fork"
+    assert seen["body"] == {"count": 3, "label": "agents"}
+    assert len(r["forks"]) == 3
+    assert r["snapshot_id"] == "snap_origin"
+
+
+def test_workspaces_fork_rejects_invalid_count() -> None:
+    aj = make(lambda _: httpx.Response(200, json={}))
+    with pytest.raises(ValueError):
+        aj.workspaces.fork("wrk_x", count=0)
+    with pytest.raises(ValueError):
+        aj.workspaces.fork("wrk_x", count=17)
 
 
 def test_snapshots_list_filters_by_workspace() -> None:
