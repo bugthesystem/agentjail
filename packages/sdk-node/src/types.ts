@@ -238,6 +238,18 @@ export interface WorkspaceSpec {
   idle_timeout_secs: number;
 }
 
+/**
+ * One (hostname, backend) forwarding entry served by the gateway
+ * listener. `backend_url` is caller-supplied — the gateway does not
+ * discover jail-internal IPs.
+ */
+export interface WorkspaceDomain {
+  /** Hostname the gateway matches against the `Host` header. */
+  domain: string;
+  /** Where to forward matched requests, e.g. `http://10.0.0.5:3000`. */
+  backend_url: string;
+}
+
 /** A persistent workspace (long-lived mount tree). */
 export interface Workspace {
   id: string;
@@ -251,6 +263,8 @@ export interface Workspace {
   git_repo: string | null;
   git_ref: string | null;
   label: string | null;
+  /** Hostname → backend-URL forwards served by the gateway listener. */
+  domains: WorkspaceDomain[];
   /** RFC3339 or null. */
   last_exec_at: string | null;
   /**
@@ -281,6 +295,8 @@ export interface WorkspaceCreateRequest extends ExecOptions {
   timeoutSecs?: number;
   /** Auto-pause after this many seconds of inactivity. 0 = never. */
   idleTimeoutSecs?: number;
+  /** Inbound hostname forwards served by the server's gateway listener. */
+  domains?: WorkspaceDomain[];
 }
 
 /** One exec against a workspace. */

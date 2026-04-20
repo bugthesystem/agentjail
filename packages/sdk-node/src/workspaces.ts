@@ -44,6 +44,7 @@ export class Workspaces {
     if (params.memoryMb !== undefined)        body.memory_mb         = params.memoryMb;
     if (params.timeoutSecs !== undefined)     body.timeout_secs      = params.timeoutSecs;
     if (params.idleTimeoutSecs !== undefined) body.idle_timeout_secs = params.idleTimeoutSecs;
+    if (params.domains !== undefined)         body.domains           = params.domains;
     encodeExecOptions(body, params);
     return this.http.request<Workspace>({
       method: "POST",

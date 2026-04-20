@@ -90,6 +90,15 @@ pub(crate) struct WorkspaceExecRequest {
 // ---------- handlers ----------
 
 /// `POST /v1/workspaces`
+#[tracing::instrument(
+    name = "workspace.create",
+    skip_all,
+    fields(
+        git_repo = req.git.as_ref().map(|g| g.repo.as_str()).unwrap_or(""),
+        label = req.label.as_deref().unwrap_or(""),
+        idle_secs = req.idle_timeout_secs.unwrap_or(0),
+    ),
+)]
 pub(crate) async fn create_workspace(
     State(state): State<AppState>,
     Json(req): Json<CreateWorkspaceRequest>,
@@ -189,6 +198,14 @@ pub(crate) async fn delete_workspace(
 
 /// `POST /v1/workspaces/:id/exec` — run a command against the workspace's
 /// persistent filesystem. Returns `409` if another exec is in flight.
+#[tracing::instrument(
+    name = "workspace.exec",
+    skip_all,
+    fields(
+        workspace_id = %id,
+        cmd = %req.cmd,
+    ),
+)]
 pub(crate) async fn exec_in_workspace(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,

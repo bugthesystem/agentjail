@@ -25,6 +25,7 @@ const NAV: { section: string; items: { to: string; label: string; hint?: string 
       { to: "forking",    label: "Live forking",     hint: "COW jail clones" },
       { to: "workspaces", label: "Workspaces",       hint: "persistent multi-exec" },
       { to: "snapshots",  label: "Snapshots",        hint: "freeze & restore" },
+      { to: "gateway",    label: "Gateway",          hint: "hostname → backend URL" },
     ],
   },
   {

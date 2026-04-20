@@ -64,6 +64,10 @@ services:
       AGENTJAIL_SNAPSHOT_POOL_DIR:         ${AGENTJAIL_SNAPSHOT_POOL_DIR:-}
       # Workspace idle reaper interval (default 30s; 0 = off).
       AGENTJAIL_IDLE_CHECK_INTERVAL_SECS:  ${AGENTJAIL_IDLE_CHECK_INTERVAL_SECS:-}
+      # Hostname-routed reverse proxy for workspace.domains. Unset = off.
+      AGENTJAIL_GATEWAY_ADDR:              ${AGENTJAIL_GATEWAY_ADDR:-}
+      # Structured logs: json | pretty | (unset → compact).
+      LOG_FORMAT:                          ${LOG_FORMAT:-json}
       RUST_LOG: info,agentjail_phantom=debug,agentjail_ctl=debug,sqlx=warn
     volumes:
       - agentjail-state:/var/lib/agentjail
@@ -73,6 +77,7 @@ services:
     ports:
       - "7070:7000"   # control plane (7000 conflicts with AirPlay on macOS)
       - "8443:8443"   # phantom proxy
+      - "8080:8080"   # optional gateway (noop unless AGENTJAIL_GATEWAY_ADDR set)
     restart: unless-stopped
 
   web:

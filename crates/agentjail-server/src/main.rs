@@ -22,6 +22,7 @@
 //! | `AGENTJAIL_SNAPSHOT_GC_TICK_SECS` | 60 | GC sweep interval                   |
 //! | `AGENTJAIL_SNAPSHOT_POOL_DIR`     | — | Content-addressed snapshot pool      |
 //! | `AGENTJAIL_IDLE_CHECK_INTERVAL_SECS` | 30 | Workspace idle-reaper interval   |
+//! | `AGENTJAIL_GATEWAY_ADDR`          | — | Hostname-routed proxy bind (e.g. 0.0.0.0:8080) |
 //! | `OPENAI_API_KEY`   | —                    | Seeded as real key         |
 //! | `ANTHROPIC_API_KEY`| —                    | Seeded as real key         |
 //! | `GITHUB_TOKEN`     | —                    | Seeded as real key         |
@@ -36,11 +37,17 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use agentjail_ctl::{
-    AuditStoreSink, ControlPlane, ControlPlaneConfig, InMemoryAuditStore, InMemorySnapshotStore,
-    InMemoryWorkspaceStore, Postgres, SnapshotGcConfig, SnapshotStore, WorkspaceStore,
-    db::PgAuditStore, db::PgSnapshotStore, db::PgWorkspaceStore, snapshot_gc,
+    AuditStore, AuditStoreSink, ControlPlane, ControlPlaneConfig, CredentialStore,
+    InMemoryAuditStore, InMemoryCredentialStore, InMemoryJailStore, InMemorySessionStore,
+    InMemorySnapshotStore, InMemoryWorkspaceStore, JailStore, Postgres, SessionStore,
+    SnapshotGcConfig, SnapshotStore, WorkspaceStore,
+    db::{PgAuditStore, PgCredentialStore, PgJailStore, PgSnapshotStore, PgWorkspaceStore},
+    snapshot_gc,
     workspace_idle::{IdleReaperConfig, spawn_sweeper as spawn_idle_sweeper},
 };
+
+mod gateway;
+use gateway::GatewayState;
 use agentjail_phantom::providers::{
     AnthropicProvider, GitHubProvider, OpenAiProvider, StripeProvider,
 };
@@ -54,12 +61,7 @@ use tokio::sync::watch;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     let config = Config::from_env()?;
     let stores = Stores::new_from_env();
@@ -112,7 +114,31 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Build the control plane.
+    // Build every durable store up front so background sweepers (snapshot
+    // GC, idle reaper, gateway) share the *same* Arc instances as the
+    // control plane. In in-memory mode this keeps a single source of
+    // truth across the router + reapers; in PG mode it just means fewer
+    // pool references to the same backend.
+    let sessions: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+    let (credentials, audit_store, jails_store, workspace_store, snapshot_store) =
+        match pg.as_ref() {
+            Some(p) => (
+                Arc::new(PgCredentialStore::new(p.pool.clone())) as Arc<dyn CredentialStore>,
+                Arc::new(PgAuditStore::new(p.pool.clone())) as Arc<dyn AuditStore>,
+                Arc::new(PgJailStore::new(p.pool.clone())) as Arc<dyn JailStore>,
+                Arc::new(PgWorkspaceStore::new(p.pool.clone())) as Arc<dyn WorkspaceStore>,
+                Arc::new(PgSnapshotStore::new(p.pool.clone())) as Arc<dyn SnapshotStore>,
+            ),
+            None => (
+                Arc::new(InMemoryCredentialStore::new()) as Arc<dyn CredentialStore>,
+                stores.audit.clone() as Arc<dyn AuditStore>,
+                Arc::new(InMemoryJailStore::new()) as Arc<dyn JailStore>,
+                Arc::new(InMemoryWorkspaceStore::new()) as Arc<dyn WorkspaceStore>,
+                Arc::new(InMemorySnapshotStore::new()) as Arc<dyn SnapshotStore>,
+            ),
+        };
+
+    // Build the control plane with the shared store Arcs.
     let cfg = ControlPlaneConfig {
         tokens: stores.tokens.clone(),
         keys: stores.keys.clone(),
@@ -122,34 +148,22 @@ async fn main() -> Result<()> {
         state_dir: config.state_dir.clone(),
         snapshot_pool_dir: config.snapshot_pool_dir.clone(),
     };
-    let ctl = match pg.as_ref() {
-        Some(p) => ControlPlane::with_postgres(cfg, p),
-        None    => ControlPlane::with_stores(
-            cfg,
-            Arc::new(agentjail_ctl::InMemorySessionStore::new()),
-            Arc::new(agentjail_ctl::InMemoryCredentialStore::new()),
-            stores.audit.clone(),
-        ),
-    };
+    let ctl = ControlPlane::with_all_stores(
+        cfg,
+        sessions,
+        credentials,
+        audit_store,
+        jails_store,
+        workspace_store.clone(),
+        snapshot_store.clone(),
+    );
     // Drop rows whose on-disk dirs have disappeared (e.g. tmpfs wipe).
     ctl.reconcile().await;
-
-    // Snapshot + workspace stores used by background sweepers. Mirror
-    // whatever the control plane is using so both paths touch the same
-    // rows.
-    let snapshot_store: Arc<dyn SnapshotStore> = match pg.as_ref() {
-        Some(p) => Arc::new(PgSnapshotStore::new(p.pool.clone())),
-        None    => Arc::new(InMemorySnapshotStore::new()),
-    };
-    let workspace_store: Arc<dyn WorkspaceStore> = match pg.as_ref() {
-        Some(p) => Arc::new(PgWorkspaceStore::new(p.pool.clone())),
-        None    => Arc::new(InMemoryWorkspaceStore::new()),
-    };
 
     let _gc_task = snapshot_gc::spawn_sweeper(snapshot_store.clone(), config.snapshot_gc);
 
     let _idle_task = spawn_idle_sweeper(IdleReaperConfig {
-        workspaces: workspace_store,
+        workspaces: workspace_store.clone(),
         snapshots:  snapshot_store,
         state_dir:  config
             .state_dir
@@ -158,6 +172,19 @@ async fn main() -> Result<()> {
         pool_dir:   config.snapshot_pool_dir.clone(),
         tick_secs:  config.idle_check_interval_secs,
     });
+
+    // Hostname-routed reverse proxy (opt-in via AGENTJAIL_GATEWAY_ADDR).
+    let gateway_handle = if let Some(addr) = config.gateway_addr {
+        let gw_rx = shutdown_rx.clone();
+        let state = GatewayState::new(workspace_store.clone());
+        Some(tokio::spawn(async move {
+            if let Err(e) = gateway::serve(addr, state, gw_rx).await {
+                tracing::error!(error = %e, "gateway listener ended");
+            }
+        }))
+    } else {
+        None
+    };
 
     let router = ctl.router();
 
@@ -178,9 +205,12 @@ async fn main() -> Result<()> {
     tracing::info!("shutdown requested, draining in-flight requests");
     let _ = shutdown_tx.send(true);
 
-    // Wait for both servers to drain. Ignore JoinError.
+    // Wait for every listener to drain. Ignore JoinError.
     let _ = ctl_handle.await;
     let _ = proxy_handle.await;
+    if let Some(h) = gateway_handle {
+        let _ = h.await;
+    }
     tracing::info!("goodbye");
     Ok(())
 }
@@ -216,6 +246,7 @@ struct Config {
     snapshot_pool_dir: Option<std::path::PathBuf>,
     snapshot_gc: SnapshotGcConfig,
     idle_check_interval_secs: u64,
+    gateway_addr: Option<SocketAddr>,
 }
 
 impl Config {
@@ -276,6 +307,11 @@ impl Config {
         let idle_check_interval_secs =
             parse_env_u64("AGENTJAIL_IDLE_CHECK_INTERVAL_SECS").unwrap_or(30);
 
+        let gateway_addr = std::env::var("AGENTJAIL_GATEWAY_ADDR")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| s.parse::<SocketAddr>().ok());
+
         Ok(Self {
             ctl_addr,
             proxy_addr,
@@ -285,7 +321,38 @@ impl Config {
             snapshot_pool_dir,
             snapshot_gc,
             idle_check_interval_secs,
+            gateway_addr,
         })
+    }
+}
+
+/// Install the tracing subscriber.
+///
+/// Format is controlled by `LOG_FORMAT`:
+///   - `json` — one JSON object per line; fields are key-value.
+///     Ideal for prod + log aggregators.
+///   - anything else (or unset) — compact single-line text. Default.
+///
+/// Log level follows `RUST_LOG`; defaults to `info` when unset.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    if std::env::var("LOG_FORMAT").ok().as_deref() == Some("json") {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .with_current_span(true)
+            .with_span_list(false)
+            .with_target(true)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .compact()
+            .init();
     }
 }
 

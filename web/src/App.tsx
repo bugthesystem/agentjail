@@ -23,6 +23,7 @@ import { Security } from "./pages/docs/Security";
 import { PlaygroundDoc } from "./pages/docs/PlaygroundDoc";
 import { Workspaces as WorkspacesDoc } from "./pages/docs/Workspaces";
 import { Snapshots as SnapshotsDoc } from "./pages/docs/Snapshots";
+import { Gateway as GatewayDoc } from "./pages/docs/Gateway";
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -44,6 +45,7 @@ function Gate() {
         <Route path="forking"      element={<Forking />} />
         <Route path="workspaces"   element={<WorkspacesDoc />} />
         <Route path="snapshots"    element={<SnapshotsDoc />} />
+        <Route path="gateway"      element={<GatewayDoc />} />
         <Route path="security"     element={<Security />} />
       </Route>
       {auth ? (

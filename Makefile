@@ -1,13 +1,21 @@
-# agentjail — three commands, all you need.
+# agentjail — one-shot DevX.
 #
 #   make setup    install web deps, generate a dev API key
 #   make dev      start the full stack (control plane + phantom proxy + web)
+#   make test     run every unit test (Rust + Node + Python)
+#   make build    production builds (server binary + web bundle + SDKs)
+#   make logs     tail container logs
+#   make down     stop + remove containers (volumes kept)
+#   make e2e      run scripts/e2e-workspaces.sh against the running stack
+#   make clean    wipe build artifacts
 #   make doctor   diagnose prerequisites, ports, and running services
 
 SHELL        := /bin/bash
 ENV_FILE     := .env.local
 COMPOSE      := docker compose -f docker-compose.platform.yml
 WEB_DIR      := web
+SDK_NODE_DIR := packages/sdk-node
+SDK_PY_DIR   := packages/sdk-python
 
 # Prefer bun if present, fall back to npm.
 PKG := $(shell command -v bun >/dev/null 2>&1 && echo bun || echo npm)
@@ -24,12 +32,19 @@ ifneq (,$(findstring xterm,$(TERM)))
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help setup dev doctor
+.PHONY: help setup dev doctor test build logs down e2e clean \
+        test-rust test-node test-python build-rust build-web build-sdks
 
 help:
 	@printf "$(C_BOLD)agentjail$(C_RESET) $(C_DIM)— phantom control plane$(C_RESET)\n\n"
 	@printf "  $(C_GREEN)make setup$(C_RESET)    install deps, generate dev API key\n"
 	@printf "  $(C_GREEN)make dev$(C_RESET)      start the full stack (server + web)\n"
+	@printf "  $(C_GREEN)make test$(C_RESET)     run every unit test (Rust + Node + Python)\n"
+	@printf "  $(C_GREEN)make build$(C_RESET)    production builds (server + web + SDKs)\n"
+	@printf "  $(C_GREEN)make logs$(C_RESET)     tail docker logs\n"
+	@printf "  $(C_GREEN)make down$(C_RESET)     stop containers (volumes kept)\n"
+	@printf "  $(C_GREEN)make e2e$(C_RESET)      run the workspaces + snapshots smoke script\n"
+	@printf "  $(C_GREEN)make clean$(C_RESET)    wipe build artifacts\n"
 	@printf "  $(C_GREEN)make doctor$(C_RESET)   check prerequisites and running services\n\n"
 
 # ─── setup ──────────────────────────────────────────────────────────────────
@@ -118,6 +133,76 @@ doctor:
 	  printf "  $(C_AMBER)•$(C_RESET) no $(ENV_FILE) — run $(C_CYAN)make setup$(C_RESET)\n"; \
 	fi
 	@printf "\n"
+
+# ─── test ───────────────────────────────────────────────────────────────────
+
+test: test-rust test-node test-python
+	@printf "\n  $(C_GREEN)✓$(C_RESET) all unit tests passed\n\n"
+
+test-rust:
+	@printf "$(C_BOLD)→ test-rust$(C_RESET)  $(C_DIM)cargo test (requires Linux — runs inside rust:bookworm docker)$(C_RESET)\n"
+	@docker run --rm -v "$$PWD":/src -w /src rust:1.88-slim-bookworm bash -c '\
+	  apt-get update -qq && \
+	  apt-get install -y --no-install-recommends pkg-config libssl-dev libseccomp-dev >/dev/null 2>&1 && \
+	  cargo test -p agentjail-ctl --lib && \
+	  cargo test -p agentjail --test snapshot_test && \
+	  cargo check -p agentjail-server' | tail -20
+
+test-node:
+	@printf "$(C_BOLD)→ test-node$(C_RESET)  $(C_DIM)@agentjail/sdk$(C_RESET)\n"
+	@cd $(SDK_NODE_DIR) && $(PKG) install --silent >/dev/null 2>&1 && $(PKG) test 2>&1 | tail -10
+
+test-python:
+	@printf "$(C_BOLD)→ test-python$(C_RESET)  $(C_DIM)agentjail (pypi)$(C_RESET)\n"
+	@cd $(SDK_PY_DIR) && \
+	  if [ ! -d .venv ]; then python3 -m venv .venv --clear >/dev/null 2>&1; fi && \
+	  .venv/bin/pip install -q -e '.[dev]' >/dev/null 2>&1 && \
+	  .venv/bin/pytest 2>&1 | tail -5
+
+# ─── build ──────────────────────────────────────────────────────────────────
+
+build: build-rust build-web build-sdks
+	@printf "\n  $(C_GREEN)✓$(C_RESET) build done\n\n"
+
+build-rust:
+	@printf "$(C_BOLD)→ build-rust$(C_RESET)  $(C_DIM)cargo build --release (docker-linux)$(C_RESET)\n"
+	@docker build -f Dockerfile.server -t agentjail-server:dev . 2>&1 | tail -8
+
+build-web:
+	@printf "$(C_BOLD)→ build-web$(C_RESET)  $(C_DIM)vite production bundle$(C_RESET)\n"
+	@cd $(WEB_DIR) && $(PKG) run build 2>&1 | tail -6
+
+build-sdks:
+	@printf "$(C_BOLD)→ build-sdks$(C_RESET)  $(C_DIM)node sdk + python wheel$(C_RESET)\n"
+	@cd $(SDK_NODE_DIR) && $(PKG) run build 2>&1 | tail -3
+	@cd $(SDK_PY_DIR) && \
+	  if [ ! -d .venv ]; then python3 -m venv .venv --clear >/dev/null 2>&1; fi && \
+	  .venv/bin/pip install -q hatchling build >/dev/null 2>&1 && \
+	  .venv/bin/python -m build --wheel --outdir dist 2>&1 | tail -3
+
+# ─── ops ────────────────────────────────────────────────────────────────────
+
+logs:
+	@$(COMPOSE) logs -f --tail=100
+
+down:
+	@printf "$(C_BOLD)→ down$(C_RESET)  $(C_DIM)stopping + removing containers (volumes kept)$(C_RESET)\n"
+	@$(COMPOSE) down 2>&1 | tail -5
+
+e2e:
+	@if ! curl -fsS --max-time 1 http://localhost:7070/healthz >/dev/null 2>&1; then \
+	  printf "$(C_AMBER)!$(C_RESET) control plane not reachable on :7070 — run $(C_CYAN)make dev$(C_RESET) first\n"; exit 1; \
+	fi
+	@printf "$(C_BOLD)→ e2e$(C_RESET)  $(C_DIM)workspaces + snapshots smoke$(C_RESET)\n"
+	@set -a; source $(ENV_FILE); set +a; \
+	  CTL_URL=http://localhost:7070 bash scripts/e2e-workspaces.sh
+
+clean:
+	@printf "$(C_BOLD)→ clean$(C_RESET)  $(C_DIM)wiping build artifacts$(C_RESET)\n"
+	@rm -rf target $(WEB_DIR)/dist $(WEB_DIR)/node_modules
+	@rm -rf $(SDK_NODE_DIR)/dist $(SDK_NODE_DIR)/node_modules
+	@rm -rf $(SDK_PY_DIR)/dist $(SDK_PY_DIR)/.venv $(SDK_PY_DIR)/src/agentjail/__pycache__ $(SDK_PY_DIR)/tests/__pycache__
+	@printf "  $(C_GREEN)✓$(C_RESET) clean\n\n"
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 

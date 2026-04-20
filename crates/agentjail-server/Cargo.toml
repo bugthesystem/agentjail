@@ -16,8 +16,12 @@ agentjail-ctl.workspace = true
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "signal"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json"] }
 anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+http = "1"
+bytes = "1"
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

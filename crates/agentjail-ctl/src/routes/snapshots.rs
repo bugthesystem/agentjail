@@ -60,6 +60,14 @@ pub(crate) struct FromSnapshotRequest {
 /// workspace's output dir, freezing the running exec (if any) around the
 /// copy. This is the *mid-run snapshot* entry point: safe to call during
 /// a long-running exec; idle workspaces skip the freeze step.
+#[tracing::instrument(
+    name = "snapshot.create",
+    skip_all,
+    fields(
+        workspace_id = %id,
+        name = req.name.as_deref().unwrap_or(""),
+    ),
+)]
 pub(crate) async fn create_snapshot(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -151,6 +159,11 @@ pub(crate) async fn delete_snapshot(
 /// the workspace's *output* dir, which is what `live_fork` and
 /// `Snapshot::restore_to` write to). Config is inherited from the parent
 /// workspace when it's still around.
+#[tracing::instrument(
+    name = "workspace.from_snapshot",
+    skip_all,
+    fields(snapshot_id = %req.snapshot_id),
+)]
 pub(crate) async fn create_workspace_from_snapshot(
     State(state): State<AppState>,
     Json(req): Json<FromSnapshotRequest>,

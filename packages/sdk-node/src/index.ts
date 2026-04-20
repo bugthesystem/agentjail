@@ -57,6 +57,7 @@ export type {
   StreamEvent,
   Workspace,
   WorkspaceCreateRequest,
+  WorkspaceDomain,
   WorkspaceExecRequest,
   WorkspaceList,
   WorkspaceSpec,
