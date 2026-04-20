@@ -29,6 +29,7 @@ mod fork;
 mod health;
 mod jails;
 mod sessions;
+mod settings;
 mod snapshots;
 mod stream;
 mod workspaces;
@@ -41,8 +42,10 @@ pub(crate) use fork::create_fork_run;
 pub(crate) use health::{healthz, stats};
 pub(crate) use jails::{get_jail, list_jails};
 pub(crate) use sessions::{create_session, delete_session, get_session, list_sessions};
+pub(crate) use settings::get_settings;
 pub(crate) use snapshots::{
-    create_snapshot, create_workspace_from_snapshot, delete_snapshot, get_snapshot, list_snapshots,
+    create_snapshot, create_workspace_from_snapshot, delete_snapshot, get_snapshot,
+    get_snapshot_manifest, list_snapshots,
 };
 pub(crate) use stream::create_stream_run;
 pub(crate) use workspaces::{
@@ -75,6 +78,10 @@ pub(crate) struct AppState {
     /// Optional content-addressed pool. When `Some`, snapshots dedupe
     /// via SHA-256 hashing instead of full directory copies.
     pub(crate) snapshot_pool_dir: Option<PathBuf>,
+    /// Operator-facing platform info surfaced via `GET /v1/config`. All
+    /// safe-to-display fields (bind addresses, GC policy, provider
+    /// metadata). Never carries secrets.
+    pub(crate) platform: Option<crate::PlatformInfo>,
 }
 
 impl IntoResponse for CtlError {

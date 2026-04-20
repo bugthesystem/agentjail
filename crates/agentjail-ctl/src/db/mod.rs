@@ -22,7 +22,22 @@ pub use jails_pg::PgJailStore;
 pub use snapshots_pg::PgSnapshotStore;
 pub use workspaces_pg::PgWorkspaceStore;
 
-/// Connect to Postgres + run the embedded migrations. Idempotent.
+/// Migrations applied at startup, in order. Each file is expected to be
+/// idempotent (`CREATE … IF NOT EXISTS`, `ALTER TABLE … ADD COLUMN IF
+/// NOT EXISTS`) so replays on already-migrated databases are no-ops.
+///
+/// Add new migrations at the end. Renumber only if you have to reorder
+/// a never-deployed change — once a migration has run in any
+/// environment it's effectively frozen.
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init",                 include_str!("../../migrations/0001_init.sql")),
+    ("0002_workspaces_snapshots", include_str!("../../migrations/0002_workspaces_snapshots.sql")),
+    ("0003_workspace_idle",       include_str!("../../migrations/0003_workspace_idle.sql")),
+    ("0004_workspace_domains",    include_str!("../../migrations/0004_workspace_domains.sql")),
+    ("0005_jail_config_snapshot", include_str!("../../migrations/0005_jail_config_snapshot.sql")),
+];
+
+/// Connect to Postgres + run every embedded migration. Idempotent.
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
     let pool = PgPoolOptions::new()
         .max_connections(20)
@@ -30,18 +45,10 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .connect(database_url)
         .await?;
 
-    sqlx::raw_sql(include_str!("../../migrations/0001_init.sql"))
-        .execute(&pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../../migrations/0002_workspaces_snapshots.sql"))
-        .execute(&pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../../migrations/0003_workspace_idle.sql"))
-        .execute(&pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../../migrations/0004_workspace_domains.sql"))
-        .execute(&pool)
-        .await?;
+    for (name, sql) in MIGRATIONS {
+        tracing::debug!(migration = name, "applying");
+        sqlx::raw_sql(sql).execute(&pool).await?;
+    }
 
     Ok(pool)
 }

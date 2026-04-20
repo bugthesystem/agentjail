@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 const DEFAULT_CAPACITY: usize = 2_000;
@@ -90,6 +90,39 @@ impl JailStatus {
     }
 }
 
+/// Snapshot of the jail config that was applied at start time.
+///
+/// Captured once per run so the Jails ledger can answer "what did this
+/// run with?" — the fields mirror the knobs that drive `JailConfig`.
+/// Everything here is safe to surface over HTTP: no secrets, no
+/// arbitrary code. Populated by the route handlers via
+/// [`JailStore::attach_config`] right after [`JailStore::start`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JailConfigSnapshot {
+    /// `"none"` | `"loopback"` | `"allowlist"`.
+    pub network_mode: String,
+    /// Allowlist entries when `network_mode == "allowlist"`. Empty
+    /// otherwise (omitted from JSON to keep the default row tiny).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network_domains: Vec<String>,
+    /// `"standard"` | `"strict"`.
+    pub seccomp: String,
+    /// Effective memory cap in MB.
+    pub memory_mb: u64,
+    /// Exec timeout in seconds.
+    pub timeout_secs: u64,
+    /// CPU quota (100 = one core).
+    pub cpu_percent: u64,
+    /// PID cap.
+    pub max_pids: u64,
+    /// Primary git repo URL when a clone happened before the jail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_repo: Option<String>,
+    /// Git ref (branch/tag/commit) paired with `git_repo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+}
+
 /// A single jail-run row.
 #[derive(Debug, Clone, Serialize)]
 pub struct JailRecord {
@@ -139,6 +172,13 @@ pub struct JailRecord {
     pub stderr: Option<String>,
     /// Error message when the jail failed to spawn.
     pub error:  Option<String>,
+
+    /// What the jail actually ran with (network policy, seccomp level,
+    /// limits, optional git seed). Populated after `start()` via
+    /// [`JailStore::attach_config`]. `None` for legacy rows predating
+    /// this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<JailConfigSnapshot>,
 }
 
 impl JailRecord {
@@ -170,6 +210,7 @@ impl JailRecord {
             stdout: None,
             stderr: None,
             error: None,
+            config: None,
         }
     }
 }
@@ -202,6 +243,11 @@ pub trait JailStore: Send + Sync + 'static {
     /// Append captured output so far. Called by the unified exec helper
     /// every ~500ms so the Jails detail reads a live tail.
     async fn tail(&self, _id: i64, _stdout: &str, _stderr: &str) {}
+    /// Attach the config snapshot the jail ran with. Called by each
+    /// route handler after `start()`. Default is a no-op so external
+    /// implementations aren't forced to persist the new column; the
+    /// bundled in-memory + Postgres impls override.
+    async fn attach_config(&self, _id: i64, _config: JailConfigSnapshot) {}
     /// Fetch a single record by id.
     async fn get(&self, id: i64) -> Option<JailRecord>;
 }
@@ -312,6 +358,16 @@ impl JailStore for InMemoryJailStore {
             rec.cpu_usage_usec    = Some(stats.cpu_usage_usec);
             rec.io_read_bytes     = Some(stats.io_read_bytes);
             rec.io_write_bytes    = Some(stats.io_write_bytes);
+        }
+    }
+
+    async fn attach_config(&self, id: i64, config: JailConfigSnapshot) {
+        let mut g = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(rec) = g.rows.iter_mut().find(|r| r.id == id) {
+            rec.config = Some(config);
         }
     }
 

@@ -27,6 +27,7 @@ impl Harness {
             exec: None,
             state_dir: Some(tempfile::tempdir().unwrap().keep()),
             snapshot_pool_dir: None,
+            platform: None,
         });
         let router = ctl.router();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -111,8 +111,16 @@ pub trait WorkspaceStore: Send + Sync + 'static {
     /// `domains` list. Case-insensitive match on the `domain` field.
     /// Used by the gateway listener to route incoming requests.
     async fn by_domain(&self, host: &str) -> Option<(Workspace, WorkspaceDomain)>;
-    /// List live workspaces, newest first. `limit` capped at 500.
-    async fn list(&self, limit: usize, offset: usize) -> (Vec<Workspace>, u64);
+    /// List live workspaces, newest first. `limit` capped at 500. When
+    /// `q` is `Some`, the result is filtered to rows whose `id`,
+    /// `label`, or `git_repo` contain `q` (case-insensitive substring);
+    /// `total` reflects the filtered count.
+    async fn list(
+        &self,
+        limit: usize,
+        offset: usize,
+        q: Option<&str>,
+    ) -> (Vec<Workspace>, u64);
     /// Mark deleted + set `deleted_at = now()`.
     async fn mark_deleted(&self, id: &str) -> Option<Workspace>;
     /// Bump `last_exec_at`. Called on every successful exec dispatch.
@@ -270,12 +278,28 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
         None
     }
 
-    async fn list(&self, limit: usize, offset: usize) -> (Vec<Workspace>, u64) {
+    async fn list(
+        &self,
+        limit: usize,
+        offset: usize,
+        q: Option<&str>,
+    ) -> (Vec<Workspace>, u64) {
         let Ok(g) = self.inner.read() else {
             return (Vec::new(), 0);
         };
-        let mut live: Vec<Workspace> =
-            g.values().filter(|w| w.deleted_at.is_none()).cloned().collect();
+        let needle = q.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+        let mut live: Vec<Workspace> = g
+            .values()
+            .filter(|w| w.deleted_at.is_none())
+            .filter(|w| match &needle {
+                None => true,
+                Some(n) =>
+                    w.id.to_lowercase().contains(n)
+                    || w.label.as_deref().map(|s| s.to_lowercase().contains(n)).unwrap_or(false)
+                    || w.git_repo.as_deref().map(|s| s.to_lowercase().contains(n)).unwrap_or(false),
+            })
+            .cloned()
+            .collect();
         live.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         let total = live.len() as u64;
         let rows = live
@@ -378,7 +402,7 @@ mod tests {
 
         assert!(store.get("wrk_a").await.is_none());
         assert!(store.get("wrk_b").await.is_some());
-        let (rows, total) = store.list(100, 0).await;
+        let (rows, total) = store.list(100, 0, None).await;
         assert_eq!(total, 1);
         assert_eq!(rows[0].id, "wrk_b");
     }
@@ -391,7 +415,7 @@ mod tests {
             ws.created_at = OffsetDateTime::now_utc() + time::Duration::seconds(i as i64);
             store.insert(ws).await.unwrap();
         }
-        let (rows, total) = store.list(2, 1).await;
+        let (rows, total) = store.list(2, 1, None).await;
         assert_eq!(total, 5);
         assert_eq!(rows.len(), 2);
     }

@@ -67,7 +67,7 @@ export function Jails() {
   useKeyboardNav({ rows, selected, setSelected, setOffset, pageCount, page });
 
   return (
-    <div className="grid gap-4 grid-cols-[minmax(0,1fr)_600px]">
+    <div className="grid gap-4 grid-cols-[minmax(0,1fr)_600px] items-stretch">
       <Panel padded={false}>
         <div className="px-5 py-3 flex items-center justify-between gap-3">
           <PanelHeader

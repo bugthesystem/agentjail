@@ -32,8 +32,8 @@ export function JailDetail({
   }
 
   return (
-    <div className="space-y-4">
-      <Panel padded={false}>
+    <div className="space-y-4 h-full flex flex-col">
+      <Panel padded={false} className="flex-1 min-h-0 flex flex-col">
         <div className="px-5 py-3 flex items-start justify-between gap-3">
           <PanelHeader
             eyebrow={`${rec.kind} · jail #${rec.id}`}
@@ -52,7 +52,7 @@ export function JailDetail({
           </div>
         )}
 
-        <div className="p-5 space-y-4 max-h-[calc(100vh-520px)] overflow-y-auto">
+        <div className="p-5 space-y-4 flex-1 min-h-0 overflow-y-auto">
           {rec.error && <OutputBlock label="error"  tone="siren"   text={rec.error}  showSize={false} />}
           {rec.stdout && <OutputBlock label="stdout" tone="phantom" text={rec.stdout} />}
           {rec.stderr && <OutputBlock label="stderr" tone="flare"   text={rec.stderr} />}
@@ -70,8 +70,79 @@ export function JailDetail({
         </div>
       </Panel>
 
+      <ConfigPanel config={rec.config ?? null} />
       {rec.kind === "fork" && <ForkGraph rec={rec} onSelect={onSelect} />}
       {rec.session_id && <NetworkPanel sessionId={rec.session_id} />}
+    </div>
+  );
+}
+
+// ─── jail configuration ─────────────────────────────────────────────────
+
+function ConfigPanel({ config }: { config: JailRecord["config"] | null }) {
+  return (
+    <Panel padded={false}>
+      <div className="px-5 py-3">
+        <PanelHeader eyebrow="Configuration" title="Jail settings" className="!mb-0" />
+      </div>
+      <div className="hairline" />
+      {config ? <ConfigBody config={config} /> : (
+        <div className="px-5 py-4 text-[12px] mono text-ink-500">
+          not captured — run predates the <span className="text-ink-300">config_json</span> column
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ConfigBody({ config }: { config: NonNullable<JailRecord["config"]> }) {
+  const networkDetail =
+    config.network_mode === "allowlist" && config.network_domains?.length
+      ? `allowlist · ${config.network_domains.length}`
+      : config.network_mode;
+  return (
+    <>
+      <div className="px-5 py-4 grid grid-cols-2 gap-x-6 gap-y-2 text-[12px]">
+        <ConfigRow label="Network"  value={networkDetail} />
+        <ConfigRow label="Seccomp"  value={config.seccomp} />
+        <ConfigRow label="Memory"   value={`${config.memory_mb} MB`} />
+        <ConfigRow label="Timeout"  value={`${config.timeout_secs} s`} />
+        <ConfigRow label="CPU"      value={`${config.cpu_percent}%`} />
+        <ConfigRow label="Max PIDs" value={String(config.max_pids)} />
+        {config.git_repo && (
+          <ConfigRow
+            label="Git"
+            value={`${config.git_repo}${config.git_ref ? ` @ ${config.git_ref}` : ""}`}
+            span
+          />
+        )}
+      </div>
+      {config.network_mode === "allowlist" && config.network_domains?.length ? (
+        <div className="px-5 pb-4">
+          <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-ink-400 mb-2">
+            Allowlist
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {config.network_domains.map((d) => (
+              <span
+                key={d}
+                className="mono text-[11px] text-phantom bg-ink-800/60 rounded px-2 py-0.5"
+              >
+                {d}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ConfigRow({ label, value, span }: { label: string; value: string; span?: boolean }) {
+  return (
+    <div className={span ? "col-span-2 grid grid-cols-[80px_1fr] gap-3 items-baseline" : "grid grid-cols-[80px_1fr] gap-3 items-baseline"}>
+      <span className="text-ink-500">{label}</span>
+      <span className="mono text-ink-100 break-all">{value}</span>
     </div>
   );
 }

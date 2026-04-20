@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ._http import HttpClient
-from .types import SnapshotList, SnapshotRecord, Workspace
+from .types import SnapshotList, SnapshotManifest, SnapshotRecord, Workspace
 
 
 class Snapshots:
@@ -31,15 +31,35 @@ class Snapshots:
         workspace_id: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        q: str | None = None,
     ) -> SnapshotList:
+        """List snapshots; optionally filtered to a workspace or by
+        a substring search (``q``) matching ``id`` / ``name`` /
+        ``workspace_id``.
+        """
         return self._http.request(
             "GET",
             "/v1/snapshots",
-            params={"workspace_id": workspace_id, "limit": limit, "offset": offset},
+            params={
+                "workspace_id": workspace_id,
+                "limit": limit,
+                "offset": offset,
+                "q": q,
+            },
         )
 
     def get(self, snapshot_id: str) -> SnapshotRecord:
         return self._http.request("GET", f"/v1/snapshots/{snapshot_id}")
+
+    def manifest(self, snapshot_id: str) -> SnapshotManifest:
+        """List the files inside a pool-backed snapshot.
+
+        Returns ``kind="incremental"`` with populated ``entries`` for
+        snapshots captured into a content-addressed object pool;
+        ``kind="classic"`` with empty ``entries`` for full-copy
+        snapshots where the file list isn't persisted.
+        """
+        return self._http.request("GET", f"/v1/snapshots/{snapshot_id}/manifest")
 
     def delete(self, snapshot_id: str) -> None:
         self._http.request("DELETE", f"/v1/snapshots/{snapshot_id}")

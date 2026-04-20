@@ -1,5 +1,10 @@
 import type { HttpClient } from "./http.js";
-import type { SnapshotList, SnapshotRecord, Workspace } from "./types.js";
+import type {
+  SnapshotList,
+  SnapshotManifest,
+  SnapshotRecord,
+  Workspace,
+} from "./types.js";
 
 /**
  * Named snapshots — capture the current state of a workspace's output
@@ -34,19 +39,24 @@ export class Snapshots {
     });
   }
 
-  /** List snapshots; optionally filtered to a single workspace. */
+  /**
+   * List snapshots; optionally filtered to a workspace or by a
+   * substring search (`q`) matching `id` / `name` / `workspace_id`.
+   */
   async list(params: {
     workspaceId?: string;
     limit?: number;
     offset?: number;
+    q?: string;
   } = {}): Promise<SnapshotList> {
     return this.http.request<SnapshotList>({
       method: "GET",
       path: "/v1/snapshots",
       query: {
         workspace_id: params.workspaceId,
-        limit: params.limit,
-        offset: params.offset,
+        limit:        params.limit,
+        offset:       params.offset,
+        q:            params.q,
       },
     });
   }
@@ -56,6 +66,18 @@ export class Snapshots {
     return this.http.request<SnapshotRecord>({
       method: "GET",
       path: `/v1/snapshots/${encodeURIComponent(id)}`,
+    });
+  }
+
+  /**
+   * List the files inside a pool-backed (incremental) snapshot. For
+   * classic full-copy snapshots the response has `kind: "classic"` and
+   * an empty entries array.
+   */
+  async manifest(id: string): Promise<SnapshotManifest> {
+    return this.http.request<SnapshotManifest>({
+      method: "GET",
+      path: `/v1/snapshots/${encodeURIComponent(id)}/manifest`,
     });
   }
 

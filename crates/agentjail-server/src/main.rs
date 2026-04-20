@@ -139,6 +139,26 @@ async fn main() -> Result<()> {
             ),
         };
 
+    // Providers exposed via `GET /v1/config` for the Settings page.
+    // Mirrors the builder calls above — if you register a new provider,
+    // add it here too.
+    let registered_providers = || -> Vec<agentjail_ctl::ProviderInfo> {
+        use agentjail_phantom::Provider;
+        let pool: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(OpenAiProvider::new()),
+            Arc::new(AnthropicProvider::new()),
+            Arc::new(GitHubProvider::new()),
+            Arc::new(StripeProvider::new()),
+        ];
+        pool.into_iter()
+            .map(|p| agentjail_ctl::ProviderInfo {
+                service_id:     p.id().to_string(),
+                upstream_base:  p.upstream_base().to_string(),
+                request_prefix: format!("/v1/{}/", p.id()),
+            })
+            .collect()
+    };
+
     // Build the control plane with the shared store Arcs.
     let cfg = ControlPlaneConfig {
         tokens: stores.tokens.clone(),
@@ -148,6 +168,14 @@ async fn main() -> Result<()> {
         exec: Some(agentjail_ctl::ExecConfig::default()),
         state_dir: config.state_dir.clone(),
         snapshot_pool_dir: config.snapshot_pool_dir.clone(),
+        platform: Some(agentjail_ctl::PlatformInfo {
+            providers: registered_providers(),
+            ctl_addr: Some(config.ctl_addr),
+            proxy_addr: Some(config.proxy_addr),
+            gateway_addr: config.gateway_addr,
+            snapshot_gc: Some(config.snapshot_gc.clone()),
+            idle_check_interval_secs: config.idle_check_interval_secs,
+        }),
     };
     let ctl = ControlPlane::with_all_stores(
         cfg,

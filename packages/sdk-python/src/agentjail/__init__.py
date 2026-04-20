@@ -19,6 +19,7 @@ from .jails import Jails
 from .public import Public
 from .runs import Runs
 from .sessions import Sessions
+from .settings import Settings
 from .snapshots import Snapshots
 from .types import (
     AuditList,
@@ -29,17 +30,22 @@ from .types import (
     ForkMeta,
     ForkResult,
     GitRepoEntry,
+    JailConfigSnapshot,
     JailKind,
     JailRecord,
     JailsList,
     JailStatus,
     NetworkSpec,
+    ProviderInfo,
     PublicStats,
     ResourceStats,
     SeccompSpec,
     ServiceId,
     Session,
+    SettingsSnapshot,
     SnapshotList,
+    SnapshotManifest,
+    SnapshotManifestEntry,
     SnapshotRecord,
     StreamEvent,
     Workspace,
@@ -61,6 +67,7 @@ __all__ = [
     "Public",
     "Runs",
     "Sessions",
+    "Settings",
     "Snapshots",
     "Workspaces",
     # types
@@ -72,17 +79,22 @@ __all__ = [
     "ForkMeta",
     "ForkResult",
     "GitRepoEntry",
+    "JailConfigSnapshot",
     "JailKind",
     "JailRecord",
     "JailsList",
     "JailStatus",
     "NetworkSpec",
+    "ProviderInfo",
     "PublicStats",
     "ResourceStats",
     "SeccompSpec",
     "ServiceId",
     "Session",
+    "SettingsSnapshot",
     "SnapshotList",
+    "SnapshotManifest",
+    "SnapshotManifestEntry",
     "SnapshotRecord",
     "StreamEvent",
     "Workspace",
@@ -111,6 +123,7 @@ class Agentjail:
         self.jails = Jails(self._http)
         self.workspaces = Workspaces(self._http)
         self.snapshots = Snapshots(self._http)
+        self.settings = Settings(self._http)
         self.public = Public(self._http)
 
     def close(self) -> None:

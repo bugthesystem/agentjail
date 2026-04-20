@@ -118,6 +118,18 @@ class ForkResult(TypedDict):
 # ---- jails ------------------------------------------------------------
 
 
+class JailConfigSnapshot(TypedDict):
+    network_mode: Literal["none", "loopback", "allowlist"]
+    network_domains: NotRequired[list[str]]
+    seccomp: Literal["standard", "strict"]
+    memory_mb: int
+    timeout_secs: int
+    cpu_percent: int
+    max_pids: int
+    git_repo: NotRequired[str | None]
+    git_ref: NotRequired[str | None]
+
+
 class JailRecord(TypedDict):
     id: int
     kind: JailKind
@@ -138,6 +150,7 @@ class JailRecord(TypedDict):
     stderr: str | None
     error: str | None
     parent_id: NotRequired[int | None]
+    config: NotRequired[JailConfigSnapshot]
 
 
 class JailsList(TypedDict):
@@ -271,3 +284,72 @@ class StreamErrorEvent(TypedDict):
 
 
 StreamEvent = StreamStarted | StreamLine | StreamStats | StreamCompleted | StreamErrorEvent
+
+
+# ---- snapshot manifest ------------------------------------------------
+
+
+class SnapshotManifestEntry(TypedDict):
+    path: str
+    mode: int
+    sha256: str
+    size: int
+
+
+class SnapshotManifest(TypedDict):
+    kind: Literal["incremental", "classic"]
+    entries: list[SnapshotManifestEntry]
+
+
+# ---- settings ---------------------------------------------------------
+
+
+class ProviderInfo(TypedDict):
+    service_id: str
+    upstream_base: str
+    request_prefix: str
+
+
+class ProxySettings(TypedDict):
+    base_url: str
+    bind_addr: str | None
+    providers: list[ProviderInfo]
+
+
+class ControlPlaneSettings(TypedDict):
+    bind_addr: str | None
+
+
+class GatewaySettings(TypedDict):
+    bind_addr: str
+
+
+class ExecSettings(TypedDict):
+    default_memory_mb: int
+    default_timeout_secs: int
+    max_concurrent: int
+
+
+class PersistenceSettings(TypedDict):
+    state_dir: str
+    snapshot_pool_dir: str | None
+    idle_check_secs: int
+
+
+class GcPolicy(TypedDict):
+    max_age_secs: int | None
+    max_count: int | None
+    tick_secs: int
+
+
+class SnapshotSettings(TypedDict):
+    gc: GcPolicy | None
+
+
+class SettingsSnapshot(TypedDict):
+    proxy: ProxySettings
+    control_plane: ControlPlaneSettings
+    gateway: GatewaySettings | None
+    exec: ExecSettings | None
+    persistence: PersistenceSettings
+    snapshots: SnapshotSettings

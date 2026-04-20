@@ -31,6 +31,7 @@
 //!     exec: None,
 //!     state_dir: None,
 //!     snapshot_pool_dir: None,
+//!     platform: None,
 //! });
 //! let router = ctl.router();
 //! let listener = tokio::net::TcpListener::bind("0.0.0.0:7000").await?;
@@ -72,7 +73,7 @@ pub use auth::ApiKeys;
 pub use credential::{CredentialRecord, CredentialStore, InMemoryCredentialStore};
 pub use error::{CtlError, Result};
 pub use exec::{ExecConfig, ExecMetrics};
-pub use jails::{InMemoryJailStore, JailKind, JailRecord, JailStatus, JailStore};
+pub use jails::{InMemoryJailStore, JailConfigSnapshot, JailKind, JailRecord, JailStatus, JailStore};
 pub use session::{InMemorySessionStore, Session, SessionStore};
 pub use snapshots::{
     InMemorySnapshotStore, SnapshotGcConfig, SnapshotRecord, SnapshotStore, gc as snapshot_gc,
@@ -115,6 +116,44 @@ pub struct ControlPlaneConfig {
     /// copies). Enables dedupe across snapshots + near-free restores via
     /// hardlink.
     pub snapshot_pool_dir: Option<PathBuf>,
+    /// Read-only operator-facing platform info exposed via
+    /// `GET /v1/config`. Caller-populated; `None` = the endpoint still
+    /// works but returns stub values for the platform fields.
+    pub platform: Option<PlatformInfo>,
+}
+
+/// Phantom-proxy provider registered with the running server. Exposed
+/// via [`crate::routes::settings`] so operators can confirm which
+/// upstreams their sandboxes can reach. All fields are safe to surface;
+/// real credentials never appear here.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ProviderInfo {
+    /// Stable id the SDK/clients use (e.g. `"openai"`).
+    pub service_id: String,
+    /// Upstream host the phantom proxy forwards to (e.g.
+    /// `"https://api.openai.com"`).
+    pub upstream_base: String,
+    /// Public path prefix sandboxes hit (e.g. `"/v1/openai/"`).
+    pub request_prefix: String,
+}
+
+/// Extra operator-facing settings the server injects into the control
+/// plane so `GET /v1/config` can surface them. None of these ship
+/// credentials — addresses, thresholds, and provider metadata only.
+#[derive(Clone, Debug, Default)]
+pub struct PlatformInfo {
+    /// Phantom-proxy providers registered at startup.
+    pub providers: Vec<ProviderInfo>,
+    /// Control-plane bind address (informational).
+    pub ctl_addr: Option<std::net::SocketAddr>,
+    /// Phantom-proxy bind address (informational).
+    pub proxy_addr: Option<std::net::SocketAddr>,
+    /// Hostname-routed gateway bind address, when enabled.
+    pub gateway_addr: Option<std::net::SocketAddr>,
+    /// Snapshot GC policy. `None` when GC is disabled.
+    pub snapshot_gc: Option<SnapshotGcConfig>,
+    /// Idle-reaper sweeper tick. `0` when disabled.
+    pub idle_check_interval_secs: u64,
 }
 
 impl ControlPlaneConfig {
@@ -260,6 +299,7 @@ impl ControlPlane {
             snapshots,
             state_dir,
             snapshot_pool_dir,
+            platform: config.platform,
         };
         Self {
             state,
@@ -323,6 +363,7 @@ impl ControlPlane {
             .route("/v1/runs/fork", post(routes::create_fork_run))
             .route("/v1/runs/stream", post(routes::create_stream_run))
             .route("/v1/audit", get(routes::list_audit))
+            .route("/v1/config", get(routes::get_settings))
             .route("/v1/jails", get(routes::list_jails))
             .route("/v1/jails/:id", get(routes::get_jail))
             .route(
@@ -357,6 +398,10 @@ impl ControlPlane {
                 "/v1/snapshots/:id",
                 get(routes::get_snapshot).delete(routes::delete_snapshot),
             )
+            .route(
+                "/v1/snapshots/:id/manifest",
+                get(routes::get_snapshot_manifest),
+            )
             .layer(RequestBodyLimitLayer::new(1024 * 1024)) // 1 MB
             .layer(middleware::from_fn_with_state(
                 self.api_keys.clone(),
@@ -389,6 +434,7 @@ mod tests {
             exec: None,
             state_dir: None,
             snapshot_pool_dir: None,
+            platform: None,
         }
     }
 

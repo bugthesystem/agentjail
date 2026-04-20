@@ -130,30 +130,73 @@ impl WorkspaceStore for PgWorkspaceStore {
         Some((ws, dom))
     }
 
-    async fn list(&self, limit: usize, offset: usize) -> (Vec<Workspace>, u64) {
-        let limit_i = limit.clamp(1, 500) as i64;
+    async fn list(
+        &self,
+        limit: usize,
+        offset: usize,
+        q: Option<&str>,
+    ) -> (Vec<Workspace>, u64) {
+        let limit_i  = limit.clamp(1, 500) as i64;
         let offset_i = offset as i64;
+        let needle   = q.map(|s| s.trim()).filter(|s| !s.is_empty());
 
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM workspaces WHERE deleted_at IS NULL",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
-
-        let q = format!(
-            "SELECT {WORKSPACE_COLS}
-             FROM workspaces
-             WHERE deleted_at IS NULL
-             ORDER BY created_at DESC
-             LIMIT $1 OFFSET $2",
-        );
-        let rows = sqlx::query(&q)
-            .bind(limit_i)
-            .bind(offset_i)
-            .fetch_all(&self.pool)
-            .await
-            .unwrap_or_default();
+        // Build the query lazily — one set of SQL when `q` is None, a
+        // widened WHERE with a single bind when `q` is set. Keeps the
+        // fast path simple.
+        let (total, rows) = match needle {
+            None => {
+                let total: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM workspaces WHERE deleted_at IS NULL",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0);
+                let sql = format!(
+                    "SELECT {WORKSPACE_COLS}
+                     FROM workspaces
+                     WHERE deleted_at IS NULL
+                     ORDER BY created_at DESC
+                     LIMIT $1 OFFSET $2",
+                );
+                let rows = sqlx::query(&sql)
+                    .bind(limit_i)
+                    .bind(offset_i)
+                    .fetch_all(&self.pool)
+                    .await
+                    .unwrap_or_default();
+                (total, rows)
+            }
+            Some(n) => {
+                // `%needle%` — escape `%` and `_` so users can't
+                // accidentally match everything.
+                let pat = format!("%{}%", n.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+                let total: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM workspaces
+                     WHERE deleted_at IS NULL
+                       AND (id ILIKE $1 OR label ILIKE $1 OR git_repo ILIKE $1)",
+                )
+                .bind(&pat)
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0);
+                let sql = format!(
+                    "SELECT {WORKSPACE_COLS}
+                     FROM workspaces
+                     WHERE deleted_at IS NULL
+                       AND (id ILIKE $1 OR label ILIKE $1 OR git_repo ILIKE $1)
+                     ORDER BY created_at DESC
+                     LIMIT $2 OFFSET $3",
+                );
+                let rows = sqlx::query(&sql)
+                    .bind(&pat)
+                    .bind(limit_i)
+                    .bind(offset_i)
+                    .fetch_all(&self.pool)
+                    .await
+                    .unwrap_or_default();
+                (total, rows)
+            }
+        };
 
         let parsed: Vec<Workspace> = rows.iter().filter_map(|r| row_to_workspace(r).ok()).collect();
         (parsed, total as u64)

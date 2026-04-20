@@ -27,6 +27,7 @@ import { Jails } from "./jails.js";
 import { Public } from "./public.js";
 import { Runs } from "./runs.js";
 import { Sessions } from "./sessions.js";
+import { Settings } from "./settings.js";
 import { Snapshots } from "./snapshots.js";
 import { Workspaces } from "./workspaces.js";
 
@@ -41,6 +42,7 @@ export type {
   ForkMeta,
   ForkRequest,
   ForkResult,
+  JailConfigSnapshot,
   JailKind,
   JailRecord,
   JailsList,
@@ -48,11 +50,15 @@ export type {
   NetworkSpec,
   PublicStats,
   ResourceStats,
+  ProviderInfo,
   RunRequest,
   SeccompSpec,
   ServiceId,
   Session,
+  SettingsSnapshot,
   SnapshotList,
+  SnapshotManifest,
+  SnapshotManifestEntry,
   SnapshotRecord,
   StreamEvent,
   Workspace,
@@ -81,6 +87,8 @@ export class Agentjail {
   public readonly workspaces: Workspaces;
   /** Named snapshots of workspace output dirs. */
   public readonly snapshots: Snapshots;
+  /** Read-only snapshot of the running server's configuration. */
+  public readonly settings: Settings;
   /** Unauthenticated health + stats. */
   public readonly public: Public;
 
@@ -93,6 +101,7 @@ export class Agentjail {
     this.jails = new Jails(http);
     this.workspaces = new Workspaces(http);
     this.snapshots = new Snapshots(http);
+    this.settings = new Settings(http);
     this.public = new Public(http);
   }
 }

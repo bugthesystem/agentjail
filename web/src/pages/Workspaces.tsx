@@ -1,73 +1,172 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApi } from "../lib/auth";
+import { Link } from "react-router-dom";
 import { Panel, PanelHeader } from "../components/Panel";
 import { Button } from "../components/Button";
 import { Empty } from "../components/Empty";
 import { Field } from "../components/Input";
-import type { Workspace, WorkspaceCreateRequest } from "../lib/api";
+import { Pill } from "../components/Pill";
+import { SearchBox } from "../components/ledger/SearchBox";
+import { Pager } from "../components/ledger/Pager";
+import { useListNav } from "../components/ledger/useListNav";
+import { humanMs, timeAgo } from "../lib/format";
+import { cn } from "../lib/cn";
+import type { JailRecord, Workspace, WorkspaceCreateRequest } from "../lib/api";
+
+const PAGE_SIZE = 50;
 
 export function Workspaces() {
   const api = useApi();
-  const qc = useQueryClient();
+  const [q, setQ]             = useState("");
+  const [offset, setOffset]   = useState(0);
+  const [selected, setSel]    = useState<string | null>(null);
+  const [mode, setMode]       = useState<"create" | "detail">("create");
+
+  // Reset pagination when the filter changes.
+  useEffect(() => { setOffset(0); }, [q]);
 
   const { data } = useQuery({
-    queryKey: ["workspaces"],
-    queryFn:  () => api.workspaces.list({ limit: 100 }),
+    queryKey: ["workspaces", { q, offset }],
+    queryFn:  () => api.workspaces.list({
+      limit:  PAGE_SIZE,
+      offset,
+      q:      q.trim() || undefined,
+    }),
     refetchInterval: 4000,
+    placeholderData: (prev) => prev,
   });
 
-  const del = useMutation({
-    mutationFn: (id: string) => api.workspaces.delete(id),
-    onSuccess:  () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
+  const rows      = data?.rows ?? [];
+  const total     = data?.total ?? 0;
+  const page      = Math.floor(offset / PAGE_SIZE) + 1;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const { data: detail } = useQuery({
+    queryKey: ["workspace", selected],
+    queryFn:  () => api.workspaces.get(selected!),
+    enabled:  selected !== null,
+  });
+
+  useListNav<string>({
+    rows, selected, setSelected: setSel,
+    setOffset, page, pageCount, pageSize: PAGE_SIZE,
   });
 
   return (
-    <div className="grid grid-cols-[1fr_420px] gap-4">
+    <div className="grid gap-4 grid-cols-[minmax(0,1fr)_420px] items-stretch">
       <Panel padded={false}>
-        <div className="px-5 py-4 flex items-center justify-between">
-          <PanelHeader
-            eyebrow="Workspaces"
-            title={`${data?.total ?? 0} active`}
-            className="!mb-0"
-          />
-          <div className="text-[11px] mono text-ink-500">auto-refreshing</div>
+        <div className="px-5 py-3 flex items-center justify-between gap-3">
+          <PanelHeader eyebrow="Workspaces" title="Workspace ledger" className="!mb-0 min-w-0" />
+          <div className="flex items-center gap-2">
+            <Pill tone="phantom" dot>live</Pill>
+            <span className="text-[11px] mono text-ink-500">
+              {total.toLocaleString()} match{total !== 1 && "es"}
+            </span>
+          </div>
         </div>
         <div className="hairline" />
-        {(data?.rows.length ?? 0) === 0 ? (
+
+        <div className="px-5 py-2.5 flex items-center gap-3 flex-wrap">
+          <SearchBox value={q} onChange={setQ} placeholder="search id · label · repo" />
+          <div className="ml-auto flex items-center gap-2">
+            <ModeToggle mode={mode} setMode={setMode} />
+          </div>
+        </div>
+
+        <div className="hairline" />
+
+        {rows.length === 0 ? (
           <Empty
-            title="No workspaces yet"
-            hint="Create one on the right — clone a repo, run multi-step builds, snapshot the result."
+            title={q ? "No workspaces match" : "No workspaces yet"}
+            hint={q ? "Try a different query — search matches id, label, or git repo."
+                   : "Create one on the right — clone a repo, run multi-step builds, snapshot the result."}
           />
         ) : (
-          data!.rows.map((w) => (
-            <WorkspaceRow
-              key={w.id}
-              ws={w}
-              onDelete={() => del.mutate(w.id)}
-              deleting={del.isPending && del.variables === w.id}
-            />
-          ))
+          <div className="max-h-[calc(100vh-320px)] overflow-y-auto">
+            {rows.map((w) => (
+              <WorkspaceRow
+                key={w.id}
+                ws={w}
+                selected={w.id === selected}
+                onSelect={() => {
+                  setSel(w.id);
+                  setMode("detail");
+                }}
+              />
+            ))}
+          </div>
         )}
+
+        <Pager
+          page={page} pageCount={pageCount}
+          total={total} offset={offset} size={PAGE_SIZE}
+          onGo={(n) => setOffset(Math.max(0, (n - 1) * PAGE_SIZE))}
+        />
       </Panel>
 
-      <CreateWorkspaceForm />
+      <div className="h-full flex flex-col">
+        {mode === "detail" && selected ? (
+          <WorkspaceDetail
+            ws={detail ?? rows.find((r) => r.id === selected) ?? null}
+            onBackToCreate={() => { setSel(null); setMode("create"); }}
+          />
+        ) : (
+          <CreateWorkspaceForm />
+        )}
+      </div>
     </div>
   );
 }
 
+// ─── toolbar: detail vs create toggle ───────────────────────────────────
+
+function ModeToggle({
+  mode, setMode,
+}: {
+  mode: "create" | "detail";
+  setMode: (m: "create" | "detail") => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 rounded-full ring-1 ring-ink-800 p-0.5">
+      <ToggleBtn on={mode === "create"} onClick={() => setMode("create")}>create</ToggleBtn>
+      <ToggleBtn on={mode === "detail"} onClick={() => setMode("detail")}>detail</ToggleBtn>
+    </div>
+  );
+}
+
+function ToggleBtn({
+  on, onClick, children,
+}: { on: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "h-6 px-3 rounded-full text-[11px] mono transition-colors",
+        on ? "bg-ink-100 text-ink-950" : "text-ink-400 hover:text-ink-200",
+      )}
+    >{children}</button>
+  );
+}
+
+// ─── row ─────────────────────────────────────────────────────────────────
+
 function WorkspaceRow({
-  ws,
-  onDelete,
-  deleting,
+  ws, selected, onSelect,
 }: {
   ws: Workspace;
-  onDelete: () => void;
-  deleting: boolean;
+  selected: boolean;
+  onSelect: () => void;
 }) {
   const paused = ws.paused_at !== null;
   return (
-    <div className="px-5 py-4 grid grid-cols-[1fr_auto] gap-4 items-center hairline-after">
+    <button
+      onClick={onSelect}
+      className={cn(
+        "w-full text-left px-5 py-4 grid grid-cols-[1fr_auto] gap-4 items-center hairline-after transition-colors",
+        selected ? "bg-ink-800/40 ring-1 ring-inset ring-ink-700" : "hover:bg-ink-900/40",
+      )}
+    >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="mono text-[13px] text-ink-100 truncate">{ws.id}</span>
@@ -95,14 +194,225 @@ function WorkspaceRow({
           )}
         </div>
       </div>
-      <div className="flex items-center gap-2">
-        <Button variant="outline" size="sm" onClick={onDelete} disabled={deleting}>
-          {deleting ? "deleting…" : "delete"}
+    </button>
+  );
+}
+
+// ─── detail (metadata only) ─────────────────────────────────────────────
+
+function WorkspaceDetail({
+  ws,
+  onBackToCreate,
+}: {
+  ws: Workspace | null;
+  onBackToCreate: () => void;
+}) {
+  const api = useApi();
+  const qc  = useQueryClient();
+
+  const del = useMutation({
+    mutationFn: (id: string) => api.workspaces.delete(id),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+      onBackToCreate();
+    },
+  });
+
+  if (!ws) {
+    return (
+      <Panel>
+        <div className="py-10 text-center text-xs text-ink-500 mono">
+          select a workspace to inspect
+        </div>
+      </Panel>
+    );
+  }
+
+  const paused = ws.paused_at !== null;
+  return (
+    <Panel padded={false} className="flex-1 min-h-0 flex flex-col">
+      <div className="px-5 py-3 flex items-start justify-between gap-3">
+        <PanelHeader
+          eyebrow="Workspace"
+          title={ws.label ?? ws.id}
+          className="!mb-0 min-w-0"
+        />
+        <Button variant="outline" size="sm" onClick={() => del.mutate(ws.id)} disabled={del.isPending}>
+          {del.isPending ? "deleting…" : "delete"}
         </Button>
       </div>
+      <div className="hairline" />
+      <div className="p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
+        <Section label="Identity">
+          <Row label="ID"         value={ws.id} />
+          {ws.label && <Row label="Label" value={ws.label} />}
+          <Row label="Created"    value={new Date(ws.created_at).toLocaleString()} />
+          {ws.last_exec_at && (
+            <Row label="Last exec" value={new Date(ws.last_exec_at).toLocaleString()} />
+          )}
+          <Row
+            label="Status"
+            value={paused ? `paused @ ${new Date(ws.paused_at!).toLocaleString()}` : "active"}
+            tone={paused ? "flare" : "phantom"}
+          />
+          {ws.auto_snapshot && (
+            <Row label="Auto-snap" value={ws.auto_snapshot} />
+          )}
+        </Section>
+
+        <Section label="Config">
+          <Row label="Memory"  value={`${ws.config.memory_mb} MB`} />
+          <Row label="Timeout" value={`${ws.config.timeout_secs} s`} />
+          <Row label="CPU"     value={`${ws.config.cpu_percent}%`} />
+          <Row label="Max PIDs" value={String(ws.config.max_pids)} />
+          <Row label="Seccomp"  value={ws.config.seccomp} />
+          <Row
+            label="Network"
+            value={
+              ws.config.network_mode === "allowlist"
+                ? `allowlist · ${ws.config.network_domains.length}`
+                : ws.config.network_mode
+            }
+          />
+          <Row
+            label="Idle"
+            value={ws.config.idle_timeout_secs === 0 ? "never" : `${ws.config.idle_timeout_secs} s`}
+          />
+        </Section>
+
+        {ws.config.network_mode === "allowlist" && ws.config.network_domains.length > 0 && (
+          <Section label="Allowlist">
+            <div className="flex flex-wrap gap-1.5">
+              {ws.config.network_domains.map((d) => (
+                <span key={d} className="mono text-[11px] text-phantom bg-ink-800/60 rounded px-2 py-0.5">{d}</span>
+              ))}
+            </div>
+          </Section>
+        )}
+
+        {ws.git_repo && (
+          <Section label="Git seed">
+            <Row label="Repo" value={ws.git_repo} span />
+            {ws.git_ref && <Row label="Ref" value={ws.git_ref} />}
+          </Section>
+        )}
+
+        {ws.domains.length > 0 && (
+          <Section label="Gateway routes">
+            {ws.domains.map((d, i) => (
+              <Row key={i} label={d.domain} value={d.backend_url} span />
+            ))}
+          </Section>
+        )}
+
+        <Section label="Filesystem">
+          <Row label="Source" value={ws.source_dir} span />
+          <Row label="Output" value={ws.output_dir} span />
+        </Section>
+
+        <RecentExecs wsId={ws.id} />
+      </div>
+    </Panel>
+  );
+}
+
+function RecentExecs({ wsId }: { wsId: string }) {
+  const api = useApi();
+  // Jails against this workspace are labelled `workspace:<id>/<cmd>`;
+  // the ledger already supports substring search, so one filtered query
+  // gets us the recent execs without a new endpoint.
+  const { data } = useQuery({
+    queryKey: ["jails", { q: `workspace:${wsId}`, kind: "workspace", limit: 8 }],
+    queryFn:  () => api.jails.list({ q: `workspace:${wsId}`, kind: "workspace", limit: 8 }),
+    refetchInterval: 3000,
+  });
+
+  const rows = data?.rows ?? [];
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-ink-400">
+          Recent execs
+        </div>
+        <Link
+          to={`/jails?q=${encodeURIComponent(`workspace:${wsId}`)}&kind=workspace`}
+          className="text-[10px] mono text-ink-500 hover:text-ink-200"
+        >see all →</Link>
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-[11.5px] text-ink-500 mono">no execs yet</div>
+      ) : (
+        <div className="grid gap-px bg-ink-800 rounded overflow-hidden">
+          {rows.map((r) => <RecentExecRow key={r.id} rec={r} />)}
+        </div>
+      )}
     </div>
   );
 }
+
+function RecentExecRow({ rec }: { rec: JailRecord }) {
+  // Labels look like `workspace:<id>/<cmd>` — drop the prefix for the
+  // row so the cmd is the eye-catch.
+  const cmd = rec.label.split("/").slice(1).join("/") || rec.label;
+  const ok  = rec.status === "completed" && rec.exit_code === 0;
+  const err = rec.status === "error" || (rec.status === "completed" && rec.exit_code !== 0);
+  return (
+    <Link
+      to={`/jails?selected=${rec.id}`}
+      className="bg-ink-900/60 px-3 py-2 grid grid-cols-[1fr_auto_auto] gap-3 items-center text-[11.5px] hover:bg-ink-900 transition-colors"
+    >
+      <span className="mono text-ink-200 truncate">{cmd}</span>
+      <span className="mono text-ink-500">
+        {rec.duration_ms != null ? humanMs(rec.duration_ms) : "…"}
+      </span>
+      <span
+        className={cn(
+          "mono text-[10px] uppercase tracking-wider",
+          rec.status === "running" ? "text-phantom"
+          : ok ? "text-ink-400"
+          : err ? "text-[var(--color-siren)]"
+          : "text-ink-500",
+        )}
+      >
+        {rec.status === "running" ? "●" : (rec.exit_code != null ? `exit ${rec.exit_code}` : rec.status)}
+        <span className="text-ink-600 ml-2">· {timeAgo(rec.started_at)}</span>
+      </span>
+    </Link>
+  );
+}
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-ink-400 mb-2">
+        {label}
+      </div>
+      <div className="grid gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+function Row({
+  label, value, span, tone,
+}: {
+  label: string;
+  value: string;
+  span?: boolean;
+  tone?: "phantom" | "flare";
+}) {
+  const color = tone === "flare" ? "text-[var(--color-flare)]"
+              : tone === "phantom" ? "text-[var(--color-phantom)]"
+              : "text-ink-100";
+  return (
+    <div className={span ? "grid grid-cols-[90px_1fr] gap-3 items-baseline text-[12px]"
+                         : "grid grid-cols-[90px_1fr] gap-3 items-baseline text-[12px]"}>
+      <span className="text-ink-500">{label}</span>
+      <span className={cn("mono break-all", color)}>{value}</span>
+    </div>
+  );
+}
+
+// ─── create form (unchanged shape) ──────────────────────────────────────
 
 function CreateWorkspaceForm() {
   const api = useApi();
@@ -138,12 +448,12 @@ function CreateWorkspaceForm() {
   }
 
   return (
-    <Panel padded={false}>
+    <Panel padded={false} className="flex-1 min-h-0 flex flex-col">
       <div className="px-5 py-4">
         <PanelHeader eyebrow="Create" title="New workspace" className="!mb-0" />
       </div>
       <div className="hairline" />
-      <form onSubmit={submit} className="p-5 space-y-3">
+      <form onSubmit={submit} className="p-5 space-y-3 overflow-y-auto flex-1 min-h-0">
         <Field
           label="Git repo (optional)"
           placeholder="https://github.com/my-org/app"

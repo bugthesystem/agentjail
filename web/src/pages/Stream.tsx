@@ -8,6 +8,11 @@ import { AuditList } from "../components/AuditList";
 const FILTERS = ["all", "200", "4xx", "5xx", "blocked"] as const;
 type Filter = (typeof FILTERS)[number];
 
+/**
+ * Phantom-proxy audit feed.  Shows upstream API calls (OpenAI,
+ * Anthropic, GitHub, Stripe) made by sandboxes — *not* every HTTP
+ * request in the system.  Jail lifecycles live on the Jails page.
+ */
 export function Stream() {
   const api = useApi();
   const [filter, setFilter] = useState<Filter>("all");
@@ -40,12 +45,14 @@ export function Stream() {
     };
   }, [data]);
 
+  const isEmpty = (data?.rows.length ?? 0) === 0;
+
   return (
     <Panel padded={false}>
       <div className="px-5 py-4 flex items-center justify-between">
         <PanelHeader
-          eyebrow="Audit"
-          title="Live request stream"
+          eyebrow="Phantom proxy · audit"
+          title="Upstream requests"
           className="!mb-0"
         />
         <div className="flex items-center gap-2">
@@ -72,9 +79,42 @@ export function Stream() {
         ))}
       </div>
       <div className="hairline" />
-      <div className="max-h-[calc(100vh-260px)] overflow-y-auto">
-        <AuditList rows={filtered} />
-      </div>
+      {isEmpty ? (
+        <EmptyAudit />
+      ) : (
+        <div className="max-h-[calc(100vh-260px)] overflow-y-auto">
+          <AuditList rows={filtered} />
+        </div>
+      )}
     </Panel>
+  );
+}
+
+/**
+ * The audit table is phantom-proxy-only. "Silent" is expected until a
+ * sandbox actually hits an upstream via `/v1/<service>/...`. Explain
+ * that here so users don't think the page is broken.
+ */
+function EmptyAudit() {
+  return (
+    <div className="px-5 py-12 flex flex-col items-center text-center gap-3">
+      <div className="text-[13px] text-ink-200 display font-semibold">
+        No upstream traffic yet
+      </div>
+      <div className="max-w-md text-[12px] text-ink-400 leading-relaxed">
+        This page shows requests that sandboxes make to real upstream
+        services (<span className="mono text-ink-200">openai</span>,{" "}
+        <span className="mono text-ink-200">anthropic</span>,{" "}
+        <span className="mono text-ink-200">github</span>,{" "}
+        <span className="mono text-ink-200">stripe</span>) through the
+        phantom-token proxy. It doesn't show jail runs — those live on
+        the <span className="text-ink-200">Jails</span> page.
+      </div>
+      <div className="text-[11px] text-ink-500 mono pt-1">
+        to generate traffic: attach a credential, mint a session, hand{" "}
+        <span className="text-ink-300">session.env</span> to a jail, call
+        the upstream base URL it sees.
+      </div>
+    </div>
   );
 }

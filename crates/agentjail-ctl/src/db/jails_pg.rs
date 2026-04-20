@@ -5,7 +5,8 @@ use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 
 use crate::jails::{
-    JailKind, JailQuery, JailRecord, JailStatus, JailStore, OUTPUT_CAP, truncate,
+    JailConfigSnapshot, JailKind, JailQuery, JailRecord, JailStatus, JailStore, OUTPUT_CAP,
+    truncate,
 };
 
 /// Postgres-backed jail ledger.
@@ -41,6 +42,11 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> JailRecord {
         stderr:            row.get::<Option<String>, _>("stderr"),
         error:             row.get::<Option<String>, _>("error"),
         parent_id:         row.get::<Option<i64>, _>("parent_id"),
+        config:            row
+            .try_get::<Option<serde_json::Value>, _>("config_json")
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_value::<JailConfigSnapshot>(v).ok()),
     }
 }
 
@@ -129,6 +135,21 @@ impl JailStore for PgJailStore {
         .bind(message)
         .execute(&self.pool)
         .await;
+    }
+
+    async fn attach_config(&self, id: i64, config: JailConfigSnapshot) {
+        let json = match serde_json::to_value(&config) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, %id, "attach_config: serialize failed");
+                return;
+            }
+        };
+        let _ = sqlx::query("UPDATE jails SET config_json = $2 WHERE id = $1")
+            .bind(id)
+            .bind(json)
+            .execute(&self.pool)
+            .await;
     }
 
     async fn recent(&self, limit: usize, status: Option<JailStatus>)

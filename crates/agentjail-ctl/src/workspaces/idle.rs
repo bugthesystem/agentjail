@@ -35,7 +35,7 @@ pub struct IdleReaperConfig {
 /// near-simultaneous exec touches the row right after we snapshot,
 /// and the next tick unpauses via the restore path).
 pub async fn run_once(cfg: &IdleReaperConfig) -> usize {
-    let (rows, _) = cfg.workspaces.list(500, 0).await;
+    let (rows, _) = cfg.workspaces.list(500, 0, None).await;
     let now = OffsetDateTime::now_utc();
     let mut paused = 0usize;
 

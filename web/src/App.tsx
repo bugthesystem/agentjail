@@ -11,6 +11,7 @@ import { Sessions } from "./pages/Sessions";
 import { Credentials } from "./pages/Credentials";
 import { Stream } from "./pages/Stream";
 import { Playground } from "./pages/Playground";
+import { Settings } from "./pages/Settings";
 import { Workspaces } from "./pages/Workspaces";
 import { Snapshots } from "./pages/Snapshots";
 import { DocsShell } from "./components/docs/DocsShell";
@@ -58,6 +59,7 @@ function Gate() {
           <Route path="credentials" element={<Credentials />} />
           <Route path="stream"      element={<Stream />} />
           <Route path="playground"  element={<Playground />} />
+          <Route path="settings"    element={<Settings />} />
           <Route path="login"       element={<Navigate to="/" replace />} />
           <Route path="*"           element={<Navigate to="/" replace />} />
         </Route>

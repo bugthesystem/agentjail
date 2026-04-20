@@ -168,6 +168,23 @@ export type JailKind = "run" | "exec" | "fork" | "stream" | "workspace";
 /** Jail record lifecycle. */
 export type JailStatus = "running" | "completed" | "error";
 
+/**
+ * Snapshot of the jail config that the invocation ran with. Captured
+ * at start time so the Jails ledger can answer "what did this run
+ * with?" — safe-to-display fields only, no secrets.
+ */
+export interface JailConfigSnapshot {
+  network_mode:     "none" | "loopback" | "allowlist";
+  network_domains?: string[];
+  seccomp:          "standard" | "strict";
+  memory_mb:        number;
+  timeout_secs:     number;
+  cpu_percent:      number;
+  max_pids:         number;
+  git_repo?:        string | null;
+  git_ref?:         string | null;
+}
+
 /** A single row in `GET /v1/jails`. */
 export interface JailRecord {
   id: number;
@@ -189,6 +206,12 @@ export interface JailRecord {
   stdout: string | null;
   stderr: string | null;
   error:  string | null;
+
+  /**
+   * What the jail actually ran with. `undefined` for rows predating
+   * this feature; populated on every new run.
+   */
+  config?: JailConfigSnapshot;
 }
 
 export interface JailsList {
@@ -350,6 +373,25 @@ export interface SnapshotList {
   offset: number;
 }
 
+/** One file inside a pool-backed snapshot. */
+export interface SnapshotManifestEntry {
+  path:   string;
+  mode:   number;
+  sha256: string;
+  size:   number;
+}
+
+/**
+ * Listing returned by `GET /v1/snapshots/:id/manifest`. `kind` is
+ * `"incremental"` for pool-backed snapshots (entries populated) or
+ * `"classic"` for full-copy snapshots where the file list isn't
+ * persisted (entries empty).
+ */
+export interface SnapshotManifest {
+  kind:    "incremental" | "classic";
+  entries: SnapshotManifestEntry[];
+}
+
 // ---------------- public (no-auth) ----------------
 
 /** Live counters returned by `GET /v1/stats`. */
@@ -358,4 +400,45 @@ export interface PublicStats {
   total_execs: number;
   sessions: number;
   credentials: number;
+}
+
+// ---------------- settings ----------------
+
+/** One phantom-proxy upstream. */
+export interface ProviderInfo {
+  service_id:     string;
+  upstream_base:  string;
+  request_prefix: string;
+}
+
+/** Read-only snapshot returned by `GET /v1/config`. */
+export interface SettingsSnapshot {
+  proxy: {
+    base_url:  string;
+    bind_addr: string | null;
+    providers: ProviderInfo[];
+  };
+  control_plane: {
+    bind_addr: string | null;
+  };
+  gateway: {
+    bind_addr: string;
+  } | null;
+  exec: {
+    default_memory_mb:    number;
+    default_timeout_secs: number;
+    max_concurrent:       number;
+  } | null;
+  persistence: {
+    state_dir:         string;
+    snapshot_pool_dir: string | null;
+    idle_check_secs:   number;
+  };
+  snapshots: {
+    gc: {
+      max_age_secs: number | null;
+      max_count:    number | null;
+      tick_secs:    number;
+    } | null;
+  };
 }

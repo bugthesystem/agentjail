@@ -43,12 +43,15 @@ pub trait SnapshotStore: Send + Sync + 'static {
     /// Fetch by id.
     async fn get(&self, id: &str) -> Option<SnapshotRecord>;
     /// List, newest first. When `workspace_id` is `Some`, filter to that
-    /// workspace only.
+    /// workspace only. When `q` is `Some`, further filter to rows whose
+    /// `id`, `name`, or `workspace_id` contain `q` (case-insensitive
+    /// substring); `total` reflects the filtered count.
     async fn list(
         &self,
         workspace_id: Option<&str>,
         limit: usize,
         offset: usize,
+        q: Option<&str>,
     ) -> (Vec<SnapshotRecord>, u64);
     /// Remove a row and return it.
     async fn remove(&self, id: &str) -> Option<SnapshotRecord>;
@@ -105,15 +108,24 @@ impl SnapshotStore for InMemorySnapshotStore {
         workspace_id: Option<&str>,
         limit: usize,
         offset: usize,
+        q: Option<&str>,
     ) -> (Vec<SnapshotRecord>, u64) {
         let Ok(g) = self.inner.read() else {
             return (Vec::new(), 0);
         };
+        let needle = q.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
         let mut rows: Vec<SnapshotRecord> = g
             .values()
             .filter(|r| match workspace_id {
                 Some(w) => r.workspace_id.as_deref() == Some(w),
                 None => true,
+            })
+            .filter(|r| match &needle {
+                None => true,
+                Some(n) =>
+                    r.id.to_lowercase().contains(n)
+                    || r.name.as_deref().map(|s| s.to_lowercase().contains(n)).unwrap_or(false)
+                    || r.workspace_id.as_deref().map(|s| s.to_lowercase().contains(n)).unwrap_or(false),
             })
             .cloned()
             .collect();
@@ -177,7 +189,7 @@ pub mod gc {
         // Pull up to 10k rows — enough to observe the full set for most
         // deployments. Oversized installations should prefer an external
         // retention job.
-        let (rows, _total) = store.list(None, 10_000, 0).await;
+        let (rows, _total) = store.list(None, 10_000, 0, None).await;
 
         let mut to_delete: Vec<SnapshotRecord> = Vec::new();
 
@@ -273,7 +285,7 @@ mod tests {
         store.insert(sample("snap_b", Some("wrk_y"))).await.unwrap();
         store.insert(sample("snap_c", Some("wrk_x"))).await.unwrap();
 
-        let (rows, total) = store.list(Some("wrk_x"), 100, 0).await;
+        let (rows, total) = store.list(Some("wrk_x"), 100, 0, None).await;
         assert_eq!(total, 2);
         assert_eq!(rows.len(), 2);
         for r in &rows {

@@ -17,7 +17,7 @@ use crate::jails::JailKind;
 use crate::sampler;
 
 use super::AppState;
-use super::exec::{RunRequest, jail_config, language_runtime};
+use super::exec::{RunRequest, config_snapshot, jail_config, language_runtime};
 
 pub(crate) async fn create_stream_run(
     State(state): State<AppState>,
@@ -61,6 +61,10 @@ pub(crate) async fn create_stream_run(
 
     let started_guard = state.exec_metrics.clone().start_owned();
     let stream_rec    = state.jails.start(JailKind::Stream, req.language.clone(), None, None).await;
+    state.jails.attach_config(
+        stream_rec,
+        config_snapshot(&req.options, memory, timeout, req.git.as_ref()),
+    ).await;
     let jails_store   = state.jails.clone();
 
     // Persist mid-flight stats so the Jails detail view stays live even

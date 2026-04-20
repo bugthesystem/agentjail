@@ -128,6 +128,7 @@ impl Stack {
                 exec,
                 state_dir: None,
                 snapshot_pool_dir: None,
+                platform: None,
             },
             Arc::new(InMemorySessionStore::new()),
             Arc::new(InMemoryCredentialStore::new()),

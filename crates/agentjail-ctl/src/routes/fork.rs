@@ -20,8 +20,8 @@ use crate::sampler;
 
 use super::AppState;
 use super::exec::{
-    ExecOptions, ExecResponse, GitSpec, default_language, jail_config, language_runtime,
-    output_to_response,
+    ExecOptions, ExecResponse, GitSpec, config_snapshot, default_language, jail_config,
+    language_runtime, output_to_response,
 };
 use super::exec_git::git_clone;
 use super::exec_monitor::run_monitored;
@@ -149,6 +149,8 @@ pub(crate) async fn create_fork_run(
 
     let parent_jail   = agentjail::Jail::new(parent_config)?;
     let parent_rec    = state.jails.start(JailKind::Fork, format!("{} · parent", req.language), None, None).await;
+    let run_config    = config_snapshot(&req.options, memory, timeout, req.git.as_ref());
+    state.jails.attach_config(parent_rec, run_config.clone()).await;
     let parent_handle = parent_jail.spawn(cmd, &[&format!("/workspace/{filename}")])?;
 
     let parent_sampler = parent_handle.cgroup_path().map(|p| {
@@ -184,6 +186,7 @@ pub(crate) async fn create_fork_run(
             format!("{} · child {}", req.language, i)
         };
         let id = state.jails.start(JailKind::Fork, label, None, Some(parent_rec)).await;
+        state.jails.attach_config(id, run_config.clone()).await;
         child_recs.push(id);
     }
 

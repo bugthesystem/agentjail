@@ -59,6 +59,9 @@ pub(crate) struct WorkspaceListQuery {
     limit: Option<usize>,
     #[serde(default)]
     offset: Option<usize>,
+    /// Case-insensitive substring match on `id` / `label` / `git_repo`.
+    #[serde(default)]
+    q: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -295,7 +298,8 @@ pub(crate) async fn list_workspaces(
 ) -> Json<WorkspaceList> {
     let limit  = q.limit.unwrap_or(50).min(500);
     let offset = q.offset.unwrap_or(0);
-    let (rows, total) = state.workspaces.list(limit, offset).await;
+    let needle = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let (rows, total) = state.workspaces.list(limit, offset, needle).await;
     Json(WorkspaceList { rows, total, limit, offset })
 }
 
@@ -373,7 +377,7 @@ pub(crate) async fn reconcile_on_startup(
     store: &dyn crate::workspaces::WorkspaceStore,
     state_dir: &Path,
 ) {
-    let (rows, _) = store.list(500, 0).await;
+    let (rows, _) = store.list(500, 0, None).await;
     for ws in rows {
         let expected = state_dir.join("workspaces").join(&ws.id);
         if !expected.exists() {

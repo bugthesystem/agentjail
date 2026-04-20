@@ -62,10 +62,22 @@ class Workspaces:
         return self._http.request("POST", "/v1/workspaces", json=body)
 
     def list(
-        self, *, limit: int | None = None, offset: int | None = None
+        self,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+        q: str | None = None,
     ) -> WorkspaceList:
+        """Paginated list, newest first.
+
+        When ``q`` is set, filters to rows whose ``id``, ``label``, or
+        ``git_repo`` contain the needle (case-insensitive). ``total``
+        reflects the filtered count.
+        """
         return self._http.request(
-            "GET", "/v1/workspaces", params={"limit": limit, "offset": offset}
+            "GET",
+            "/v1/workspaces",
+            params={"limit": limit, "offset": offset, "q": q},
         )
 
     def get(self, workspace_id: str) -> Workspace:

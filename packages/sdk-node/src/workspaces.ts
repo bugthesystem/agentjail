@@ -55,14 +55,21 @@ export class Workspaces {
     });
   }
 
-  /** Paginated list, newest first. */
-  async list(params: { limit?: number; offset?: number } = {}): Promise<WorkspaceList> {
+  /**
+   * Paginated list, newest first. When `q` is set, filters to rows whose
+   * `id`, `label`, or `git_repo` contain the needle (case-insensitive);
+   * `total` reflects the filtered count.
+   */
+  async list(
+    params: { limit?: number; offset?: number; q?: string } = {},
+  ): Promise<WorkspaceList> {
     return this.http.request<WorkspaceList>({
       method: "GET",
       path: "/v1/workspaces",
       query: {
-        limit: params.limit,
+        limit:  params.limit,
         offset: params.offset,
+        q:      params.q,
       },
     });
   }

@@ -36,6 +36,9 @@ pub(crate) struct SnapshotListQuery {
     limit: Option<usize>,
     #[serde(default)]
     offset: Option<usize>,
+    /// Case-insensitive substring match on `id` / `name` / `workspace_id`.
+    #[serde(default)]
+    q: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,9 +117,10 @@ pub(crate) async fn list_snapshots(
 ) -> Json<SnapshotList> {
     let limit  = q.limit.unwrap_or(50).min(500);
     let offset = q.offset.unwrap_or(0);
+    let needle = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let (rows, total) = state
         .snapshots
-        .list(q.workspace_id.as_deref(), limit, offset)
+        .list(q.workspace_id.as_deref(), limit, offset, needle)
         .await;
     Json(SnapshotList { rows, total, limit, offset })
 }
@@ -132,6 +136,50 @@ pub(crate) async fn get_snapshot(
         .await
         .map(Json)
         .ok_or_else(|| CtlError::NotFound(format!("snapshot {id}")))
+}
+
+/// `GET /v1/snapshots/:id/manifest` — list the files inside a
+/// pool-backed snapshot. Returns an empty `entries` array when the
+/// snapshot is classic (full-copy) or the manifest is unreadable, so
+/// the UI can branch on `kind`.
+#[derive(Debug, Serialize)]
+pub(crate) struct SnapshotManifest {
+    kind: &'static str,
+    entries: Vec<ManifestEntryDto>,
+}
+
+#[derive(Debug, Serialize)]
+struct ManifestEntryDto {
+    path:   String,
+    mode:   u32,
+    sha256: String,
+    size:   u64,
+}
+
+pub(crate) async fn get_snapshot_manifest(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<SnapshotManifest>> {
+    let rec = state
+        .snapshots
+        .get(&id)
+        .await
+        .ok_or_else(|| CtlError::NotFound(format!("snapshot {id}")))?;
+
+    let kind = match agentjail::load_manifest(&rec.path) {
+        Ok(m) => {
+            let entries: Vec<ManifestEntryDto> = m
+                .entries
+                .into_iter()
+                .map(|e| ManifestEntryDto {
+                    path: e.path, mode: e.mode, sha256: e.sha256, size: e.size,
+                })
+                .collect();
+            return Ok(Json(SnapshotManifest { kind: "incremental", entries }));
+        }
+        Err(_) => "classic",
+    };
+    Ok(Json(SnapshotManifest { kind, entries: Vec::new() }))
 }
 
 /// `DELETE /v1/snapshots/:id`

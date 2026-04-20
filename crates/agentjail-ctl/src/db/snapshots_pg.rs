@@ -75,55 +75,59 @@ impl SnapshotStore for PgSnapshotStore {
         workspace_id: Option<&str>,
         limit: usize,
         offset: usize,
+        q: Option<&str>,
     ) -> (Vec<SnapshotRecord>, u64) {
-        let limit_i = limit.clamp(1, 500) as i64;
+        let limit_i  = limit.clamp(1, 500) as i64;
         let offset_i = offset as i64;
+        let needle   = q.map(str::trim).filter(|s| !s.is_empty());
 
-        // Two branches to avoid binding-count mismatch between filtered
-        // and unfiltered queries.
-        let (total, rows) = match workspace_id {
-            Some(w) => {
-                let t: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM snapshots WHERE workspace_id = $1",
-                )
-                .bind(w)
-                .fetch_one(&self.pool)
-                .await
-                .unwrap_or(0);
-                let rows = sqlx::query(
-                    "SELECT id, workspace_id, name, created_at, path, size_bytes
-                     FROM snapshots
-                     WHERE workspace_id = $1
-                     ORDER BY created_at DESC
-                     LIMIT $2 OFFSET $3",
-                )
-                .bind(w)
-                .bind(limit_i)
-                .bind(offset_i)
-                .fetch_all(&self.pool)
-                .await
-                .unwrap_or_default();
-                (t, rows)
-            }
-            None => {
-                let t: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM snapshots")
-                    .fetch_one(&self.pool)
-                    .await
-                    .unwrap_or(0);
-                let rows = sqlx::query(
-                    "SELECT id, workspace_id, name, created_at, path, size_bytes
-                     FROM snapshots
-                     ORDER BY created_at DESC
-                     LIMIT $1 OFFSET $2",
-                )
-                .bind(limit_i)
-                .bind(offset_i)
-                .fetch_all(&self.pool)
-                .await
-                .unwrap_or_default();
-                (t, rows)
-            }
-        };
+        // Build WHERE clause + bind list dynamically so each combination
+        // of filters produces exactly one SQL query.
+        let mut where_sql = String::from("1 = 1");
+        let mut args: Vec<String> = Vec::new();
+        let mut idx: i32 = 0;
+
+        if let Some(w) = workspace_id {
+            idx += 1;
+            where_sql.push_str(&format!(" AND workspace_id = ${idx}"));
+            args.push(w.to_string());
+        }
+        if let Some(n) = needle {
+            idx += 1;
+            let at = idx;
+            where_sql.push_str(&format!(
+                " AND (id ILIKE ${at} OR name ILIKE ${at} OR workspace_id ILIKE ${at})"
+            ));
+            args.push(format!(
+                "%{}%",
+                n.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"),
+            ));
+        }
+
+        let count_sql = format!("SELECT COUNT(*) FROM snapshots WHERE {where_sql}");
+        let rows_sql  = format!(
+            "SELECT id, workspace_id, name, created_at, path, size_bytes
+             FROM snapshots
+             WHERE {where_sql}
+             ORDER BY created_at DESC
+             LIMIT ${lim} OFFSET ${off}",
+            lim = idx + 1,
+            off = idx + 2,
+        );
+
+        let mut total_q = sqlx::query_scalar::<_, i64>(&count_sql);
+        for a in &args { total_q = total_q.bind(a); }
+        let total = total_q.fetch_one(&self.pool).await.unwrap_or(0);
+
+        let mut rows_q = sqlx::query(&rows_sql);
+        for a in &args { rows_q = rows_q.bind(a); }
+        let rows = rows_q
+            .bind(limit_i)
+            .bind(offset_i)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
         let parsed: Vec<SnapshotRecord> = rows.iter().map(row_to_record).collect();
         (parsed, total as u64)
     }

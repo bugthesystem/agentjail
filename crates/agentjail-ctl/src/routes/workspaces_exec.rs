@@ -9,7 +9,10 @@ use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 
 use super::AppState;
-use super::exec::{ExecOptions, ExecResponse, NetworkSpec, SeccompSpec, jail_config, output_to_response};
+use super::exec::{
+    ExecOptions, ExecResponse, NetworkSpec, SeccompSpec, config_snapshot, jail_config,
+    output_to_response,
+};
 use super::exec_monitor::{CgroupRegistration, run_monitored_with};
 use super::workspaces::WorkspaceExecRequest;
 use crate::error::{CtlError, Result};
@@ -95,6 +98,10 @@ pub(crate) async fn exec_in_workspace(
 
     let label = format!("workspace:{}/{}", ws.id, req.cmd);
     let rec_id = state.jails.start(JailKind::Workspace, label, None, None).await;
+    state.jails.attach_config(
+        rec_id,
+        config_snapshot(&options, memory_mb, timeout, None),
+    ).await;
     // Publish the cgroup path for the duration of this exec so a
     // concurrent snapshot can freeze-before-copy. The registration
     // auto-clears on drop.

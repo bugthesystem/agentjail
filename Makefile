@@ -76,8 +76,9 @@ dev:
 	  printf "$(C_AMBER)!$(C_RESET) no $(ENV_FILE) — run $(C_CYAN)make setup$(C_RESET) first\n"; exit 1; \
 	fi
 	@printf "$(C_BOLD)→ dev$(C_RESET)  $(C_DIM)control plane + phantom proxy (docker) · web (vite HMR)$(C_RESET)\n"
+	@printf "  $(C_DIM)recreating server container so sqlx migrations + new code land on every run$(C_RESET)\n"
 	@set -a; source $(ENV_FILE); set +a; \
-	  $(COMPOSE) up -d --build server 2>&1 | tail -10 ; \
+	  $(COMPOSE) up -d --build --force-recreate server 2>&1 | tail -10 ; \
 	  printf "\n  $(C_GREEN)✓$(C_RESET) control plane  $(C_CYAN)http://localhost:7070$(C_RESET)\n"; \
 	  printf "  $(C_GREEN)✓$(C_RESET) phantom proxy  $(C_CYAN)http://localhost:8443$(C_RESET)\n"; \
 	  printf "  $(C_GREEN)✓$(C_RESET) web (HMR)      $(C_CYAN)http://localhost:5173$(C_RESET)  $(C_BOLD)← open this$(C_RESET)\n"; \
@@ -125,6 +126,42 @@ doctor:
 	  printf "  $(C_GREEN)✓$(C_RESET) web (prod) alive on :3000\n"; \
 	else \
 	  printf "  $(C_AMBER)•$(C_RESET) web (prod) not responding on :3000\n"; \
+	fi
+	@printf "\n$(C_DIM)schema$(C_RESET)\n"
+	@MIG_DIR=crates/agentjail-ctl/migrations; REG_FILE=crates/agentjail-ctl/src/db/mod.rs; \
+	 DISK_TMP=$$(mktemp); REG_TMP=$$(mktemp); \
+	 ls $$MIG_DIR/*.sql 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/\.sql$$//' | sort -u > $$DISK_TMP; \
+	 grep -oE '\("[0-9]+_[a-z_]+"' $$REG_FILE 2>/dev/null | tr -d '("' | sort -u > $$REG_TMP; \
+	 DISK_COUNT=$$(wc -l < $$DISK_TMP | tr -d ' '); \
+	 REG_COUNT=$$(wc -l < $$REG_TMP | tr -d ' '); \
+	 UNREG=$$(grep -Fxv -f $$REG_TMP  $$DISK_TMP | tr '\n' ' ' | sed 's/ *$$//'); \
+	 ORPHAN=$$(grep -Fxv -f $$DISK_TMP $$REG_TMP | tr '\n' ' ' | sed 's/ *$$//'); \
+	 if [ -n "$$UNREG" ]; then \
+	   printf "  $(C_RED)✗$(C_RESET) files not registered in db/mod.rs: $(C_AMBER)%s$(C_RESET)\n" "$$UNREG"; \
+	 elif [ -n "$$ORPHAN" ]; then \
+	   printf "  $(C_RED)✗$(C_RESET) registered but no file on disk: $(C_AMBER)%s$(C_RESET)\n" "$$ORPHAN"; \
+	 else \
+	   printf "  $(C_GREEN)✓$(C_RESET) migrations registered  $(C_DIM)(%s files = %s registrations)$(C_RESET)\n" "$$DISK_COUNT" "$$REG_COUNT"; \
+	 fi; \
+	 rm -f $$DISK_TMP $$REG_TMP
+	@if docker inspect agentjail-server-1 >/dev/null 2>&1; then \
+	  CONT_START=$$(docker inspect --format '{{.State.StartedAt}}' agentjail-server-1 2>/dev/null); \
+	  CONT_EPOCH=$$(date -u -j -f "%Y-%m-%dT%H:%M:%S" "$${CONT_START%%.*}" +%s 2>/dev/null || date -u -d "$$CONT_START" +%s 2>/dev/null); \
+	  NEWEST_FILE=$$(ls -t crates/agentjail-ctl/migrations/*.sql 2>/dev/null | head -1); \
+	  FILE_EPOCH=$$(stat -f %m "$$NEWEST_FILE" 2>/dev/null || stat -c %Y "$$NEWEST_FILE" 2>/dev/null); \
+	  if [ -n "$$CONT_EPOCH" ] && [ -n "$$FILE_EPOCH" ]; then \
+	    if [ "$$FILE_EPOCH" -gt "$$CONT_EPOCH" ]; then \
+	      AGE=$$(( FILE_EPOCH - CONT_EPOCH )); \
+	      printf "  $(C_RED)✗$(C_RESET) server started BEFORE newest migration  $(C_AMBER)(%s newer by %ds)$(C_RESET)\n" "$$(basename $$NEWEST_FILE)" "$$AGE"; \
+	      printf "    $(C_DIM)run $(C_CYAN)make dev$(C_RESET)$(C_DIM) to recreate the server container$(C_RESET)\n"; \
+	    else \
+	      printf "  $(C_GREEN)✓$(C_RESET) server up-to-date      $(C_DIM)(container newer than $$(basename $$NEWEST_FILE))$(C_RESET)\n"; \
+	    fi; \
+	  else \
+	    printf "  $(C_AMBER)•$(C_RESET) couldn't compare container vs. file mtime\n"; \
+	  fi; \
+	else \
+	  printf "  $(C_AMBER)•$(C_RESET) server container not running — $(C_CYAN)make dev$(C_RESET)\n"; \
 	fi
 	@printf "\n$(C_DIM)config$(C_RESET)\n"
 	@if [ -f $(ENV_FILE) ]; then \

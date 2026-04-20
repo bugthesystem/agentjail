@@ -160,6 +160,42 @@ pub(crate) struct StatsResponse {
     io_write_bytes: u64,
 }
 
+/// Build the jail-ledger config snapshot from an exec-options block.
+/// Every route that calls `JailStore::start()` passes the result of
+/// this to `attach_config()` so the Jails page can show "what did this
+/// run with?". Memory + timeout are the already-clamped values the
+/// handler uses; defaults follow `jail_config()`'s clamps.
+pub(super) fn config_snapshot(
+    options: &ExecOptions,
+    memory_mb: u64,
+    timeout_secs: u64,
+    git: Option<&GitSpec>,
+) -> crate::JailConfigSnapshot {
+    let (network_mode, network_domains) = match options.network.as_ref() {
+        None | Some(NetworkSpec::None) => ("none".to_string(), vec![]),
+        Some(NetworkSpec::Loopback)    => ("loopback".to_string(), vec![]),
+        Some(NetworkSpec::Allowlist { domains }) => {
+            ("allowlist".to_string(), domains.clone())
+        }
+    };
+    let seccomp = match options.seccomp {
+        None | Some(SeccompSpec::Standard) => "standard".to_string(),
+        Some(SeccompSpec::Strict)          => "strict".to_string(),
+    };
+    let (git_repo, git_ref) = git.map(|g| g.primary()).unwrap_or((None, None));
+    crate::JailConfigSnapshot {
+        network_mode,
+        network_domains,
+        seccomp,
+        memory_mb,
+        timeout_secs,
+        cpu_percent: options.cpu_percent.unwrap_or(100).clamp(1, 800),
+        max_pids:    options.max_pids.unwrap_or(64).clamp(1, 1024),
+        git_repo,
+        git_ref,
+    }
+}
+
 pub(super) fn output_to_response(output: agentjail::Output) -> ExecResponse {
     ExecResponse {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -221,6 +257,7 @@ pub(crate) async fn exec_in_session(
     let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
 
     let rec_id = state.jails.start(JailKind::Exec, req.cmd.clone(), Some(id.clone()), None).await;
+    state.jails.attach_config(rec_id, config_snapshot(&req.options, memory, timeout, None)).await;
     let result = run_monitored(&state.jails, rec_id, &jail, &req.cmd, &args_refs).await;
     let result = match result {
         Ok(r)  => { state.jails.finish(rec_id, &r).await; r }
@@ -278,6 +315,10 @@ pub(crate) async fn create_run(
 
     let jail = agentjail::Jail::new(config)?;
     let rec_id = state.jails.start(JailKind::Run, req.language.clone(), None, None).await;
+    state.jails.attach_config(
+        rec_id,
+        config_snapshot(&req.options, memory, timeout, req.git.as_ref()),
+    ).await;
     let args: Vec<String> = vec![format!("/workspace/{filename}")];
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let result = run_monitored(&state.jails, rec_id, &jail, cmd, &args_ref).await;
