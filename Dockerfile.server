@@ -17,10 +17,17 @@ COPY crates/agentjail-server crates/agentjail-server
 RUN cargo build --release -p agentjail-server
 
 FROM debian:bookworm-slim
+# Jail runtimes: node/npm, python3, git, curl, and bun (for the App
+# Builder / Review Bot demos that shell out to `bun install`, `bun run`,
+# etc.). Bun's upstream installer drops a single binary — symlinking it
+# into /usr/local/bin keeps PATH clean.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libseccomp2 \
     nodejs npm python3 \
-    git curl \
+    git curl unzip \
+  && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local/bun bash \
+  && ln -s /usr/local/bun/bin/bun /usr/local/bin/bun \
+  && apt-get purge -y --auto-remove unzip \
   && rm -rf /var/lib/apt/lists/*
 # Run as root — sandbox execution needs namespaces + cgroups.
 # The jail engine provides isolation (namespaces, seccomp, cgroups).

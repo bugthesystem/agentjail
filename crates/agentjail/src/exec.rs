@@ -6,7 +6,7 @@
 use crate::config::{JailConfig, Network};
 use crate::error::{JailError, Result};
 use crate::namespace::{NamespaceConfig, enter_namespaces, setup_loopback};
-use crate::run::{proxy_env_vars, veth_addrs};
+use crate::veth::{proxy_env_vars, veth_addrs};
 use crate::seccomp::apply_filter;
 use crate::{gpu, landlock, mount, netlink};
 

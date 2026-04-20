@@ -12,8 +12,8 @@ export function Workspaces() {
           HTTP requests. Every <Inline>POST /v1/workspaces/:id/exec</Inline>
           spawns a fresh jail against the same <Inline>source</Inline> and{" "}
           <Inline>output</Inline> directories, so filesystem mutations persist
-          between commands — the control-plane counterpart of Freestyle's
-          &ldquo;persistent VM&rdquo;.
+          between commands — the &ldquo;persistent VM&rdquo; pattern expressed
+          as a control-plane primitive.
         </>
       }
     >

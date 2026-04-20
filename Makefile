@@ -32,7 +32,7 @@ ifneq (,$(findstring xterm,$(TERM)))
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help setup dev doctor test build logs down e2e clean \
+.PHONY: help setup dev doctor test build logs down e2e clean demos \
         test-rust test-node test-python build-rust build-web build-sdks
 
 help:
@@ -44,6 +44,7 @@ help:
 	@printf "  $(C_GREEN)make logs$(C_RESET)     tail docker logs\n"
 	@printf "  $(C_GREEN)make down$(C_RESET)     stop containers (volumes kept)\n"
 	@printf "  $(C_GREEN)make e2e$(C_RESET)      run the workspaces + snapshots smoke script\n"
+	@printf "  $(C_GREEN)make demos$(C_RESET)    list the runnable pattern demos\n"
 	@printf "  $(C_GREEN)make clean$(C_RESET)    wipe build artifacts\n"
 	@printf "  $(C_GREEN)make doctor$(C_RESET)   check prerequisites and running services\n\n"
 
@@ -197,6 +198,15 @@ e2e:
 	@printf "$(C_BOLD)→ e2e$(C_RESET)  $(C_DIM)workspaces + snapshots + fork smoke (via @agentjail/sdk)$(C_RESET)\n"
 	@set -a; source $(ENV_FILE); set +a; \
 	  CTL_URL=http://localhost:7070 bun scripts/e2e-workspaces.ts
+
+demos:
+	@printf "$(C_BOLD)agentjail demos$(C_RESET) $(C_DIM)— runnable SDK patterns$(C_RESET)\n\n"
+	@printf "  $(C_CYAN)bun scripts/demos/1-ai-assistant.ts$(C_RESET)      persistent workspace + idle pause\n"
+	@printf "  $(C_CYAN)bun scripts/demos/2-review-bot.ts$(C_RESET)        git clone + multi-exec + decision\n"
+	@printf "  $(C_CYAN)bun scripts/demos/3-background-agent.ts$(C_RESET)  N-way fork + parallel tasks\n"
+	@printf "  $(C_CYAN)bun scripts/demos/4-app-builder.ts$(C_RESET)       dev server + gateway domain\n\n"
+	@printf "  $(C_DIM)prereqs: $(C_CYAN)make dev$(C_RESET)$(C_DIM) running; $(C_CYAN)bun$(C_RESET)$(C_DIM) on PATH; AGENTJAIL_API_KEY in $(ENV_FILE)$(C_RESET)\n\n"
+	@printf "  $(C_DIM)env overrides: DEMO_REPO=... DEMO_REF=... CTL_URL=http://localhost:7070$(C_RESET)\n\n"
 
 clean:
 	@printf "$(C_BOLD)→ clean$(C_RESET)  $(C_DIM)wiping build artifacts$(C_RESET)\n"

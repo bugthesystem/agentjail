@@ -3,7 +3,7 @@
 -- A *workspace* is a long-lived mount tree (source + output) that survives
 -- across HTTP requests. Each `POST /v1/workspaces/:id/exec` spawns a fresh
 -- jail against the same dirs, so mutations persist between calls — the
--- control-plane counterpart of Freestyle's "persistent VM".
+-- "persistent VM" pattern expressed as a control-plane primitive.
 --
 -- A *snapshot* is a COW/copy capture of a workspace's output directory at
 -- a point in time. `POST /v1/workspaces/from-snapshot` rebuilds a new

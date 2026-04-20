@@ -23,6 +23,8 @@ use crate::workspaces::{ActiveCgroups, WorkspaceLocks, WorkspaceStore};
 mod audit;
 mod credentials;
 mod exec;
+mod exec_git;
+mod exec_monitor;
 mod fork;
 mod health;
 mod jails;
@@ -30,6 +32,7 @@ mod sessions;
 mod snapshots;
 mod stream;
 mod workspaces;
+mod workspaces_exec;
 
 pub(crate) use audit::list_audit;
 pub(crate) use credentials::{delete_credential, list_credentials, put_credential};
@@ -43,9 +46,10 @@ pub(crate) use snapshots::{
 };
 pub(crate) use stream::create_stream_run;
 pub(crate) use workspaces::{
-    create_workspace, delete_workspace, exec_in_workspace, fork_workspace, get_workspace,
-    list_workspaces, reconcile_on_startup as reconcile_workspaces_on_startup,
+    create_workspace, delete_workspace, fork_workspace, get_workspace, list_workspaces,
+    reconcile_on_startup as reconcile_workspaces_on_startup,
 };
+pub(crate) use workspaces_exec::exec_in_workspace;
 
 /// Shared service state passed to every handler.
 #[derive(Clone)]

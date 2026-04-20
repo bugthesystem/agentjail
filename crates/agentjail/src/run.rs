@@ -7,14 +7,14 @@ use crate::events::{EventReceiver, EventSender, JailEvent};
 use crate::fork::{self, ForkInfo};
 use crate::namespace::write_uid_gid_map;
 use crate::pipe::{OutputStream, Pipe};
-use crate::proxy::ProxyConfig;
-use crate::{events, exec, gpu, netlink, proxy};
+use crate::run_internal::{extract_exit_code, kill_tree, wait_for_pid};
+use crate::veth::{NEXT_VETH_ID, spawn_allowlist_proxy, sync_socketpair, veth_addrs};
+use crate::{events, exec, gpu, netlink};
 
-use rustix::process::{Pid, WaitOptions, WaitStatus, waitpid};
-use std::net::{IpAddr, Ipv4Addr};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use rustix::process::{Pid, WaitOptions, waitpid};
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// Process ID for a jailed process. Prevents accidentally mixing up PIDs
@@ -30,12 +30,12 @@ impl JailPid {
     }
 
     /// Convert to `i32` for syscalls (`kill`, `waitpid`, etc.).
-    fn as_i32(self) -> i32 {
+    pub(crate) fn as_i32(self) -> i32 {
         self.0 as i32
     }
 
     /// Convert to rustix `Pid` for `waitpid`.
-    fn to_rustix(self) -> Option<Pid> {
+    pub(crate) fn to_rustix(self) -> Option<Pid> {
         Pid::from_raw(self.as_i32())
     }
 }
@@ -650,142 +650,4 @@ impl Drop for ChildGuard {
         kill_tree(self.0);
         unsafe { libc::waitpid(self.0.as_i32(), std::ptr::null_mut(), 0) };
     }
-}
-
-/// Kill a process and its entire process group.
-fn kill_tree(pid: JailPid) {
-    unsafe {
-        libc::kill(-pid.as_i32(), libc::SIGKILL);
-        libc::kill(pid.as_i32(), libc::SIGKILL);
-    }
-}
-
-async fn wait_for_pid(pid: JailPid) -> i32 {
-    loop {
-        match waitpid(pid.to_rustix(), WaitOptions::NOHANG) {
-            Ok(Some(status)) => return extract_exit_code(status),
-            Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
-            Err(_) => return -1,
-        }
-    }
-}
-
-fn extract_exit_code(status: WaitStatus) -> i32 {
-    if status.exited() {
-        status.exit_status().map(|c| c as i32).unwrap_or(-1)
-    } else if status.signaled() {
-        status
-            .terminating_signal()
-            .map(|s| 128 + s as i32)
-            .unwrap_or(-1)
-    } else {
-        -1
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Stale veth cleanup
-// ---------------------------------------------------------------------------
-
-/// Remove leftover `aj-h*` veth interfaces from previous runs.
-///
-/// Normally veths are cleaned up automatically: `PR_SET_PDEATHSIG` ensures
-/// the jailed child dies when the parent is killed, destroying the network
-/// namespace and both veth ends.  This function handles the edge case where
-/// that mechanism failed (e.g. parent killed between fork and prctl, or
-/// kernel bug).
-///
-/// Safe to call at any time — only touches interfaces whose name starts
-/// with `aj-h`.
-pub fn cleanup_stale_veths() {
-    let net_dir = std::path::Path::new("/sys/class/net");
-    let entries = match std::fs::read_dir(net_dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("aj-h") {
-            let _ = netlink::delete_link(&name);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Allowlist proxy helpers
-// ---------------------------------------------------------------------------
-
-const PROXY_PORT: u16 = 8080;
-
-/// Monotonic counter for unique veth pair naming and IP addressing.
-static NEXT_VETH_ID: AtomicU32 = AtomicU32::new(1);
-
-/// Derive host/jail IP addresses from a veth ID.
-pub(crate) fn veth_addrs(id: u32) -> (Ipv4Addr, Ipv4Addr) {
-    let b2 = ((id >> 8) & 0xFF) as u8;
-    let b3 = (id & 0xFF) as u8;
-    let b3 = if b2 == 0 && b3 == 0 { 1 } else { b3 };
-    (Ipv4Addr::new(10, b2, b3, 1), Ipv4Addr::new(10, b2, b3, 2))
-}
-
-/// Create a Unix socketpair for parent-child synchronization.
-fn sync_socketpair() -> Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0i32; 2];
-    // SAFETY: socketpair with valid args, fds array is correctly sized.
-    let ret = unsafe {
-        libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr())
-    };
-    if ret < 0 {
-        return Err(JailError::Network(std::io::Error::last_os_error()));
-    }
-    // SAFETY: fds are valid, newly created by socketpair.
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
-}
-
-/// Spawn the allowlist proxy in a background thread (parent process).
-fn spawn_allowlist_proxy(
-    domains: Vec<String>,
-    bind_ip: Ipv4Addr,
-) -> tokio::sync::watch::Sender<bool> {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<(), String>>(1);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("proxy runtime");
-
-        let config = ProxyConfig {
-            allowlist: domains.iter().map(|d| proxy::DomainPattern::parse(d)).collect(),
-            port: PROXY_PORT,
-            bind_ip: IpAddr::V4(bind_ip),
-        };
-
-        rt.block_on(async {
-            if let Err(e) = proxy::run_proxy(config, tx, shutdown_rx).await {
-                eprintln!("proxy error: {e}");
-            }
-        });
-    });
-
-    match rx.recv() {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => eprintln!("proxy bind failed: {e}"),
-        Err(_) => eprintln!("proxy thread died before signaling readiness"),
-    }
-
-    shutdown_tx
-}
-
-/// Proxy environment variables for the jailed process.
-pub(crate) fn proxy_env_vars(host_ip: Ipv4Addr) -> Vec<(String, String)> {
-    let url = format!("http://{host_ip}:{PROXY_PORT}");
-    vec![
-        ("HTTP_PROXY".into(), url.clone()),
-        ("HTTPS_PROXY".into(), url.clone()),
-        ("http_proxy".into(), url.clone()),
-        ("https_proxy".into(), url),
-    ]
 }
