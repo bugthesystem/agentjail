@@ -13,36 +13,47 @@ use std::sync::Arc;
 
 use crate::jails::JailStore;
 use crate::sampler;
-use crate::workspaces::ActiveCgroups;
+use crate::workspaces::{ActiveCgroups, ActiveJailIps};
 
-/// RAII hook that records the cgroup path of an in-flight exec in
-/// [`crate::workspaces::ActiveCgroups`] for the duration of the run.
+/// RAII hook that records two pieces of per-workspace live-exec state:
+/// the cgroup path (for mid-flight freeze-before-snapshot) and the
+/// jail-side IP (for the gateway's `VmPort` resolver).
 ///
-/// Constructed by the caller with a tracker + workspace id; filled in
-/// by [`run_monitored_with`] once the cgroup path is known; cleaned up
-/// on drop so the tracker never holds stale entries.
-pub(crate) struct CgroupRegistration {
-    tracker: Arc<ActiveCgroups>,
+/// Constructed by the caller with the two trackers + workspace id;
+/// fields filled in by [`run_monitored_with`] once the handle is up;
+/// both cleaned up on drop so the trackers never hold stale entries.
+pub(crate) struct ExecRegistration {
+    cgroups: Arc<ActiveCgroups>,
+    ips: Arc<ActiveJailIps>,
     workspace_id: String,
-    registered: bool,
+    set_cgroup: bool,
+    set_ip: bool,
 }
 
-impl CgroupRegistration {
-    pub(crate) fn new(tracker: Arc<ActiveCgroups>, workspace_id: String) -> Self {
-        Self { tracker, workspace_id, registered: false }
+impl ExecRegistration {
+    pub(crate) fn new(
+        cgroups: Arc<ActiveCgroups>,
+        ips: Arc<ActiveJailIps>,
+        workspace_id: String,
+    ) -> Self {
+        Self { cgroups, ips, workspace_id, set_cgroup: false, set_ip: false }
     }
 
-    fn set(&mut self, path: std::path::PathBuf) {
-        self.tracker.insert(&self.workspace_id, path);
-        self.registered = true;
+    fn set_cgroup(&mut self, path: std::path::PathBuf) {
+        self.cgroups.insert(&self.workspace_id, path);
+        self.set_cgroup = true;
+    }
+
+    fn set_ip(&mut self, ip: std::net::Ipv4Addr) {
+        self.ips.insert(&self.workspace_id, ip);
+        self.set_ip = true;
     }
 }
 
-impl Drop for CgroupRegistration {
+impl Drop for ExecRegistration {
     fn drop(&mut self) {
-        if self.registered {
-            self.tracker.remove(&self.workspace_id);
-        }
+        if self.set_cgroup { self.cgroups.remove(&self.workspace_id); }
+        if self.set_ip     { self.ips.remove(&self.workspace_id); }
     }
 }
 
@@ -64,24 +75,32 @@ pub(super) async fn run_monitored(
     run_monitored_with(jails, rec_id, jail, cmd, args, None).await
 }
 
-/// Variant of [`run_monitored`] that publishes the cgroup path to the
-/// supplied [`CgroupRegistration`]. Used by workspace execs so a
-/// snapshot route can freeze the running jail before copying its
-/// output dir.
+/// Variant of [`run_monitored`] that publishes live-exec state
+/// (cgroup path + jail IP) to the supplied [`ExecRegistration`]. Used
+/// by workspace execs so the snapshot route can freeze the running
+/// jail and the gateway can route `VmPort` domains to it.
 pub(super) async fn run_monitored_with(
     jails: &Arc<dyn JailStore>,
     rec_id: i64,
     jail: &agentjail::Jail,
     cmd: &str,
     args: &[&str],
-    mut registration: Option<CgroupRegistration>,
+    mut registration: Option<ExecRegistration>,
 ) -> agentjail::Result<agentjail::Output> {
     use std::sync::Mutex;
     let mut handle = jail.spawn(cmd, args)?;
 
-    // Publish the cgroup path so snapshot routes can freeze it.
-    if let (Some(reg), Some(p)) = (registration.as_mut(), handle.cgroup_path()) {
-        reg.set(p);
+    // Publish live-exec state: cgroup path for freeze-before-snapshot,
+    // jail IP for the gateway's VmPort resolver. Both are optional —
+    // `None` cgroup means no cgroup was set up (unusual), `None` ip
+    // means the jail didn't use Allowlist network (normal).
+    if let Some(reg) = registration.as_mut() {
+        if let Some(p) = handle.cgroup_path() {
+            reg.set_cgroup(p);
+        }
+        if let Some(ip) = handle.jail_ip() {
+            reg.set_ip(ip);
+        }
     }
 
     // Stats sampler (cgroup)

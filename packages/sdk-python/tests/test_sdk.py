@@ -435,3 +435,119 @@ def test_public_stats_returns_counters() -> None:
     s = aj.public.stats()
     assert s["active_execs"] == 2
     assert s["credentials"] == 4
+
+
+# ---- settings ---------------------------------------------------------
+
+
+def test_settings_get_returns_full_snapshot() -> None:
+    seen: dict[str, Any] = {}
+    payload = {
+        "proxy": {
+            "base_url": "http://10.0.0.1:8443",
+            "bind_addr": "127.0.0.1:8443",
+            "providers": [
+                {
+                    "service_id": "openai",
+                    "upstream_base": "https://api.openai.com",
+                    "request_prefix": "/v1/openai/",
+                }
+            ],
+        },
+        "control_plane": {"bind_addr": "127.0.0.1:7000"},
+        "gateway": None,
+        "exec": {"default_memory_mb": 512, "default_timeout_secs": 300, "max_concurrent": 16},
+        "persistence": {"state_dir": "/var/lib/agentjail", "snapshot_pool_dir": None, "idle_check_secs": 30},
+        "snapshots": {"gc": None},
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        seen["method"] = req.method
+        return httpx.Response(200, json=payload)
+
+    aj = make(h)
+    s = aj.settings.get()
+    assert seen["method"] == "GET"
+    assert seen["url"] == "http://api/v1/config"
+    assert s["proxy"]["providers"][0]["service_id"] == "openai"
+    assert s["exec"]["default_memory_mb"] == 512  # type: ignore[index]
+    assert s["gateway"] is None
+
+
+# ---- snapshots.manifest -----------------------------------------------
+
+
+def test_snapshots_manifest_returns_entries() -> None:
+    seen: dict[str, Any] = {}
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        return httpx.Response(
+            200,
+            json={
+                "kind": "incremental",
+                "entries": [
+                    {"path": "a.txt", "mode": 0o644, "sha256": "aa", "size": 10},
+                    {"path": "b/c.txt", "mode": 0o755, "sha256": "bb", "size": 20},
+                ],
+            },
+        )
+
+    aj = make(h)
+    m = aj.snapshots.manifest("snap_abc")
+    assert seen["url"] == "http://api/v1/snapshots/snap_abc/manifest"
+    assert m["kind"] == "incremental"
+    assert len(m["entries"]) == 2
+    assert m["entries"][0]["path"] == "a.txt"
+
+
+def test_snapshots_manifest_classic_is_empty() -> None:
+    def h(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"kind": "classic", "entries": []})
+
+    aj = make(h)
+    m = aj.snapshots.manifest("snap_classic")
+    assert m["kind"] == "classic"
+    assert m["entries"] == []
+
+
+# ---- list q params ----------------------------------------------------
+
+
+def test_workspaces_list_sends_q() -> None:
+    seen: dict[str, Any] = {}
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json={"rows": [], "total": 0, "limit": 50, "offset": 0})
+
+    aj = make(h)
+    aj.workspaces.list(limit=50, q="review-bot")
+    assert "q=review-bot" in seen["url"]
+    assert "limit=50" in seen["url"]
+
+
+def test_workspaces_list_omits_q_when_unset() -> None:
+    seen: dict[str, Any] = {}
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json={"rows": [], "total": 0, "limit": 50, "offset": 0})
+
+    aj = make(h)
+    aj.workspaces.list(limit=50)
+    assert "q=" not in seen["url"]
+
+
+def test_snapshots_list_sends_q_with_workspace_id() -> None:
+    seen: dict[str, Any] = {}
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json={"rows": [], "total": 0, "limit": 50, "offset": 0})
+
+    aj = make(h)
+    aj.snapshots.list(workspace_id="wrk_a", q="baseline")
+    assert "q=baseline" in seen["url"]
+    assert "workspace_id=wrk_a" in seen["url"]

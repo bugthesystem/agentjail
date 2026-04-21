@@ -69,8 +69,20 @@ if (lint.exit_code !== 0) {
         </p>
       </Section>
 
-      <Section id="lifecycle" title="Listing + deleting">
-        <Code lang="ts">{`const page = await aj.snapshots.list({ workspaceId: ws.id, limit: 50 });
+      <Section id="lifecycle" title="Listing, searching, deleting">
+        <p>
+          <Inline>GET /v1/snapshots</Inline> is paginated and accepts{" "}
+          <Inline>workspace_id</Inline> (scope to a single workspace) and{" "}
+          <Inline>q</Inline> (case-insensitive substring match on{" "}
+          <Inline>id</Inline>, <Inline>name</Inline>, or{" "}
+          <Inline>workspace_id</Inline>). Both filters combine —{" "}
+          <Inline>total</Inline> reflects the filtered count.
+        </p>
+        <Code lang="ts">{`const page = await aj.snapshots.list({
+  workspaceId: ws.id,
+  q: "baseline",
+  limit: 50,
+});
 for (const s of page.rows) {
   console.log(s.id, s.name, s.size_bytes);
 }
@@ -84,6 +96,26 @@ await aj.snapshots.delete(snap.id);`}</Code>
           <Inline>AGENTJAIL_SNAPSHOT_MAX_COUNT</Inline> /{" "}
           <Inline>AGENTJAIL_SNAPSHOT_MAX_AGE_SECS</Inline> set.
         </p>
+      </Section>
+
+      <Section id="manifest" title="Inspect the file list">
+        <p>
+          <Inline>GET /v1/snapshots/:id/manifest</Inline> returns the files
+          inside a <em>pool-backed</em> (incremental) snapshot: the path,
+          size, mode, and content hash of every captured file. Uses the
+          manifest that <Inline>Snapshot::create_incremental</Inline>{" "}
+          already writes to disk — no extra I/O at request time.
+        </p>
+        <Code lang="ts">{`const m = await aj.snapshots.manifest(snap.id);
+if (m.kind === "incremental") {
+  for (const e of m.entries) {
+    console.log(e.path, e.size, e.sha256.slice(0, 12));
+  }
+} else {
+  // kind === "classic" — full-copy snapshot; the file list is
+  // not persisted, so m.entries is empty. Set
+  // AGENTJAIL_SNAPSHOT_POOL_DIR on the server to enable manifests.
+}`}</Code>
       </Section>
     </DocPage>
   );

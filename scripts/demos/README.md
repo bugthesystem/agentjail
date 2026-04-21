@@ -38,13 +38,17 @@ placeholder that just echoes the prompt. Real deployments wire phantom
 tokens through a session and run a Python/Node script that calls Claude
 (or similar) inside the jail — the shape of the loop doesn't change.
 
-## Gap note for demo #4
+## Gateway forwarding for demo #4
 
-The App Builder pattern would ideally map a hostname directly to a
-**jail-internal** port (`domain + vmPort`). Our gateway forwards to a
-caller-supplied `backend_url` instead — there's no host→jail
-port-forward subsystem today (a separate item: veth-NAT + per-jail IP
-discovery). Demo #4 registers the domain and starts the dev server, but
-you supply the `backend_url` yourself (e.g. a `socat` / `ngrok` bridge,
-or a Docker-networked sidecar). See the comment at the top of
-[`4-app-builder.ts`](4-app-builder.ts) for the details.
+`domains: [{ domain, vm_port }]` maps a hostname directly to a port
+bound inside the workspace's jail. The gateway resolves the port to
+`http://<live_jail_ip>:<vm_port>/` at each request time — no
+`backend_url`, no sidecar, no socat / ngrok. Requires the workspace to
+run with `network: { mode: "allowlist", domains: [...] }` so the veth
+pair that the gateway routes over gets created.
+
+When no exec is in flight (dev server not started, or previous exec
+exited), the gateway returns `503 Service Unavailable` with a message
+telling the caller to spin up an exec that binds the port. Start the
+dev server backgrounded inside a long-running exec, and subsequent
+gateway requests will land.

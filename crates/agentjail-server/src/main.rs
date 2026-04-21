@@ -139,25 +139,11 @@ async fn main() -> Result<()> {
             ),
         };
 
-    // Providers exposed via `GET /v1/config` for the Settings page.
-    // Mirrors the builder calls above — if you register a new provider,
-    // add it here too.
-    let registered_providers = || -> Vec<agentjail_ctl::ProviderInfo> {
-        use agentjail_phantom::Provider;
-        let pool: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(OpenAiProvider::new()),
-            Arc::new(AnthropicProvider::new()),
-            Arc::new(GitHubProvider::new()),
-            Arc::new(StripeProvider::new()),
-        ];
-        pool.into_iter()
-            .map(|p| agentjail_ctl::ProviderInfo {
-                service_id:     p.id().to_string(),
-                upstream_base:  p.upstream_base().to_string(),
-                request_prefix: format!("/v1/{}/", p.id()),
-            })
-            .collect()
-    };
+    // Jail-IP registry is shared between the ctl (writes on exec)
+    // and the gateway (reads on request) so the vm_port domain form
+    // can resolve to `http://<live_ip>:<port>/` without a new
+    // endpoint. One Arc, two readers.
+    let gateway_jail_ips = Arc::new(agentjail_ctl::ActiveJailIps::new());
 
     // Build the control plane with the shared store Arcs.
     let cfg = ControlPlaneConfig {
@@ -176,6 +162,7 @@ async fn main() -> Result<()> {
             snapshot_gc: Some(config.snapshot_gc.clone()),
             idle_check_interval_secs: config.idle_check_interval_secs,
         }),
+        active_jail_ips: Some(gateway_jail_ips.clone()),
     };
     let ctl = ControlPlane::with_all_stores(
         cfg,
@@ -205,7 +192,7 @@ async fn main() -> Result<()> {
     // Hostname-routed reverse proxy (opt-in via AGENTJAIL_GATEWAY_ADDR).
     let gateway_handle = if let Some(addr) = config.gateway_addr {
         let gw_rx = shutdown_rx.clone();
-        let state = GatewayState::new(workspace_store.clone())
+        let state = GatewayState::new(workspace_store.clone(), gateway_jail_ips.clone())
             .context("build gateway HTTP client")?;
         Some(tokio::spawn(async move {
             if let Err(e) = gateway::serve(addr, state, gw_rx).await {
@@ -247,6 +234,27 @@ async fn main() -> Result<()> {
 
 async fn wait_for(mut rx: watch::Receiver<bool>) {
     let _ = rx.changed().await;
+}
+
+/// Providers exposed via `GET /v1/config` for the Settings page.
+/// Mirrors the `PhantomProxy::builder().provider(...)` calls in `main`
+/// — if you register a new provider there, add it here too so the UI
+/// lists it.
+fn registered_providers() -> Vec<agentjail_ctl::ProviderInfo> {
+    use agentjail_phantom::Provider;
+    let pool: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(OpenAiProvider::new()),
+        Arc::new(AnthropicProvider::new()),
+        Arc::new(GitHubProvider::new()),
+        Arc::new(StripeProvider::new()),
+    ];
+    pool.into_iter()
+        .map(|p| agentjail_ctl::ProviderInfo {
+            service_id:     p.id().to_string(),
+            upstream_base:  p.upstream_base().to_string(),
+            request_prefix: format!("/v1/{}/", p.id()),
+        })
+        .collect()
 }
 
 async fn wait_for_signal() {

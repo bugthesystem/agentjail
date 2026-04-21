@@ -96,7 +96,7 @@ impl SnapshotStore for PgSnapshotStore {
             idx += 1;
             let at = idx;
             where_sql.push_str(&format!(
-                " AND (id ILIKE ${at} OR name ILIKE ${at} OR workspace_id ILIKE ${at})"
+                " AND (id ILIKE ${at} ESCAPE '\\' OR name ILIKE ${at} ESCAPE '\\' OR workspace_id ILIKE ${at} ESCAPE '\\')"
             ));
             args.push(format!(
                 "%{}%",

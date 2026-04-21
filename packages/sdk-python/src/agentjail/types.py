@@ -175,8 +175,16 @@ class WorkspaceSpec(TypedDict):
 
 
 class WorkspaceDomain(TypedDict):
+    """One hostname route on a workspace.
+
+    Exactly one of ``backend_url`` / ``vm_port`` must be present.
+    ``backend_url`` is forwarded verbatim; ``vm_port`` resolves to the
+    workspace's live jail IP at gateway request time.
+    """
+
     domain: str
-    backend_url: str
+    backend_url: NotRequired[str]
+    vm_port: NotRequired[int]
 
 
 class Workspace(TypedDict):

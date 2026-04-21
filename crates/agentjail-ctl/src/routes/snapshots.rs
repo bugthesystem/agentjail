@@ -166,7 +166,7 @@ pub(crate) async fn get_snapshot_manifest(
         .await
         .ok_or_else(|| CtlError::NotFound(format!("snapshot {id}")))?;
 
-    let kind = match agentjail::load_manifest(&rec.path) {
+    match agentjail::load_manifest(&rec.path) {
         Ok(m) => {
             let entries: Vec<ManifestEntryDto> = m
                 .entries
@@ -175,11 +175,26 @@ pub(crate) async fn get_snapshot_manifest(
                     path: e.path, mode: e.mode, sha256: e.sha256, size: e.size,
                 })
                 .collect();
-            return Ok(Json(SnapshotManifest { kind: "incremental", entries }));
+            Ok(Json(SnapshotManifest { kind: "incremental", entries }))
         }
-        Err(_) => "classic",
-    };
-    Ok(Json(SnapshotManifest { kind, entries: Vec::new() }))
+        Err(e) => {
+            // Could be: (a) classic full-copy snapshot (no manifest on
+            // disk — expected, quiet), or (b) a corrupted / unreadable
+            // manifest (bug, loud). Distinguish by checking for the
+            // specific "not found" case.
+            let missing = matches!(&e, agentjail::JailError::Snapshot(io)
+                if io.kind() == std::io::ErrorKind::NotFound);
+            if !missing {
+                tracing::warn!(
+                    snapshot_id = %rec.id,
+                    path = %rec.path.display(),
+                    error = %e,
+                    "snapshot manifest unreadable — falling back to classic kind"
+                );
+            }
+            Ok(Json(SnapshotManifest { kind: "classic", entries: Vec::new() }))
+        }
+    }
 }
 
 /// `DELETE /v1/snapshots/:id`

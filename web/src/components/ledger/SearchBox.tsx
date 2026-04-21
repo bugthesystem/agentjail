@@ -14,13 +14,17 @@ export function SearchBox({
   className?: string;
 }) {
   return (
-    <div className={`flex items-center gap-2 h-8 px-2.5 rounded-md bg-ink-900/70 ring-1 ring-ink-800 focus-within:ring-ink-600 transition min-w-[280px] ${className}`}>
-      <span className="text-ink-500 text-[11px]">⌕</span>
+    <div
+      className={`flex items-center gap-2 h-8 px-2.5 rounded-md bg-ink-900/70 ring-1 ring-ink-800 focus-within:ring-ink-600 transition min-w-[280px] ${className}`}
+      title="press / to focus"
+    >
+      <span className="text-ink-500 text-[11px]" aria-hidden>⌕</span>
       <input
         data-search-input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        aria-label={placeholder}
         className="flex-1 bg-transparent outline-none text-[12px] text-ink-200 placeholder:text-ink-600"
       />
       {value && (
@@ -30,7 +34,6 @@ export function SearchBox({
           aria-label="clear search"
         >×</button>
       )}
-      <span className="text-[9.5px] mono text-ink-600 tracking-wider">/ FOCUS</span>
     </div>
   );
 }

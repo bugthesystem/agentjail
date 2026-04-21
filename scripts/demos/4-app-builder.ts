@@ -3,16 +3,16 @@
  * App Builder — Lovable / Bolt / V0 shape.
  *
  * Uses `workspaces.create({ git, domains })` to provision a persistent
- * workspace with a hostname route, then issues `workspaces.exec(...)`
- * for each step: install deps, start the dev server backgrounded, poll
- * for readiness.
+ * workspace with a hostname route pointing at a port *inside* the
+ * jail, then issues `workspaces.exec(...)` for each step: install
+ * deps, start the dev server backgrounded, poll for readiness.
  *
- * Known gap: `domains: [{ domain, backend_url }]` takes an explicit
- * backend URL — we don't have a host→jail port-forward subsystem today
- * (separate engineering item: veth-NAT + per-jail IP discovery). For
- * the demo we register a placeholder; in production you'd front the
- * jail with `socat` / a reverse tunnel / wireguard and set
- * `backend_url` to that reachable address.
+ * `domains: [{ domain, vm_port }]` is resolved by the gateway at
+ * request time to `http://<live_jail_ip>:<vm_port>/` — the veth pair
+ * allowlist-mode creates is directly reachable from the gateway
+ * process, so no socat / ngrok / wireguard is needed. Requires the
+ * workspace to run with `network: { mode: "allowlist", domains: [...] }`
+ * so the veth gets created.
  */
 
 import { aj, cleanup, ok, step } from "./_client.js";
@@ -21,10 +21,6 @@ const REPO_URL  = process.env.DEMO_REPO  ?? "https://github.com/bugthesystem/age
 const PROJECT   = process.env.PROJECT_ID ?? `proj-${Math.random().toString(16).slice(2, 8)}`;
 const PORT      = 3000;
 const DOMAIN    = `${PROJECT}.local.agentjail`;
-// In reality you'd point this at a socat/ngrok/wireguard hop that
-// reaches the jail's dev server. For this demo we just register a
-// placeholder and verify the domain shows up in the workspace record.
-const BACKEND_URL = process.env.DEMO_BACKEND_URL ?? `http://127.0.0.1:${PORT}`;
 
 async function main(): Promise<void> {
   step(`Provisioning app-builder workspace for ${PROJECT}`);
@@ -32,12 +28,15 @@ async function main(): Promise<void> {
     git:      { repo: REPO_URL },
     memoryMb: 1024,
     label:    "app-builder",
-    // Gateway route (see gap note in the header).
-    domains:  [{ domain: DOMAIN, backend_url: BACKEND_URL }],
-    // Dev servers want loopback at minimum; allowlist if you need npm/etc.
-    network:  { mode: "loopback" },
+    // Gateway route: hostname → port inside the jail. Gateway
+    // resolves the live jail IP when a request arrives (503 until
+    // the first exec with allowlist network is in flight).
+    domains:  [{ domain: DOMAIN, vm_port: PORT }],
+    // Allowlist mode creates the veth pair the gateway routes over;
+    // outbound traffic is still restricted to the declared domains.
+    network:  { mode: "allowlist", domains: ["registry.npmjs.org"] },
   });
-  ok(`workspace ${ws.id}  domain ${DOMAIN} → ${BACKEND_URL}`);
+  ok(`workspace ${ws.id}  domain ${DOMAIN} → jail :${PORT}`);
 
   try {
     step("bun install (the `workspace.install: true` step)");

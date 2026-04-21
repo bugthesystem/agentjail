@@ -17,6 +17,12 @@ class Settings:
         self._http = http
 
     def get(self) -> SettingsSnapshot:
-        """Fetch the current settings snapshot."""
+        """Return the full settings snapshot.
+
+        Mirrors the operator Settings page in the web UI: registered
+        phantom providers, bind addresses, exec defaults, persistence
+        paths, and the snapshot GC policy. Secrets are stripped server-
+        side before the response is built.
+        """
         resp = self._http.request("GET", "/v1/config")
         return resp  # type: ignore[return-value]

@@ -48,26 +48,29 @@ class Snapshots:
             },
         )
 
-    def get(self, snapshot_id: str) -> SnapshotRecord:
-        return self._http.request("GET", f"/v1/snapshots/{snapshot_id}")
+    def get(self, id: str) -> SnapshotRecord:
+        """Fetch the snapshot record by id."""
+        return self._http.request("GET", f"/v1/snapshots/{id}")
 
-    def manifest(self, snapshot_id: str) -> SnapshotManifest:
+    def manifest(self, id: str) -> SnapshotManifest:
         """List the files inside a pool-backed snapshot.
 
-        Returns ``kind="incremental"`` with populated ``entries`` for
-        snapshots captured into a content-addressed object pool;
+        ``kind="incremental"`` with populated ``entries`` when the
+        snapshot was captured into a content-addressed object pool;
         ``kind="classic"`` with empty ``entries`` for full-copy
         snapshots where the file list isn't persisted.
         """
-        return self._http.request("GET", f"/v1/snapshots/{snapshot_id}/manifest")
+        return self._http.request("GET", f"/v1/snapshots/{id}/manifest")
 
-    def delete(self, snapshot_id: str) -> None:
-        self._http.request("DELETE", f"/v1/snapshots/{snapshot_id}")
+    def delete(self, id: str) -> None:
+        """Remove a snapshot + its on-disk dir. Idempotent."""
+        self._http.request("DELETE", f"/v1/snapshots/{id}")
 
     def create_workspace_from(
-        self, snapshot_id: str, *, label: str | None = None
+        self, id: str, *, label: str | None = None
     ) -> Workspace:
-        body: dict[str, Any] = {"snapshot_id": snapshot_id}
+        """Rehydrate a snapshot into a brand-new workspace."""
+        body: dict[str, Any] = {"snapshot_id": id}
         if label is not None:
             body["label"] = label
         return self._http.request("POST", "/v1/workspaces/from-snapshot", json=body)

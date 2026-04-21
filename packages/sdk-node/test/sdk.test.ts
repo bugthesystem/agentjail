@@ -887,3 +887,123 @@ describe("Audit", () => {
     expect(seenUrl).toBe("http://api/v1/audit");
   });
 });
+
+describe("Settings", () => {
+  it("GET /v1/config returns the full snapshot", async () => {
+    let seenUrl = "";
+    let seenMethod = "";
+    const payload = {
+      proxy: {
+        base_url: "http://10.0.0.1:8443",
+        bind_addr: "127.0.0.1:8443",
+        providers: [
+          { service_id: "openai", upstream_base: "https://api.openai.com", request_prefix: "/v1/openai/" },
+        ],
+      },
+      control_plane: { bind_addr: "127.0.0.1:7000" },
+      gateway: null,
+      exec: { default_memory_mb: 512, default_timeout_secs: 300, max_concurrent: 16 },
+      persistence: { state_dir: "/var/lib/agentjail", snapshot_pool_dir: null, idle_check_secs: 30 },
+      snapshots: { gc: null },
+    };
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url, init }) => {
+        seenUrl = url; seenMethod = init.method as string;
+        return json(payload);
+      }),
+    });
+    const s = await aj.settings.get();
+    expect(seenMethod).toBe("GET");
+    expect(seenUrl).toBe("http://api/v1/config");
+    expect(s.proxy.providers).toHaveLength(1);
+    expect(s.proxy.providers[0].service_id).toBe("openai");
+    expect(s.exec?.default_memory_mb).toBe(512);
+    expect(s.gateway).toBeNull();
+  });
+});
+
+describe("Snapshots.manifest", () => {
+  it("GET /v1/snapshots/:id/manifest returns incremental entries", async () => {
+    let seenUrl = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url }) => {
+        seenUrl = url;
+        return json({
+          kind: "incremental",
+          entries: [
+            { path: "a.txt", mode: 0o644, sha256: "aa", size: 10 },
+            { path: "b/c.txt", mode: 0o755, sha256: "bb", size: 20 },
+          ],
+        });
+      }),
+    });
+    const m = await aj.snapshots.manifest("snap_abc");
+    expect(seenUrl).toBe("http://api/v1/snapshots/snap_abc/manifest");
+    expect(m.kind).toBe("incremental");
+    expect(m.entries).toHaveLength(2);
+    expect(m.entries[0].path).toBe("a.txt");
+  });
+
+  it("returns classic kind with empty entries for full-copy snapshots", async () => {
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(() => json({ kind: "classic", entries: [] })),
+    });
+    const m = await aj.snapshots.manifest("snap_classic");
+    expect(m.kind).toBe("classic");
+    expect(m.entries).toEqual([]);
+  });
+});
+
+describe("Workspaces.list q param", () => {
+  it("sends q in the query string", async () => {
+    let seenUrl = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url }) => {
+        seenUrl = url;
+        return json({ rows: [], total: 0, limit: 50, offset: 0 });
+      }),
+    });
+    await aj.workspaces.list({ limit: 50, q: "review-bot" });
+    expect(seenUrl).toContain("q=review-bot");
+    expect(seenUrl).toContain("limit=50");
+  });
+
+  it("omits q when empty/unset", async () => {
+    let seenUrl = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url }) => {
+        seenUrl = url;
+        return json({ rows: [], total: 0, limit: 50, offset: 0 });
+      }),
+    });
+    await aj.workspaces.list({ limit: 50 });
+    expect(seenUrl).not.toContain("q=");
+  });
+});
+
+describe("Snapshots.list q param", () => {
+  it("sends q alongside workspace_id", async () => {
+    let seenUrl = "";
+    const aj = new Agentjail({
+      baseUrl: "http://api",
+      apiKey: "k",
+      fetch: fakeFetch(({ url }) => {
+        seenUrl = url;
+        return json({ rows: [], total: 0, limit: 50, offset: 0 });
+      }),
+    });
+    await aj.snapshots.list({ workspaceId: "wrk_a", q: "baseline" });
+    expect(seenUrl).toContain("q=baseline");
+    expect(seenUrl).toContain("workspace_id=wrk_a");
+  });
+});

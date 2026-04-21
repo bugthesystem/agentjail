@@ -16,7 +16,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use agentjail_ctl::WorkspaceStore;
+use agentjail_ctl::{ActiveJailIps, WorkspaceDomainTarget, WorkspaceStore};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -28,17 +28,21 @@ use axum::Router;
 #[derive(Clone)]
 pub struct GatewayState {
     workspaces: Arc<dyn WorkspaceStore>,
+    jail_ips: Arc<ActiveJailIps>,
     client: reqwest::Client,
 }
 
 impl GatewayState {
-    pub fn new(workspaces: Arc<dyn WorkspaceStore>) -> anyhow::Result<Self> {
+    pub fn new(
+        workspaces: Arc<dyn WorkspaceStore>,
+        jail_ips: Arc<ActiveJailIps>,
+    ) -> anyhow::Result<Self> {
         // Keep the client pooled + long-lived; each backend domain is
         // likely to be reused many times per workspace lifetime.
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        Ok(Self { workspaces, client })
+        Ok(Self { workspaces, jail_ips, client })
     }
 }
 
@@ -69,11 +73,34 @@ async fn proxy(State(state): State<GatewayState>, req: Request) -> Response {
         .path_and_query()
         .map(http::uri::PathAndQuery::as_str)
         .unwrap_or("/");
-    let forward_url = format!(
-        "{}{}",
-        domain.backend_url.trim_end_matches('/'),
-        path_and_query,
-    );
+
+    // Resolve the domain target. `BackendUrl` → use it verbatim.
+    // `VmPort` → look up the workspace's live jail IP (populated only
+    // while an allowlist-networked exec is in flight). Returns 503 when
+    // no exec is running — the dev server hasn't started / already
+    // exited.
+    let forward_url = match domain.target() {
+        Ok(WorkspaceDomainTarget::BackendUrl(url)) => {
+            format!("{}{}", url.trim_end_matches('/'), path_and_query)
+        }
+        Ok(WorkspaceDomainTarget::VmPort(port)) => {
+            let Some(ip) = state.jail_ips.get(&ws.id) else {
+                tracing::info!(
+                    %host, workspace_id = %ws.id, port,
+                    "gateway: no live jail for vm_port target"
+                );
+                return no_live_jail(&ws.id, port);
+            };
+            format!("http://{ip}:{port}{path_and_query}")
+        }
+        Err(e) => {
+            tracing::warn!(
+                %host, workspace_id = %ws.id, error = %e,
+                "gateway: workspace domain is invalid"
+            );
+            return bad_gateway(&format!("invalid workspace domain: {e}"));
+        }
+    };
 
     let method = req.method().clone();
     let headers = req.headers().clone();
@@ -192,6 +219,20 @@ fn bad_gateway(msg: &str) -> Response {
     (
         StatusCode::BAD_GATEWAY,
         format!("gateway: upstream failed: {msg}\n"),
+    )
+        .into_response()
+}
+
+/// 503 response used when a `VmPort` domain has no running exec
+/// — i.e. the dev server inside the jail hasn't started yet (or has
+/// already exited). Distinct from 404 (no domain declared at all).
+fn no_live_jail(workspace_id: &str, port: u16) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        format!(
+            "gateway: no live jail for workspace {workspace_id} on vm_port {port}\n\
+             start a workspace exec that binds :{port} before retrying\n"
+        ),
     )
         .into_response()
 }

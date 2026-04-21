@@ -237,18 +237,34 @@ Four rounds of security audit cover every source file; **90 regression tests** i
 ## Control plane
 
 agentjail also ships an HTTP control plane (`agentjail-server`) with a
-phantom-token credential broker, a TypeScript SDK, and a web UI.
+phantom-token credential broker, a TypeScript SDK, a Python SDK, and
+a web UI.
 
 > _Pre-release._ Not yet running in production. APIs may change. Use it
 > for local development, demos, and feedback.
+
+**Surface at a glance:**
+- `POST /v1/credentials` · `POST /v1/sessions` · `POST /v1/runs` (+ `fork`, `stream`)
+- `POST /v1/workspaces` (+ `/fork`, `/exec`) · `POST /v1/workspaces/:id/snapshot`
+- `GET /v1/workspaces?q=…` · `GET /v1/snapshots?q=…` — server-side search
+- `GET /v1/snapshots/:id/manifest` — file listing for pool-backed snapshots
+- `GET /v1/jails/:id` — result + **config** the jail ran with
+- `GET /v1/audit` — phantom-proxy upstream requests
+- `GET /v1/config` — read-only snapshot of server settings (providers, bind addresses, GC policy, defaults)
 
 ### Web UI
 
 ![control plane](media/control-plane.png)
 
-React 19 + Vite + Tailwind. Pages: **Overview · Jails · Sessions ·
-Credentials · Stream · Playground · Docs**. The Jails ledger above shows
-live runs, per-jail stats (mem, CPU, I/O, stdout tail), and fork lineage.
+React 19 + Vite + Tailwind. Pages: **Overview · Jails · Workspaces ·
+Snapshots · Sessions · Credentials · Stream · Playground · Settings ·
+Docs**. The Jails ledger shows live runs with per-jail stats (mem, CPU,
+I/O, stdout tail), fork lineage, and the **exact config** each jail
+ran with (network policy, allowlist, seccomp level, memory/timeout/CPU
+caps, git seed). Workspaces and Snapshots share the ledger pattern —
+server-side substring search (`q`), paging, and metadata detail panels
+with recent-execs (workspaces) and file manifests (pool-backed
+snapshots).
 
 ```bash
 export AGENTJAIL_API_KEY=aj_local_$(openssl rand -hex 16)

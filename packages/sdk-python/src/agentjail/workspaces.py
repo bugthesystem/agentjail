@@ -8,6 +8,7 @@ from ._http import HttpClient
 from .types import (
     ExecResult,
     GitRepoEntry,
+    NetworkSpec,
     Workspace,
     WorkspaceDomain,
     WorkspaceForkResponse,
@@ -28,7 +29,7 @@ class Workspaces:
         timeout_secs: int | None = None,
         idle_timeout_secs: int | None = None,
         domains: list[WorkspaceDomain] | None = None,
-        network: Any = None,
+        network: NetworkSpec | None = None,
         seccomp: str | None = None,
         cpu_percent: int | None = None,
         max_pids: int | None = None,

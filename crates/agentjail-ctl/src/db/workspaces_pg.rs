@@ -173,7 +173,7 @@ impl WorkspaceStore for PgWorkspaceStore {
                 let total: i64 = sqlx::query_scalar(
                     "SELECT COUNT(*) FROM workspaces
                      WHERE deleted_at IS NULL
-                       AND (id ILIKE $1 OR label ILIKE $1 OR git_repo ILIKE $1)",
+                       AND (id ILIKE $1 ESCAPE '\' OR label ILIKE $1 ESCAPE '\' OR git_repo ILIKE $1 ESCAPE '\')",
                 )
                 .bind(&pat)
                 .fetch_one(&self.pool)
@@ -183,7 +183,7 @@ impl WorkspaceStore for PgWorkspaceStore {
                     "SELECT {WORKSPACE_COLS}
                      FROM workspaces
                      WHERE deleted_at IS NULL
-                       AND (id ILIKE $1 OR label ILIKE $1 OR git_repo ILIKE $1)
+                       AND (id ILIKE $1 ESCAPE '\' OR label ILIKE $1 ESCAPE '\' OR git_repo ILIKE $1 ESCAPE '\')
                      ORDER BY created_at DESC
                      LIMIT $2 OFFSET $3",
                 );

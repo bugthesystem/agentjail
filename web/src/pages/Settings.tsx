@@ -17,7 +17,7 @@ export function Settings() {
   });
 
   if (isLoading) return <EmptyState label="loading" />;
-  if (error)     return <EmptyState label={`error · ${(error as Error).message}`} />;
+  if (error)     return <EmptyState label={`error · ${error instanceof Error ? error.message : "unknown"}`} />;
   if (!data)     return <EmptyState label="no settings" />;
 
   return (

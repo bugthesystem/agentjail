@@ -242,6 +242,9 @@ function SnapshotDetail({
 function ManifestSection({ id }: { id: string }) {
   const api = useApi();
   const [filter, setFilter] = useState("");
+  // Reset path filter when the user selects a different snapshot so
+  // stale filter state doesn't hide everything in the new manifest.
+  useEffect(() => { setFilter(""); }, [id]);
   const { data, isLoading, error } = useQuery({
     queryKey: ["snapshot-manifest", id],
     queryFn:  () => api.snapshots.manifest(id),
@@ -264,7 +267,7 @@ function ManifestSection({ id }: { id: string }) {
           Files
         </div>
         <div className="text-[11.5px] text-[var(--color-siren)] mono">
-          manifest failed · {(error as Error | null)?.message ?? "no data"}
+          manifest failed · {error instanceof Error ? error.message : "no data"}
         </div>
       </div>
     );
@@ -365,9 +368,18 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 }
 
 function Row({ label, value, span }: { label: string; value: string; span?: boolean }) {
+  // `span` = value is long (paths, URLs). Stack label above the value so
+  // the value gets the full panel width + wraps cleanly.
+  if (span) {
+    return (
+      <div className="text-[12px]">
+        <div className="text-ink-500 mb-0.5">{label}</div>
+        <div className="mono text-ink-100 break-all">{value}</div>
+      </div>
+    );
+  }
   return (
-    <div className={span ? "grid grid-cols-[80px_1fr] gap-3 items-baseline text-[12px]"
-                         : "grid grid-cols-[80px_1fr] gap-3 items-baseline text-[12px]"}>
+    <div className="grid grid-cols-[80px_1fr] gap-3 items-baseline text-[12px]">
       <span className="text-ink-500">{label}</span>
       <span className="mono text-ink-100 break-all">{value}</span>
     </div>

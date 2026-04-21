@@ -90,7 +90,10 @@ export interface WorkspaceSpec {
 
 export interface WorkspaceDomain {
   domain: string;
-  backend_url: string;
+  /** Mutually exclusive with `vm_port`. */
+  backend_url?: string;
+  /** Jail-internal port; resolved to live jail IP at request time. */
+  vm_port?: number;
 }
 
 export interface Workspace {

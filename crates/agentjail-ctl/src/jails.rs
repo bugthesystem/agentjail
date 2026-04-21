@@ -457,3 +457,13 @@ pub(crate) fn truncate(s: &str, cap: usize) -> String {
 fn matches_kind(a: JailKind, b: JailKind) -> bool {
     a == b
 }
+
+/// Label format for workspace-kind jail rows: `workspace:<id>/<cmd>`.
+///
+/// The web UI's `RecentExecs` block and the jail-ledger substring
+/// search both key off this prefix. Change here once, not at the call
+/// site, so the Rust writer and the TS reader can't drift.
+#[must_use]
+pub fn workspace_exec_label(workspace_id: &str, cmd: &str) -> String {
+    format!("workspace:{workspace_id}/{cmd}")
+}

@@ -266,11 +266,21 @@ export interface WorkspaceSpec {
  * listener. `backend_url` is caller-supplied — the gateway does not
  * discover jail-internal IPs.
  */
+/**
+ * One hostname-routed entry on a workspace. Exactly one of
+ * `backend_url` / `vm_port` must be set; the gateway either forwards
+ * to the static URL or resolves `vm_port` against the workspace's
+ * live jail IP at request time.
+ */
 export interface WorkspaceDomain {
   /** Hostname the gateway matches against the `Host` header. */
   domain: string;
-  /** Where to forward matched requests, e.g. `http://10.0.0.5:3000`. */
-  backend_url: string;
+  /** Where to forward matched requests, e.g. `http://10.0.0.5:3000`.
+   *  Mutually exclusive with `vm_port`. */
+  backend_url?: string;
+  /** Port bound *inside* the workspace's jail; resolved to
+   *  `http://<live_jail_ip>:<vm_port>/` when an exec is in flight. */
+  vm_port?: number;
 }
 
 /** A persistent workspace (long-lived mount tree). */

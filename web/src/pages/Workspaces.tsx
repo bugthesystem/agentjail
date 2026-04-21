@@ -300,7 +300,18 @@ function WorkspaceDetail({
         {ws.domains.length > 0 && (
           <Section label="Gateway routes">
             {ws.domains.map((d, i) => (
-              <Row key={i} label={d.domain} value={d.backend_url} span />
+              <Row
+                key={i}
+                label={d.domain}
+                value={
+                  d.backend_url
+                    ? d.backend_url
+                    : d.vm_port != null
+                      ? `→ jail :${d.vm_port}`
+                      : "—"
+                }
+                span
+              />
             ))}
           </Section>
         )}
@@ -403,9 +414,16 @@ function Row({
   const color = tone === "flare" ? "text-[var(--color-flare)]"
               : tone === "phantom" ? "text-[var(--color-phantom)]"
               : "text-ink-100";
+  if (span) {
+    return (
+      <div className="text-[12px]">
+        <div className="text-ink-500 mb-0.5">{label}</div>
+        <div className={cn("mono break-all", color)}>{value}</div>
+      </div>
+    );
+  }
   return (
-    <div className={span ? "grid grid-cols-[90px_1fr] gap-3 items-baseline text-[12px]"
-                         : "grid grid-cols-[90px_1fr] gap-3 items-baseline text-[12px]"}>
+    <div className="grid grid-cols-[90px_1fr] gap-3 items-baseline text-[12px]">
       <span className="text-ink-500">{label}</span>
       <span className={cn("mono break-all", color)}>{value}</span>
     </div>
@@ -495,7 +513,7 @@ function CreateWorkspaceForm() {
         </div>
         {create.error && (
           <div className="text-[11.5px] text-[var(--color-siren)]">
-            {(create.error as Error).message}
+            {create.error instanceof Error ? create.error.message : String(create.error)}
           </div>
         )}
       </form>

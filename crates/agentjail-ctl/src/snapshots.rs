@@ -294,6 +294,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_q_filters_on_id_name_and_workspace_id() {
+        let store = InMemorySnapshotStore::new();
+        let mut one = sample("snap_baseline_a", Some("wrk_1"));
+        one.name = Some("baseline".into());
+        store.insert(one).await.unwrap();
+
+        let mut two = sample("snap_after_bun_install", Some("wrk_2"));
+        two.name = Some("after-bun-install".into());
+        store.insert(two).await.unwrap();
+
+        // match on id — "baseline" hits snap_baseline_a's id AND its
+        // own name, but that's still one row.
+        let (rows, total) = store.list(None, 100, 0, Some("baseline")).await;
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, "snap_baseline_a");
+
+        // match on name only
+        let (rows, total) = store.list(None, 100, 0, Some("after-bun")).await;
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, "snap_after_bun_install");
+
+        // match on workspace_id
+        let (rows, total) = store.list(None, 100, 0, Some("wrk_2")).await;
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, "snap_after_bun_install");
+
+        // workspace_id filter + q combine (intersection)
+        let (_, total) = store.list(Some("wrk_1"), 100, 0, Some("baseline")).await;
+        assert_eq!(total, 1);
+
+        // empty needle = no filter
+        let (_, total) = store.list(None, 100, 0, Some("  ")).await;
+        assert_eq!(total, 2);
+    }
+
+    #[tokio::test]
     async fn duplicate_insert_is_conflict() {
         let store = InMemorySnapshotStore::new();
         store.insert(sample("snap_a", None)).await.unwrap();

@@ -152,6 +152,15 @@ pub(crate) async fn create_workspace(
         (None, None)
     };
 
+    let domains = req.domains.unwrap_or_default();
+    // Validate every declared domain up-front: exactly one of
+    // backend_url / vm_port, backend_url must be a proper URL. Saves
+    // the caller from debugging a silent 503 at first gateway hit.
+    for d in &domains {
+        d.target().inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&ws_root);
+        })?;
+    }
     let ws = Workspace {
         id: id.clone(),
         created_at: time::OffsetDateTime::now_utc(),
@@ -162,7 +171,7 @@ pub(crate) async fn create_workspace(
         git_repo,
         git_ref: git_ref_value,
         label: req.label,
-        domains: req.domains.unwrap_or_default(),
+        domains,
         last_exec_at: None,
         paused_at: None,
         auto_snapshot: None,

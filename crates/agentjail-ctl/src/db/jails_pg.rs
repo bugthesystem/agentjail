@@ -59,19 +59,37 @@ impl JailStore for PgJailStore {
         session_id: Option<String>,
         parent_id: Option<i64>,
     ) -> i64 {
-        let id: i64 = sqlx::query_scalar(
+        // Trait contract: returns the new row id or a negative sentinel
+        // on DB failure. Callers pass the sentinel back to `finish` /
+        // `error` / `tail`, which are all `WHERE id = $1` updates and
+        // therefore no-op on a row that doesn't exist — so a failed
+        // ledger write never aborts an in-flight exec. We still log
+        // loudly so operators see the failure.
+        match sqlx::query_scalar::<_, i64>(
             "INSERT INTO jails (kind, started_at, status, label, session_id, parent_id)
              VALUES ($1, now(), 'running', $2, $3, $4)
              RETURNING id",
         )
         .bind(kind.as_str())
-        .bind(label)
-        .bind(session_id)
+        .bind(&label)
+        .bind(&session_id)
         .bind(parent_id)
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(-1);
-        id
+        {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    kind = kind.as_str(),
+                    label = %label,
+                    session_id = session_id.as_deref().unwrap_or(""),
+                    parent_id,
+                    "jail ledger INSERT failed — subsequent finish/error/tail calls will no-op"
+                );
+                i64::MIN
+            }
+        }
     }
 
     async fn finish(&self, id: i64, output: &agentjail::Output) {

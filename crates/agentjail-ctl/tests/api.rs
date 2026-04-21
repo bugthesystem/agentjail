@@ -28,6 +28,7 @@ impl Harness {
             state_dir: Some(tempfile::tempdir().unwrap().keep()),
             snapshot_pool_dir: None,
             platform: None,
+            active_jail_ips: None,
         });
         let router = ctl.router();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -86,6 +87,26 @@ async fn guarded_routes_require_api_key() {
         .await
         .unwrap();
     assert_eq!(r.status(), 401);
+    h.stop().await;
+}
+
+/// Regression guard — both newly-added endpoints (settings + snapshot
+/// manifest) must live on the guarded router, not the public one.
+/// Future refactors that accidentally move them will fail this test.
+#[tokio::test]
+async fn new_endpoints_require_api_key() {
+    let h = Harness::start(vec!["aj_test".into()]).await;
+    for path in ["/v1/config", "/v1/snapshots/snap_x/manifest"] {
+        let no_auth = client().get(format!("{}{path}", h.base)).send().await.unwrap();
+        assert_eq!(no_auth.status(), 401, "{path} should 401 without bearer");
+        let bad_auth = client()
+            .get(format!("{}{path}", h.base))
+            .bearer_auth("aj_wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_auth.status(), 401, "{path} should 401 with wrong bearer");
+    }
     h.stop().await;
 }
 

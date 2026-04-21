@@ -66,6 +66,10 @@ pub struct JailHandle {
     cgroup: Option<Cgroup>,
     /// Host-side veth interface name to clean up (Allowlist mode only).
     veth_host_iface: Option<String>,
+    /// Jail-side IPv4 address on the veth pair (`Some` only when the
+    /// jail was spawned with `Network::Allowlist`). The host can reach
+    /// this address directly for inbound forwarding.
+    jail_ip: Option<std::net::Ipv4Addr>,
     /// Shutdown signal for the proxy thread (Allowlist mode only).
     proxy_shutdown: Option<tokio::sync::watch::Sender<bool>>,
 }
@@ -265,6 +269,7 @@ impl Jail {
         // For Allowlist mode: wait for child to enter netns, then set up veth + proxy
         let mut proxy_shutdown = None;
         let mut veth_iface_name = None;
+        let mut jail_ip: Option<std::net::Ipv4Addr> = None;
         if let (Some((_child_fd, parent_fd)), Network::Allowlist(domains)) =
             (sync_pair, &config.network)
         {
@@ -277,7 +282,8 @@ impl Jail {
             }
 
             let id = NEXT_VETH_ID.fetch_add(1, Ordering::Relaxed);
-            let (host_ip, _jail_ip) = veth_addrs(id);
+            let (host_ip, this_jail_ip) = veth_addrs(id);
+            jail_ip = Some(this_jail_ip);
             let host_if = format!("aj-h{id}");
             let jail_if = format!("aj-j{id}");
 
@@ -322,6 +328,7 @@ impl Jail {
             timeout,
             cgroup,
             veth_host_iface: veth_iface_name,
+            jail_ip,
             proxy_shutdown,
         })
     }
@@ -461,6 +468,18 @@ impl JailHandle {
     #[must_use]
     pub fn pid(&self) -> JailPid {
         self.pid
+    }
+
+    /// Jail-side IPv4 address on the veth pair, for direct host→jail
+    /// reachability. `Some` only when the jail was spawned with
+    /// `Network::Allowlist`; `None` for `Network::None` and
+    /// `Network::Loopback` (no veth, no routable address).
+    ///
+    /// Needed for the future hostname-to-jail-port forwarder: the
+    /// gateway resolves a request to `http://<jail_ip>:<vm_port>/`.
+    #[must_use]
+    pub fn jail_ip(&self) -> Option<std::net::Ipv4Addr> {
+        self.jail_ip
     }
 
     pub fn kill(&self) {

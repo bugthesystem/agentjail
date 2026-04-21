@@ -13,10 +13,10 @@ use super::exec::{
     ExecOptions, ExecResponse, NetworkSpec, SeccompSpec, config_snapshot, jail_config,
     output_to_response,
 };
-use super::exec_monitor::{CgroupRegistration, run_monitored_with};
+use super::exec_monitor::{ExecRegistration, run_monitored_with};
 use super::workspaces::WorkspaceExecRequest;
 use crate::error::{CtlError, Result};
-use crate::jails::JailKind;
+use crate::jails::{JailKind, workspace_exec_label};
 use crate::workspaces::WorkspaceSpec;
 
 /// `POST /v1/workspaces/:id/exec`
@@ -96,7 +96,7 @@ pub(crate) async fn exec_in_workspace(
     // workspace as active even while the exec is running.
     state.workspaces.touch(&ws.id).await;
 
-    let label = format!("workspace:{}/{}", ws.id, req.cmd);
+    let label = workspace_exec_label(&ws.id, &req.cmd);
     let rec_id = state.jails.start(JailKind::Workspace, label, None, None).await;
     state.jails.attach_config(
         rec_id,
@@ -105,7 +105,11 @@ pub(crate) async fn exec_in_workspace(
     // Publish the cgroup path for the duration of this exec so a
     // concurrent snapshot can freeze-before-copy. The registration
     // auto-clears on drop.
-    let registration = CgroupRegistration::new(state.active_cgroups.clone(), ws.id.clone());
+    let registration = ExecRegistration::new(
+        state.active_cgroups.clone(),
+        state.active_jail_ips.clone(),
+        ws.id.clone(),
+    );
     let result = run_monitored_with(
         &state.jails, rec_id, &jail, &req.cmd, &args_refs, Some(registration),
     ).await;

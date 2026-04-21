@@ -106,6 +106,20 @@ await aj.workspaces.exec(ws.id, { cmd: "bun", args: ["test"] });
         </Hint>
       </Section>
 
+      <Section id="list" title="List + search">
+        <p>
+          <Inline>GET /v1/workspaces</Inline> is paginated + searchable server-
+          side. Pass <Inline>q</Inline> to match on <Inline>id</Inline>,{" "}
+          <Inline>label</Inline>, or <Inline>git_repo</Inline>{" "}
+          (case-insensitive substring). <Inline>total</Inline> reflects the
+          filtered count.
+        </p>
+        <Code lang="ts">{`const { rows, total } = await aj.workspaces.list({
+  q: "review-bot",
+  limit: 50,
+});`}</Code>
+      </Section>
+
       <Section id="cleanup" title="Delete">
         <p>
           <Inline>DELETE /v1/workspaces/:id</Inline> soft-deletes the row and

@@ -18,7 +18,7 @@ use crate::error::CtlError;
 use crate::jails::JailStore;
 use crate::session::SessionStore;
 use crate::snapshots::SnapshotStore;
-use crate::workspaces::{ActiveCgroups, WorkspaceLocks, WorkspaceStore};
+use crate::workspaces::{ActiveCgroups, ActiveJailIps, WorkspaceLocks, WorkspaceStore};
 
 mod audit;
 mod credentials;
@@ -70,6 +70,10 @@ pub(crate) struct AppState {
     pub(crate) workspaces: Arc<dyn WorkspaceStore>,
     pub(crate) workspace_locks: Arc<WorkspaceLocks>,
     pub(crate) active_cgroups: Arc<ActiveCgroups>,
+    /// Live jail-side IP per workspace (populated only when the active
+    /// exec used `Network::Allowlist`). Read by the gateway to resolve
+    /// `VmPort`-style workspace domains.
+    pub(crate) active_jail_ips: Arc<ActiveJailIps>,
     pub(crate) snapshots: Arc<dyn SnapshotStore>,
     /// Root directory for persistent workspace + snapshot data. Always
     /// resolved to an absolute path with `workspaces/` and `snapshots/`

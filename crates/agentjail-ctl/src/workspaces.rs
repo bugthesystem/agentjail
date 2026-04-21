@@ -8,6 +8,7 @@
 //! the Postgres implementation lives in [`crate::db::workspaces_pg`].
 
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -58,16 +59,69 @@ pub struct Workspace {
     pub auto_snapshot: Option<String>,
 }
 
-/// One (hostname, backend) pair exposed through the agentjail-server
-/// gateway listener. The caller supplies `backend_url` — this layer does
-/// not discover jail-internal IPs.
+/// One hostname-routed entry exposed through the agentjail-server
+/// gateway listener. Exactly one of `backend_url` / `vm_port` must be
+/// set; the two forms are:
+///
+/// * `backend_url` — static URL the caller already wired to a
+///   reachable address (e.g. a sidecar or host-forwarded port).
+/// * `vm_port` — a port bound *inside* the workspace's jail. The
+///   gateway resolves this to `http://<live_jail_ip>:<vm_port>/` at
+///   request time by consulting [`ActiveJailIps`]. Returns 503 when
+///   no exec is in flight (dev server not running yet).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceDomain {
     /// Hostname the gateway matches against the `Host` header (case-
     /// insensitive, no port).
     pub domain: String,
-    /// Where to forward matched requests, e.g. `http://10.0.0.5:3000`.
-    pub backend_url: String,
+    /// Static URL target. Mutually exclusive with `vm_port`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_url: Option<String>,
+    /// Jail-internal port. Mutually exclusive with `backend_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm_port: Option<u16>,
+}
+
+/// Decoded target form of a [`WorkspaceDomain`] — cheap to compute,
+/// lets the gateway branch without re-validating the underlying shape.
+#[derive(Debug, Clone)]
+pub enum WorkspaceDomainTarget {
+    /// Caller-supplied static URL.
+    BackendUrl(String),
+    /// Jail-internal port; resolved at request time.
+    VmPort(u16),
+}
+
+impl WorkspaceDomain {
+    /// Validate exactly-one-of-backend_url/vm_port and return the
+    /// decoded target. Called by the create path so bad domains fail
+    /// up front rather than silently 503ing at request time.
+    pub fn target(&self) -> Result<WorkspaceDomainTarget> {
+        match (self.backend_url.as_deref(), self.vm_port) {
+            (Some(url), None) => {
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    Ok(WorkspaceDomainTarget::BackendUrl(url.to_string()))
+                } else {
+                    Err(CtlError::BadRequest(format!(
+                        "backend_url must start with http:// or https:// (got {url:?})",
+                    )))
+                }
+            }
+            (None, Some(p)) => {
+                if p == 0 {
+                    Err(CtlError::BadRequest("vm_port must be > 0".into()))
+                } else {
+                    Ok(WorkspaceDomainTarget::VmPort(p))
+                }
+            }
+            (Some(_), Some(_)) => Err(CtlError::BadRequest(
+                "workspace domain: set exactly one of backend_url / vm_port".into(),
+            )),
+            (None, None) => Err(CtlError::BadRequest(
+                "workspace domain: one of backend_url / vm_port is required".into(),
+            )),
+        }
+    }
 }
 
 /// Serializable subset of jail options persisted with a workspace.
@@ -218,6 +272,46 @@ impl ActiveCgroups {
     #[must_use]
     pub fn get(&self, workspace_id: &str) -> Option<PathBuf> {
         self.inner.lock().ok()?.get(workspace_id).cloned()
+    }
+}
+
+/// Tracks the jail-side IPv4 address of each workspace's currently-
+/// running exec (only populated when the exec used
+/// `Network::Allowlist` — the only mode that gets a veth pair).
+///
+/// Read by the hostname-routed gateway to resolve `VmPort`-style
+/// workspace domains to `http://<jail_ip>:<vm_port>/` at request time.
+/// An entry exists only for the duration of the in-flight exec;
+/// absence means "no live server, 503".
+#[derive(Default)]
+pub struct ActiveJailIps {
+    inner: Mutex<HashMap<String, Ipv4Addr>>,
+}
+
+impl ActiveJailIps {
+    /// New, empty tracker.
+    #[must_use]
+    pub fn new() -> Self { Self::default() }
+
+    /// Record the jail IP for a workspace's in-flight exec.
+    pub fn insert(&self, workspace_id: &str, ip: Ipv4Addr) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.insert(workspace_id.to_string(), ip);
+        }
+    }
+
+    /// Drop the record after the exec completes.
+    pub fn remove(&self, workspace_id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.remove(workspace_id);
+        }
+    }
+
+    /// Current jail IP for a workspace, if a network-enabled exec is
+    /// in flight.
+    #[must_use]
+    pub fn get(&self, workspace_id: &str) -> Option<Ipv4Addr> {
+        self.inner.lock().ok()?.get(workspace_id).copied()
     }
 }
 
@@ -418,6 +512,43 @@ mod tests {
         let (rows, total) = store.list(2, 1, None).await;
         assert_eq!(total, 5);
         assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_q_filters_on_id_label_and_repo() {
+        let store = InMemoryWorkspaceStore::new();
+        let mut alpha = sample("wrk_alpha");
+        alpha.label = Some("review-bot".into());
+        alpha.git_repo = Some("https://github.com/org/alpha".into());
+        store.insert(alpha).await.unwrap();
+
+        let mut beta = sample("wrk_beta");
+        beta.label = Some("ingest".into());
+        beta.git_repo = Some("https://github.com/org/beta".into());
+        store.insert(beta).await.unwrap();
+
+        // id match
+        let (rows, total) = store.list(100, 0, Some("alpha")).await;
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, "wrk_alpha");
+
+        // label match (case-insensitive)
+        let (rows, total) = store.list(100, 0, Some("REVIEW")).await;
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, "wrk_alpha");
+
+        // git_repo match
+        let (rows, total) = store.list(100, 0, Some("org/beta")).await;
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, "wrk_beta");
+
+        // no match
+        let (_, total) = store.list(100, 0, Some("nomatch")).await;
+        assert_eq!(total, 0);
+
+        // empty / whitespace q = no filter
+        let (_, total) = store.list(100, 0, Some("   ")).await;
+        assert_eq!(total, 2);
     }
 
     #[tokio::test]

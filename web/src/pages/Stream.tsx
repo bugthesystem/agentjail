@@ -8,6 +8,14 @@ import { AuditList } from "../components/AuditList";
 const FILTERS = ["all", "200", "4xx", "5xx", "blocked"] as const;
 type Filter = (typeof FILTERS)[number];
 
+const FILTER_LABELS: Record<Filter, string> = {
+  all:       "show all requests",
+  "200":     "show 2xx success responses",
+  "4xx":     "show 4xx client errors",
+  "5xx":     "show 5xx server errors",
+  blocked:   "show requests blocked by scope / missing credential",
+};
+
 /**
  * Phantom-proxy audit feed.  Shows upstream API calls (OpenAI,
  * Anthropic, GitHub, Stripe) made by sandboxes — *not* every HTTP
@@ -68,6 +76,8 @@ export function Stream() {
           <button
             key={f}
             onClick={() => setFilter(f)}
+            aria-label={FILTER_LABELS[f]}
+            aria-pressed={filter === f}
             className={`h-7 px-3 rounded-full text-[11px] mono transition-colors ${
               filter === f
                 ? "bg-ink-100 text-ink-950"

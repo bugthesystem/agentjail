@@ -32,6 +32,7 @@
 //!     state_dir: None,
 //!     snapshot_pool_dir: None,
 //!     platform: None,
+//!     active_jail_ips: None,
 //! });
 //! let router = ctl.router();
 //! let listener = tokio::net::TcpListener::bind("0.0.0.0:7000").await?;
@@ -79,8 +80,9 @@ pub use snapshots::{
     InMemorySnapshotStore, SnapshotGcConfig, SnapshotRecord, SnapshotStore, gc as snapshot_gc,
 };
 pub use workspaces::{
-    ActiveCgroups, InMemoryWorkspaceStore, Workspace, WorkspaceDomain, WorkspaceLocks,
-    WorkspaceSpec, WorkspaceStore, idle as workspace_idle,
+    ActiveCgroups, ActiveJailIps, InMemoryWorkspaceStore, Workspace, WorkspaceDomain,
+    WorkspaceDomainTarget, WorkspaceLocks, WorkspaceSpec, WorkspaceStore,
+    idle as workspace_idle,
 };
 
 /// Configuration for a [`ControlPlane`].
@@ -120,6 +122,12 @@ pub struct ControlPlaneConfig {
     /// `GET /v1/config`. Caller-populated; `None` = the endpoint still
     /// works but returns stub values for the platform fields.
     pub platform: Option<PlatformInfo>,
+    /// Live jail-IP registry, shared with the hostname-routed gateway
+    /// listener. Populated by workspace execs with allowlist network;
+    /// read by the gateway to resolve `vm_port` workspace domains to
+    /// `http://<ip>:<port>/` at request time. `None` = caller doesn't
+    /// run the gateway, so no sharing is needed.
+    pub active_jail_ips: Option<Arc<ActiveJailIps>>,
 }
 
 /// Phantom-proxy provider registered with the running server. Exposed
@@ -280,8 +288,14 @@ impl ControlPlane {
                     "failed to create snapshot pool dir");
             }
         });
-        let workspace_locks = Arc::new(WorkspaceLocks::new());
-        let active_cgroups  = Arc::new(ActiveCgroups::new());
+        let workspace_locks  = Arc::new(WorkspaceLocks::new());
+        let active_cgroups   = Arc::new(ActiveCgroups::new());
+        // Share with the gateway when the caller passed an Arc in —
+        // otherwise own a private one. Either way the exec path
+        // publishes to the same registry AppState sees.
+        let active_jail_ips  = config
+            .active_jail_ips
+            .unwrap_or_else(|| Arc::new(ActiveJailIps::new()));
         let state = AppState {
             tokens: config.tokens,
             keys: config.keys,
@@ -296,6 +310,7 @@ impl ControlPlane {
             workspaces,
             workspace_locks,
             active_cgroups,
+            active_jail_ips,
             snapshots,
             state_dir,
             snapshot_pool_dir,
@@ -435,6 +450,7 @@ mod tests {
             state_dir: None,
             snapshot_pool_dir: None,
             platform: None,
+            active_jail_ips: None,
         }
     }
 
