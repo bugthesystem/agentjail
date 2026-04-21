@@ -14,6 +14,7 @@ use crate::{events, exec, gpu, netlink};
 use rustix::process::{Pid, WaitOptions, waitpid};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -47,10 +48,18 @@ impl std::fmt::Display for JailPid {
 }
 
 /// A configured jail ready to execute commands.
+///
+/// The config, GPU resources, and compiled seccomp filter are all
+/// shared by reference across every `spawn()`. Each field is stored
+/// in an `Arc` so spawning N jails from one `Jail` does not clone
+/// the underlying `Vec<String>` allowlist or the env table. Matters
+/// for our high-throughput target (tens of thousands of jails/sec).
 pub struct Jail {
-    config: JailConfig,
+    config: Arc<JailConfig>,
     /// Pre-discovered GPU resources (if gpu.enabled).
-    gpu_resources: Option<gpu::NvidiaResources>,
+    gpu_resources: Option<Arc<gpu::NvidiaResources>>,
+    /// Pre-compiled seccomp BPF — shared by every spawn, compiled once.
+    seccomp_filter: Option<Arc<crate::seccomp::CompiledFilter>>,
 }
 
 /// Handle to a running jailed process.
@@ -115,14 +124,19 @@ impl Jail {
         }
 
         let gpu_resources = if config.gpu.enabled {
-            Some(gpu::discover(&config.gpu)?)
+            Some(Arc::new(gpu::discover(&config.gpu)?))
         } else {
             None
         };
 
+        // Compile the seccomp filter once. `apply_compiled` in the
+        // child is then zero-allocation — no BPF rebuild per spawn.
+        let seccomp_filter = crate::seccomp::compile(config.seccomp)?.map(Arc::new);
+
         Ok(Self {
-            config,
+            config: Arc::new(config),
             gpu_resources,
+            seccomp_filter,
         })
     }
 
@@ -154,12 +168,21 @@ impl Jail {
         if config.io_read_mbps > 0 || config.io_write_mbps > 0 {
             let read_bps = config.io_read_mbps * 1024 * 1024;
             let write_bps = config.io_write_mbps * 1024 * 1024;
-            if let Err(e) = cg.set_io_limit(
-                config.output.to_str().unwrap_or("/"),
-                read_bps,
-                write_bps,
-            ) {
-                eprintln!("warning: I/O limits not applied: {e}");
+            // Skip the I/O limit silently on a non-UTF-8 output path —
+            // the previous fallback to `"/"` would have clamped the
+            // whole root device, which is catastrophically wrong.
+            match config.output.to_str() {
+                Some(dev_path) => {
+                    if let Err(e) = cg.set_io_limit(dev_path, read_bps, write_bps) {
+                        eprintln!("warning: I/O limits not applied: {e}");
+                    }
+                }
+                None => {
+                    eprintln!(
+                        "warning: I/O limits not applied: output path is not UTF-8: {}",
+                        config.output.display()
+                    );
+                }
             }
         }
 
@@ -186,8 +209,11 @@ impl Jail {
             None
         };
 
+        // All three clones are `Arc::clone` — refcount bumps, no deep
+        // copy of config, env, allowlist, or seccomp BPF.
         let config = self.config.clone();
         let gpu_resources = self.gpu_resources.clone();
+        let seccomp_filter = self.seccomp_filter.clone();
         let cmd = cmd.to_string();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
@@ -225,7 +251,14 @@ impl Jail {
                     let _ = libc::read(barrier_read_fd, go.as_mut_ptr() as *mut _, 1);
                     drop(barrier_pipe);
 
-                    if let Err(e) = exec::setup_child(&config, &gpu_resources, &cmd, &args, child_sync_fd) {
+                    if let Err(e) = exec::setup_child(
+                        &config,
+                        gpu_resources.as_deref(),
+                        seccomp_filter.as_deref(),
+                        &cmd,
+                        &args,
+                        child_sync_fd,
+                    ) {
                         eprintln!("jail setup failed: {e}");
                         libc::_exit(127);
                     }
@@ -310,8 +343,11 @@ impl Jail {
         // All setup succeeded — disarm the guard so Drop doesn't kill the child.
         child_guard.disarm();
 
-        let stdout = OutputStream::from_owned_fd(stdout_pipe.read);
-        let stderr = OutputStream::from_owned_fd(stderr_pipe.read);
+        // `from_owned_fd` fails when tokio can't register the fd with its
+        // reactor (no runtime, fd isn't a pipe, etc.). Map to `Io` — the
+        // error is an `std::io::Error`, not an rustix `Errno`.
+        let stdout = OutputStream::from_owned_fd(stdout_pipe.read).map_err(JailError::Io)?;
+        let stderr = OutputStream::from_owned_fd(stderr_pipe.read).map_err(JailError::Io)?;
 
         let timeout = if config.timeout_secs > 0 {
             Duration::from_secs(config.timeout_secs)
@@ -408,12 +444,16 @@ impl Jail {
         fork_info.was_frozen = frozen;
 
         // Build a forked Jail that shares everything except the output dir.
-        let mut fork_config = self.config.clone();
+        // GPU resources and seccomp BPF are re-used verbatim; the only
+        // diff is the output path, so we deep-clone `JailConfig` just
+        // for that single field then re-Arc.
+        let mut fork_config = (*self.config).clone();
         fork_config.output = fork_output;
 
         let fork_jail = Jail {
-            config: fork_config,
+            config: Arc::new(fork_config),
             gpu_resources: self.gpu_resources.clone(),
+            seccomp_filter: self.seccomp_filter.clone(),
         };
 
         Ok((fork_jail, fork_info))
@@ -422,11 +462,25 @@ impl Jail {
 
 impl JailHandle {
     /// Wait for the process to complete and collect output.
+    ///
+    /// stdout and stderr are drained by background tasks *concurrently*
+    /// with the wait on the child. Without this, a child that emits
+    /// more than one pipe-buffer's worth (~64 KiB on Linux) would block
+    /// on `write()` forever — the old code only started reading after
+    /// the child exited.
     pub async fn wait(mut self) -> Result<Output> {
         let pid = self.pid;
         let timeout = self.timeout;
         let start_time = self.start_time;
         let mut timed_out = false;
+
+        // Move the streams out so the drain tasks can own them.
+        // `OutputStream::closed()` is a no-op placeholder.
+        let mut stdout_stream = std::mem::replace(&mut self.stdout, OutputStream::closed());
+        let mut stderr_stream = std::mem::replace(&mut self.stderr, OutputStream::closed());
+
+        let stdout_task = tokio::spawn(async move { stdout_stream.read_all().await });
+        let stderr_task = tokio::spawn(async move { stderr_stream.read_all().await });
 
         let remaining = timeout.saturating_sub(start_time.elapsed());
         let wait_result = tokio::time::timeout(remaining, wait_for_pid(pid)).await;
@@ -444,9 +498,9 @@ impl JailHandle {
         let stats = self.collect_stats();
         let oom_killed = stats.as_ref().map(|s| s.oom_killed).unwrap_or(false);
 
-        // Read output (process is dead, pipes will EOF)
-        let stdout = self.stdout.read_all().await;
-        let stderr = self.stderr.read_all().await;
+        // Process is dead → pipes EOF → drain tasks return.
+        let stdout = stdout_task.await.unwrap_or_default();
+        let stderr = stderr_task.await.unwrap_or_default();
 
         // Mark as reaped so Drop doesn't kill a recycled PID.
         self.reaped = true;

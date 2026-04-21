@@ -7,7 +7,7 @@ use crate::config::{JailConfig, Network};
 use crate::error::{JailError, Result};
 use crate::namespace::{NamespaceConfig, enter_namespaces, setup_loopback};
 use crate::veth::{proxy_env_vars, veth_addrs};
-use crate::seccomp::apply_filter;
+use crate::seccomp::{CompiledFilter, apply_compiled};
 use crate::{gpu, landlock, mount, netlink};
 
 use std::ffi::CString;
@@ -16,9 +16,14 @@ use std::ffi::CString;
 ///
 /// `sync_fd`: For Allowlist mode, the child's end of a socketpair for syncing
 /// with the parent. Child signals "in netns", parent replies with veth ID.
+///
+/// `seccomp_filter`: Pre-compiled BPF program to install before `exec()`.
+/// `None` when `config.seccomp == SeccompLevel::Disabled`. Built once in
+/// `Jail::new` and shared across all spawns of the same `Jail`.
 pub(crate) fn setup_child(
     config: &JailConfig,
-    gpu_resources: &Option<gpu::NvidiaResources>,
+    gpu_resources: Option<&gpu::NvidiaResources>,
+    seccomp_filter: Option<&CompiledFilter>,
     cmd: &str,
     args: &[String],
     sync_fd: Option<i32>,
@@ -75,7 +80,7 @@ pub(crate) fn setup_child(
     let new_root = std::env::temp_dir().join(format!("agentjail-{}", std::process::id()));
     mount::setup_root(&new_root, &config.source, &config.output, config.source_rw)?;
 
-    if let Some(res) = &gpu_resources {
+    if let Some(res) = gpu_resources {
         gpu::setup_mounts(&new_root, res)?;
     }
 
@@ -114,12 +119,15 @@ pub(crate) fn setup_child(
 
     // 8. PID namespace double-fork
     if config.pid_namespace {
-        enter_pid_namespace_and_exec(config, cmd, args, &env)?;
+        enter_pid_namespace_and_exec(seccomp_filter, cmd, args, &env)?;
         unreachable!()
     }
 
-    // 9. Seccomp (must be last before exec)
-    apply_filter(config.seccomp)?;
+    // 9. Seccomp (must be last before exec). The filter was compiled
+    // in `Jail::new`; apply the cached program with no rebuild.
+    if let Some(bpf) = seccomp_filter {
+        apply_compiled(bpf)?;
+    }
 
     // 10. Exec
     do_exec(cmd, args, &env)
@@ -130,7 +138,7 @@ pub(crate) fn setup_child(
 /// After unshare(NEWPID), the current process is NOT in the new PID namespace.
 /// Only children will be. So we fork, and the child becomes PID 1.
 fn enter_pid_namespace_and_exec(
-    config: &JailConfig,
+    seccomp_filter: Option<&CompiledFilter>,
     cmd: &str,
     args: &[String],
     env: &[(String, String)],
@@ -159,7 +167,9 @@ fn enter_pid_namespace_and_exec(
                 unsafe { libc::_exit(127) };
             }
 
-            if let Err(e) = apply_filter(config.seccomp) {
+            if let Some(bpf) = seccomp_filter
+                && let Err(e) = apply_compiled(bpf)
+            {
                 eprintln!("seccomp failed: {e}");
                 unsafe { libc::_exit(127) };
             }

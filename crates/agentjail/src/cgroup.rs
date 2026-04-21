@@ -237,9 +237,13 @@ fn init_cgroup_base() -> Result<PathBuf> {
         PathBuf::from(CGROUP_ROOT).join(our_path.trim_start_matches('/'))
     };
 
-    // Enable controllers. If we can't, drain root cgroup first.
+    // Enable controllers. The kernel accepts a single space-separated
+    // write — collapse the four writes into one syscall. If the first
+    // write is rejected (no-internal-processes rule), drain root then
+    // retry.
     let subtree_ctl = base.join("cgroup.subtree_control");
-    if fs::write(&subtree_ctl, "+memory").is_err() {
+    let enable_all = "+memory +cpu +pids +io";
+    if fs::write(&subtree_ctl, enable_all).is_err() {
         let init_cg = base.join("agentjail-init");
         let _ = fs::create_dir(&init_cg);
         // Move ALL processes out of root. Retry for stragglers.
@@ -249,12 +253,9 @@ fn init_cgroup_base() -> Result<PathBuf> {
                     let _ = fs::write(init_cg.join("cgroup.procs"), pid);
                 }
             }
-            if fs::write(&subtree_ctl, "+memory").is_ok() { break; }
+            if fs::write(&subtree_ctl, enable_all).is_ok() { break; }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-    }
-    for ctrl in ["+cpu", "+pids", "+io"] {
-        let _ = fs::write(&subtree_ctl, ctrl);
     }
 
     Ok(base)

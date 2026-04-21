@@ -11,24 +11,34 @@ const ARCH: TargetArch = TargetArch::x86_64;
 #[cfg(target_arch = "aarch64")]
 const ARCH: TargetArch = TargetArch::aarch64;
 
-/// Apply a seccomp filter to the current process.
+/// Compiled BPF program ready to load into the kernel.
 ///
-/// This is a one-way operation - once applied, cannot be removed.
-pub fn apply_filter(level: SeccompLevel) -> Result<()> {
+/// Reusable across spawns — the same program is valid for every child
+/// under the same `SeccompLevel`. Built once in `Jail::new` and applied
+/// via [`apply_compiled`] in the child.
+pub type CompiledFilter = seccompiler::BpfProgram;
+
+/// Compile a filter for the given level. `None` for `Disabled` —
+/// the child skips the syscall entirely.
+pub fn compile(level: SeccompLevel) -> Result<Option<CompiledFilter>> {
     let filter = match level {
-        SeccompLevel::Disabled => return Ok(()),
+        SeccompLevel::Disabled => return Ok(None),
         SeccompLevel::Standard => build_standard_filter()?,
         SeccompLevel::Strict => build_strict_filter()?,
     };
-
     let bpf: seccompiler::BpfProgram = filter
         .try_into()
         .map_err(|e: seccompiler::BackendError| JailError::Seccomp(e.to_string()))?;
+    Ok(Some(bpf))
+}
 
-    seccompiler::apply_filter(&bpf).map_err(|e| JailError::Seccomp(e.to_string()))?;
-
+/// Apply a pre-compiled filter. Zero-allocation on the child-side
+/// fast path.
+pub fn apply_compiled(bpf: &CompiledFilter) -> Result<()> {
+    seccompiler::apply_filter(bpf).map_err(|e| JailError::Seccomp(e.to_string()))?;
     Ok(())
 }
+
 
 /// Syscalls blocked in both Standard and Strict modes.
 fn base_blocked_syscalls() -> Vec<i64> {

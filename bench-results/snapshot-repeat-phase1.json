@@ -1,0 +1,31 @@
+{
+  "scenario": "snapshot-repeat",
+  "concurrency": 1,
+  "iters": 5,
+  "warmup": 1,
+  "errors": 0,
+  "wall_clock_s": 0.409788363,
+  "throughput_per_s": 12.201420175516308,
+  "latency_us": {
+    "min": 26393,
+    "p50": 26848,
+    "p95": 27107,
+    "p99": 27107,
+    "max": 27107,
+    "mean": 26814,
+    "stddev": 233
+  },
+  "extra": {
+    "bytes": 16384000,
+    "files": 1000,
+    "mode": "incremental-repeat"
+  },
+  "env": {
+    "kernel": "6.17.8-orbstack-00308-g8f9c941121b1",
+    "cpu_count": 14,
+    "user_namespace": true,
+    "cgroup_v2": true,
+    "agentjail_rev": "c04f6fa"
+  },
+  "timestamp_unix": 1776790952
+}
