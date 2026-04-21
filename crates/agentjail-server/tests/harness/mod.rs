@@ -145,8 +145,12 @@ impl Stack {
                 .await.unwrap();
         });
 
+        // 5s is too tight for jail-spawn round trips on slower hosts
+        // (Docker-on-macOS can take 2–3s just to fork a namespaced
+        // process). 30s leaves plenty of headroom without masking a
+        // real hang — the inner jail timeouts (2s / 30s) fire first.
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
             .build().unwrap();
 
         Self {

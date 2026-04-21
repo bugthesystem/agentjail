@@ -31,6 +31,8 @@ Built for AI agents, build systems, and any scenario where you need to execute c
 - **Live forking** — clone a running jail in milliseconds via COW reflinks
 - **Event streaming** — real-time stdout/stderr/lifecycle events
 - **Persistent workspaces** — long-lived mount trees with multi-exec + named snapshots ([SDK ≥ 0.2](packages/sdk-node/README.md#persistent-workspaces--snapshots))
+- **Gateway** — hostname-routed reverse proxy with direct port-forward into the jail (`vm_port`) or a static backend URL, on the same server the control plane runs on
+- **Config snapshots** — every jail run records what it actually ran with (network policy, seccomp level, resource caps, git seed) so you can answer "what exactly did this run with" later
 
 ## Requirements
 
@@ -225,7 +227,7 @@ Each row links to the regression test that proves it. Tests live in [crates/agen
 | Zombie / fd leak on crash | `PR_SET_PDEATHSIG` + kill+reap in `Drop` | [`test_drop_handle_kills_child`](crates/agentjail/tests/audit_regression_test.rs), [`test_no_zombie_after_drop`](crates/agentjail/tests/audit_regression_test.rs) |
 | PID reuse kill | Reaped flag prevents killing recycled PIDs | _internal invariant; no behavioral test_ |
 
-Four rounds of security audit cover every source file; **90 regression tests** in the agentjail crate verify the scenarios above on every build.
+**91 regression tests** in the `agentjail` crate pin the scenarios above — every row in the table has at least one that would fail loudly if the protection ever regressed.
 
 ## Limitations
 

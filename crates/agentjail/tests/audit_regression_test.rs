@@ -1,10 +1,13 @@
-//! Security and reliability regression tests from the production audit.
+//! Security and reliability regression tests.
 //!
-//! Each test here targets a specific audit finding. Tests use the lightweight
-//! config (no user namespace, no seccomp) unless testing a specific security
-//! layer — in which case the relevant layer is enabled.
+//! Each test here pins a specific behaviour the engine must keep:
+//! namespace isolation, seccomp blocklist coverage, mount read-only
+//! guarantees, cgroup cleanup on drop, symlink traversal defences,
+//! core-dump and FD limits, I/O bandwidth caps, etc. Tests use the
+//! lightweight config (no user namespace, no seccomp) unless the
+//! specific security layer is what's being asserted.
 //!
-//! Run with: cargo test --test audit_regression_test
+//! Run with: `cargo test --test audit_regression_test`
 
 mod common;
 
@@ -18,7 +21,7 @@ fn cleanup(src: &PathBuf, out: &PathBuf) { common::cleanup(src, out) }
 fn base_config(src: PathBuf, out: PathBuf) -> JailConfig { common::lightweight_config(src, out) }
 
 // ---------------------------------------------------------------------------
-// AUDIT #1/2: Zombie leak — Drop kills+reaps, ChildGuard on error paths
+// Zombie leak — Drop kills+reaps, ChildGuard on error paths
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -73,7 +76,7 @@ async fn test_no_zombie_after_drop() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #3: Seccomp — new mount API, unshare, setns blocked
+// Seccomp — new mount API, unshare, setns blocked
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -175,7 +178,7 @@ async fn test_seccomp_strict_blocks_socketpair() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #4: Snapshot clear_dir symlink traversal
+// Snapshot clear_dir symlink traversal
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -223,7 +226,7 @@ fn test_snapshot_restore_does_not_follow_symlinks() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #5: Mount security — /etc restricted, /tmp NOEXEC
+// Mount security — /etc restricted, /tmp NOEXEC
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -347,7 +350,7 @@ async fn test_tmp_noexec() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #6: Pipe bounded output — jailed process can't OOM parent
+// Pipe bounded output — jailed process can't OOM parent
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -378,7 +381,7 @@ async fn test_large_stdout_does_not_oom() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #7: Fork — filesystem isolation verified
+// Fork — filesystem isolation verified
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -414,7 +417,7 @@ async fn test_fork_symlink_in_output_not_followed() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #8: Cgroup cleanup — no orphans after drop
+// Cgroup cleanup — no orphans after drop
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -442,7 +445,7 @@ async fn test_cgroup_cleaned_up_after_drop() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #9: Netlink — interface name validation
+// Netlink — interface name validation
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -452,7 +455,7 @@ fn test_cleanup_stale_veths_does_not_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #10: Multiple forks don't exhaust resources
+// Multiple forks don't exhaust resources
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -487,7 +490,7 @@ async fn test_rapid_spawn_drop_no_leak() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #11: Snapshot — dir_size doesn't follow symlinks
+// Snapshot — dir_size doesn't follow symlinks
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -522,7 +525,7 @@ fn test_snapshot_size_does_not_follow_symlinks() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #12: Process exit code propagation
+// Process exit code propagation
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -541,7 +544,7 @@ async fn test_nonzero_exit_code_propagated() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT #13: Workspace is truly read-only
+// Workspace is truly read-only
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -566,10 +569,6 @@ async fn test_workspace_readonly_enforced() {
 
     cleanup(&src, &out);
 }
-
-// ===========================================================================
-// Round 2 audit regression tests
-// ===========================================================================
 
 // ---------------------------------------------------------------------------
 // R2-1: io_uring blocked (bypasses all other seccomp blocks)
@@ -732,7 +731,7 @@ async fn test_fd_limit_enforced() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT (post-OSS round): docs claim fork-bomb protection via cgroup pids.max
+// Fork bombs — cgroup pids.max halts the stampede
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -780,7 +779,7 @@ async fn test_pid_limit_blocks_fork_bomb() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT (post-OSS round): docs claim I/O bandwidth limits via cgroup io.max
+// I/O bandwidth cap — cgroup io.max slows sustained writes
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -830,7 +829,7 @@ async fn test_io_write_bandwidth_limit_enforced() {
 }
 
 // ---------------------------------------------------------------------------
-// AUDIT (post-OSS round): docs claim core dumps disabled via RLIMIT_CORE=0
+// Core dumps disabled — RLIMIT_CORE=0
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
