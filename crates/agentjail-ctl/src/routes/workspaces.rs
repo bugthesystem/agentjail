@@ -17,7 +17,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CtlError, Result};
-use crate::workspaces::{Workspace, WorkspaceSpec, new_workspace_id};
+use crate::workspaces::{Workspace, WorkspaceSpec, new_workspace_id, slug};
 
 use super::AppState;
 use super::exec::{ExecOptions, GitSpec, NetworkSpec, SeccompSpec};
@@ -170,7 +170,12 @@ pub(crate) async fn create_workspace(
         config: spec,
         git_repo,
         git_ref: git_ref_value,
-        label: req.label,
+        label: req.label
+            .and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            })
+            .or_else(|| Some(slug::generate())),
         domains,
         last_exec_at: None,
         paused_at: None,
@@ -325,6 +330,33 @@ pub(crate) async fn get_workspace(
         .ok_or_else(|| CtlError::NotFound(format!("workspace {id}")))
 }
 
+/// `PATCH /v1/workspaces/:id` — renames a workspace. Empty or missing
+/// `label` rerolls a fresh auto-slug so the UI always has something to
+/// display.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PatchWorkspaceRequest {
+    #[serde(default)]
+    label: Option<String>,
+}
+
+pub(crate) async fn patch_workspace(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<PatchWorkspaceRequest>,
+) -> Result<Json<Workspace>> {
+    let next = req
+        .label
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(slug::generate);
+    state
+        .workspaces
+        .set_label(&id, Some(&next))
+        .await
+        .map(Json)
+        .ok_or_else(|| CtlError::NotFound(format!("workspace {id}")))
+}
+
 /// `DELETE /v1/workspaces/:id` — soft-deletes + removes on-disk dirs.
 /// Snapshots of this workspace keep their FK (ON DELETE SET NULL) so they
 /// remain usable.
@@ -380,8 +412,9 @@ fn options_to_spec(
     })
 }
 
-/// Best-effort startup sweep: drop rows whose dirs no longer exist on disk.
-/// Called from `ControlPlane::with_all_stores` once the store is wired up.
+/// Best-effort startup sweep: soft-deletes rows whose on-disk dirs have
+/// disappeared, and backfills an auto-slug label on any row missing one
+/// (so pre-existing workspaces pick up the friendly-name behaviour).
 pub(crate) async fn reconcile_on_startup(
     store: &dyn crate::workspaces::WorkspaceStore,
     state_dir: &Path,
@@ -392,6 +425,12 @@ pub(crate) async fn reconcile_on_startup(
         if !expected.exists() {
             tracing::warn!(workspace_id = %ws.id, "workspace dir missing — marking deleted");
             let _ = store.mark_deleted(&ws.id).await;
+            continue;
+        }
+        if ws.label.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+            let slug = slug::generate();
+            tracing::info!(workspace_id = %ws.id, label = %slug, "backfilling workspace label");
+            let _ = store.set_label(&ws.id, Some(&slug)).await;
         }
     }
 }

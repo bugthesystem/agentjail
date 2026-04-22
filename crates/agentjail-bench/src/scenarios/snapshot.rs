@@ -7,9 +7,9 @@
 //!   snapshot. Same walker cost, opposite direction.
 //!
 //! - `snapshot-repeat`: second `create_incremental` against an already-
-//!   populated pool. Today this pays full `read + sha + write-tmp` per
-//!   file. After finding 1.5 (mtime+size fast-path) lands, this should
-//!   drop to ~0 bytes of I/O.
+//!   populated pool. Exercises the `(path, size, mtime_ns)` fast-path
+//!   introduced in manifest v2 — unchanged files are reused without a
+//!   fresh BLAKE3 hash.
 //!
 //! The tree size is controlled by `--tree-files` / `--tree-size-kb`.
 //! Default (1000 × 4 KiB = ~4 MiB, 1000 files) is tuned to be
@@ -17,7 +17,7 @@
 
 use super::{Iteration, ScenarioConfig};
 use crate::fixtures::{Dirs, fabricate_tree};
-use agentjail::Snapshot;
+use agentjail::{Snapshot, load_manifest};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -96,11 +96,13 @@ pub async fn repeat(cfg: &ScenarioConfig) -> Result<Iteration> {
     let elapsed = tokio::task::spawn_blocking(move || -> Result<_> {
         // Prime the pool with the first incremental snapshot — this is
         // *not* measured. The measurement is the *second* pass, where
-        // every blob is already in the pool.
+        // every blob is already in the pool AND we feed the prior
+        // manifest as the mtime+size hint so the walker skips hashing.
         Snapshot::create_incremental(&output, &snap1, &pool)?;
+        let prior = load_manifest(&snap1)?;
 
         let start = Instant::now();
-        Snapshot::create_incremental(&output, &snap2, &pool)?;
+        Snapshot::create_incremental_with_hint(&output, &snap2, &pool, Some(&prior))?;
         Ok(start.elapsed())
     })
     .await??;
@@ -111,6 +113,10 @@ pub async fn repeat(cfg: &ScenarioConfig) -> Result<Iteration> {
 
     Ok(Iteration::ok(
         elapsed,
-        serde_json::json!({ "bytes": bytes, "files": cfg.tree_files, "mode": "incremental-repeat" }),
+        serde_json::json!({
+            "bytes": bytes,
+            "files": cfg.tree_files,
+            "mode": "incremental-repeat-with-hint",
+        }),
     ))
 }

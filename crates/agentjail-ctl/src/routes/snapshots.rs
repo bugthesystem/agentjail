@@ -150,10 +150,11 @@ pub(crate) struct SnapshotManifest {
 
 #[derive(Debug, Serialize)]
 struct ManifestEntryDto {
-    path:   String,
-    mode:   u32,
-    sha256: String,
-    size:   u64,
+    path: String,
+    mode: u32,
+    /// Hex-encoded BLAKE3-256 of the file bytes.
+    hash: String,
+    size: u64,
 }
 
 pub(crate) async fn get_snapshot_manifest(
@@ -172,7 +173,7 @@ pub(crate) async fn get_snapshot_manifest(
                 .entries
                 .into_iter()
                 .map(|e| ManifestEntryDto {
-                    path: e.path, mode: e.mode, sha256: e.sha256, size: e.size,
+                    path: e.path, mode: e.mode, hash: e.hash, size: e.size,
                 })
                 .collect();
             Ok(Json(SnapshotManifest { kind: "incremental", entries }))
@@ -275,9 +276,12 @@ pub(crate) async fn create_workspace_from_snapshot(
         config,
         git_repo: parent.as_ref().and_then(|p| p.git_repo.clone()),
         git_ref:  parent.as_ref().and_then(|p| p.git_ref.clone()),
-        label:    req.label.or_else(|| {
-            parent.as_ref().map(|_| format!("restored from {}", snap.id))
-        }),
+        label: req.label
+            .and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            })
+            .or_else(|| Some(crate::workspaces::slug::generate())),
         domains:       Vec::new(),
         last_exec_at:  None,
         paused_at:     None,

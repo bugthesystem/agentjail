@@ -1,38 +1,7 @@
-//! Live forking: clone a running jail's filesystem state using COW semantics.
-//!
-//! Uses the Linux `FICLONE` ioctl for instant copy-on-write clones on
-//! supported filesystems (btrfs, xfs with reflink). Falls back to regular
-//! file copy when COW isn't available.
-//!
-//! # How it works
-//!
-//! 1. The running jail's cgroup is briefly frozen (sub-millisecond) so the
-//!    filesystem is in a consistent state.
-//! 2. The output directory is cloned using `FICLONE` (reflink) per file.
-//!    On COW-capable filesystems this is instant — no data is copied until
-//!    either side writes, at which point only the changed blocks diverge.
-//! 3. The original jail is immediately thawed.
-//! 4. A new jail is spawned with the cloned output directory.
-//!
-//! The result is a full, independent copy of the jail's writable state
-//! obtained in milliseconds without meaningfully pausing the original.
-//!
-//! # Example
-//!
-//! ```ignore
-//! let jail = Jail::new(config)?;
-//! let handle = jail.spawn("python", &["train.py"])?;
-//!
-//! // Fork the running jail — filesystem state is duplicated instantly.
-//! let (fork_handle, info) = jail.live_fork(
-//!     Some(&handle),          // freeze for consistent snapshot
-//!     "/tmp/fork-output",
-//!     "python", &["train.py"],
-//! )?;
-//!
-//! println!("Forked in {:?} ({:?})", info.clone_duration, info.clone_method);
-//! // Both handle and fork_handle now run independently.
-//! ```
+//! Live forking: COW-clone a running jail's output via `FICLONE`. Falls
+//! back to regular copy when reflinks aren't supported (ext4 without
+//! `reflink`, tmpfs, cross-filesystem). The running jail is frozen for
+//! the duration of the clone (sub-millisecond) so the copy is consistent.
 
 use crate::error::{JailError, Result};
 use crate::snapshot::copy_dir_with;

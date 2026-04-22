@@ -1,11 +1,10 @@
-//! Child-process setup: namespaces, mounts, chroot, exec.
-//!
-//! Everything in this module runs after fork(), inside the child process,
-//! before exec(). The parent never calls these functions.
+//! Child-side jail setup: runs post-fork, pre-exec.
 
 use crate::config::{JailConfig, Network};
 use crate::error::{JailError, Result};
-use crate::namespace::{NamespaceConfig, enter_namespaces, setup_loopback};
+use crate::namespace::{
+    NamespaceConfig, enter_namespaces, enter_user_namespace_alone, setup_loopback,
+};
 use crate::veth::{proxy_env_vars, veth_addrs};
 use crate::seccomp::{CompiledFilter, apply_compiled};
 use crate::{gpu, landlock, mount, netlink};
@@ -17,6 +16,11 @@ use std::ffi::CString;
 /// `sync_fd`: For Allowlist mode, the child's end of a socketpair for syncing
 /// with the parent. Child signals "in netns", parent replies with veth ID.
 ///
+/// `userns_sync_fd`: When `config.user_namespace` is true, a socketpair
+/// end the child uses to coordinate the user-namespace bring-up with
+/// the parent: child enters NEWUSER, writes one byte, waits for one
+/// byte back (parent wrote uid_map/gid_map), then proceeds.
+///
 /// `seccomp_filter`: Pre-compiled BPF program to install before `exec()`.
 /// `None` when `config.seccomp == SeccompLevel::Disabled`. Built once in
 /// `Jail::new` and shared across all spawns of the same `Jail`.
@@ -27,10 +31,36 @@ pub(crate) fn setup_child(
     cmd: &str,
     args: &[String],
     sync_fd: Option<i32>,
+    userns_sync_fd: Option<i32>,
 ) -> Result<()> {
-    // 1. Enter namespaces (PID namespace entered separately via double-fork)
+    // 0. User namespace FIRST, with parent-side uid_map write
+    //    sandwiched. Rest of the unshares happen after so the child
+    //    runs them under the new userns' caps, and — more importantly
+    //    — so `/proc/<pid>/uid_map` targets the intended namespace.
+    if config.user_namespace {
+        let fd = userns_sync_fd.ok_or_else(|| {
+            JailError::Exec(std::io::Error::other(
+                "user_namespace=true requires a userns sync fd",
+            ))
+        })?;
+        enter_user_namespace_alone()?;
+        // Signal "userns created".
+        // SAFETY: valid fd from socketpair, one-byte write.
+        if unsafe { libc::write(fd, [1u8].as_ptr() as *const _, 1) } != 1 {
+            unsafe { libc::_exit(127) };
+        }
+        // Wait for "maps written".
+        let mut ack = [0u8; 1];
+        // SAFETY: valid fd from socketpair, one-byte read.
+        if unsafe { libc::read(fd, ack.as_mut_ptr() as *mut _, 1) } != 1 {
+            unsafe { libc::_exit(127) };
+        }
+    }
+
+    // 1. Enter remaining namespaces (user handled above, pid via
+    //    double-fork below).
     let ns_config = NamespaceConfig {
-        user: config.user_namespace,
+        user: false,
         mount: true,
         pid: false,
         network: true,
@@ -77,7 +107,9 @@ pub(crate) fn setup_child(
 
     // 3. Filesystem
     mount::make_root_private()?;
-    let new_root = std::env::temp_dir().join(format!("agentjail-{}", std::process::id()));
+    // Unpredictable temp dir so a host-side attacker can't race a
+    // symlink into place at a guessed path before setup_root runs.
+    let new_root = mount::make_jail_root()?;
     mount::setup_root(&new_root, &config.source, &config.output, config.source_rw)?;
 
     if let Some(res) = gpu_resources {
@@ -85,19 +117,34 @@ pub(crate) fn setup_child(
     }
 
     // 4. Landlock
-    if config.landlock && landlock::is_available() {
+    if config.landlock {
+        if !landlock::is_available() {
+            // The config asked for landlock but the kernel can't
+            // provide it (<5.13 or disabled). Soft-falling through
+            // would hand back a jail without the FS defence the
+            // caller explicitly requested, so refuse instead.
+            return Err(JailError::Exec(std::io::Error::other(
+                "config.landlock=true but kernel lacks LSM support \
+                 (need Linux ≥5.13 with CONFIG_SECURITY_LANDLOCK). \
+                 Set landlock=false to acknowledge the relaxed posture.",
+            )));
+        }
         let rules = [
             (config.source.as_path(), crate::config::Access::ReadOnly),
             (config.output.as_path(), crate::config::Access::ReadWrite),
         ];
-        if let Err(e) = landlock::apply_rules(&rules) {
-            eprintln!("warning: landlock enforcement failed: {e}");
-        }
+        // apply_rules returns Err on any failure inside the ruleset
+        // build or restrict_self — propagate rather than print and
+        // continue. If we're past this point the child MUST have
+        // landlock in force.
+        landlock::apply_rules(&rules)?;
     }
 
-    // 5. Chroot
-    std::env::set_current_dir(&new_root).map_err(JailError::Exec)?;
-    rustix::process::chroot(".").map_err(JailError::Namespace)?;
+    // 5. Pivot into the new root. pivot_root + MNT_DETACH fully
+    //    removes the host filesystem from the mount namespace — a
+    //    plain chroot(2) leaves the old root attached and is
+    //    escapable via nested-chroot + fchdir + "..".
+    mount::pivot_into(&new_root)?;
     std::env::set_current_dir("/workspace").map_err(JailError::Exec)?;
 
     // 6. Environment
@@ -117,11 +164,22 @@ pub(crate) fn setup_child(
     // SAFETY: PR_SET_NO_NEW_PRIVS is always safe to set.
     unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
 
-    // 8. PID namespace double-fork
+    // Mark every inherited fd CLOEXEC. Doesn't need any capability
+    // and doesn't affect setup — execve will close the flagged fds.
+    close_inherited_fds();
+
+    // 8. PID namespace double-fork. Capability drop happens in the
+    //    grandchild AFTER the ns ops and proc remount (both need
+    //    CAP_SYS_ADMIN); if we dropped here, unshare(NEWPID) and
+    //    the grandchild's mount would both EPERM.
     if config.pid_namespace {
         enter_pid_namespace_and_exec(seccomp_filter, cmd, args, &env)?;
         unreachable!()
     }
+
+    // No-pidns path: nothing else needs caps from here on, so drop
+    // them now and then seccomp+exec.
+    drop_all_capabilities();
 
     // 9. Seccomp (must be last before exec). The filter was compiled
     // in `Jail::new`; apply the cached program with no rebuild.
@@ -167,6 +225,14 @@ fn enter_pid_namespace_and_exec(
                 unsafe { libc::_exit(127) };
             }
 
+            // Cap drop only after remount_proc (which needs
+            // CAP_SYS_ADMIN in the mount ns). From here on we don't
+            // need any capability — seccomp-load just needs NNP, and
+            // execve needs none. An attacker-triggered syscall that
+            // happens to slip seccomp still can't do anything
+            // cap-gated because we hold none.
+            drop_all_capabilities();
+
             if let Some(bpf) = seccomp_filter
                 && let Err(e) = apply_compiled(bpf)
             {
@@ -200,17 +266,33 @@ fn enter_pid_namespace_and_exec(
 }
 
 /// Remount /proc for the new PID namespace.
+///
+/// Must preserve the same mount flags and `hidepid=invisible` option
+/// that the outer child's initial `mount_proc` used. `umount2 +
+/// mount()` lands a fresh superblock, which otherwise inherits the
+/// kernel defaults (no hidepid, no NOSUID/NODEV/NOEXEC) — silently
+/// undoing the hardening for any pidns-enabled jail.
 fn remount_proc() -> Result<()> {
-    // SAFETY: These are hardcoded strings with no null bytes.
+    // SAFETY: All hardcoded C string literals.
     let proc = c"/proc";
     let procfs = c"proc";
+    let opts = c"hidepid=invisible";
 
-    // SAFETY: Unmounting /proc with valid C string.
+    // SAFETY: umount2 with a valid C string; the MNT_DETACH flag
+    // makes it lazy so no open /proc fds block the swap.
     unsafe { libc::umount2(proc.as_ptr(), libc::MNT_DETACH) };
 
-    // SAFETY: Mounting proc filesystem with valid C strings.
+    let flags = (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong;
+    // SAFETY: all pointers are valid static C strings; flags/data
+    // conform to mount(2) for procfs.
     let ret = unsafe {
-        libc::mount(procfs.as_ptr(), proc.as_ptr(), procfs.as_ptr(), 0, std::ptr::null())
+        libc::mount(
+            procfs.as_ptr(),
+            proc.as_ptr(),
+            procfs.as_ptr(),
+            flags,
+            opts.as_ptr() as *const libc::c_void,
+        )
     };
 
     if ret == 0 { Ok(()) } else { Err(JailError::Exec(std::io::Error::last_os_error())) }
@@ -270,4 +352,103 @@ fn set_core_limit(max: u64) {
         rlim_max: max,
     };
     unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
+}
+
+/// Drop every capability from the ambient, bounding, and
+/// effective/permitted/inheritable sets, then lock down securebits
+/// so uid-0 stops implying caps and setuid transitions can't restore
+/// them. Called after PR_SET_NO_NEW_PRIVS and before seccomp.
+///
+/// Order matters: capset() strips CAP_SETPCAP, after which neither
+/// PR_SET_SECUREBITS nor PR_CAPBSET_DROP will succeed. So we clear
+/// ambient → lock securebits → drop bounding → zero the sets last.
+fn drop_all_capabilities() {
+    // Ambient: single call clears all 64 caps.
+    // SAFETY: prctl with scalar args is always safe.
+    unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+            0,
+            0,
+            0,
+        );
+    }
+
+    // Securebits — uid 0 no longer means "has all caps", and setuid
+    // transitions don't re-grant caps. The *_LOCKED pair freezes
+    // these bits so nothing later can undo them.
+    const SECBIT_NOROOT: libc::c_ulong = 1 << 0;
+    const SECBIT_NOROOT_LOCKED: libc::c_ulong = 1 << 1;
+    const SECBIT_NO_SETUID_FIXUP: libc::c_ulong = 1 << 2;
+    const SECBIT_NO_SETUID_FIXUP_LOCKED: libc::c_ulong = 1 << 3;
+    // SAFETY: prctl with scalar args.
+    unsafe {
+        libc::prctl(
+            libc::PR_SET_SECUREBITS,
+            SECBIT_NOROOT
+                | SECBIT_NOROOT_LOCKED
+                | SECBIT_NO_SETUID_FIXUP
+                | SECBIT_NO_SETUID_FIXUP_LOCKED,
+            0,
+            0,
+            0,
+        );
+    }
+
+    // Bounding set — 63 is a safe upper bound; EINVAL on unknown
+    // cap numbers is fine, the loop continues.
+    for cap in 0..=63 {
+        // SAFETY: prctl with scalar args; errors ignored by design.
+        unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0) };
+    }
+
+    // Effective / permitted / inheritable — zero all three. Use the
+    // raw syscall with _LINUX_CAPABILITY_VERSION_3 (64-bit caps, two
+    // data blocks).
+    #[repr(C)]
+    struct CapHeader {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    let hdr = CapHeader { version: 0x20080522, pid: 0 };
+    let data: [CapData; 2] = [
+        CapData { effective: 0, permitted: 0, inheritable: 0 },
+        CapData { effective: 0, permitted: 0, inheritable: 0 },
+    ];
+    // SAFETY: hdr and data live on the stack for the whole call;
+    // pointers are valid and correctly aligned for the kernel ABI.
+    unsafe {
+        libc::syscall(libc::SYS_capset, &hdr as *const _, data.as_ptr());
+    }
+}
+
+/// Mark every inherited file descriptor above stdio as CLOEXEC so
+/// it is closed at execve. Agentjail's own fds are all already
+/// CLOEXEC; this neutralizes third-party libraries (OpenSSL, CUDA,
+/// Python extensions) that leak descriptors into the embedding
+/// process.
+fn close_inherited_fds() {
+    // Flag from linux/close_range.h — mark range CLOEXEC rather
+    // than closing now, so we don't disturb anything agentjail is
+    // still using during setup.
+    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 4;
+    // SAFETY: close_range with scalar args. If the kernel is <5.11
+    // or the CLOEXEC flag is unsupported (pre-5.11 did not have
+    // it), the syscall errors out silently — agentjail's own
+    // CLOEXEC hygiene still holds, so nothing regresses.
+    unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            3u32,
+            u32::MAX,
+            CLOSE_RANGE_CLOEXEC,
+        );
+    }
 }

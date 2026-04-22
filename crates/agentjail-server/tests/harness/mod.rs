@@ -119,7 +119,7 @@ impl Stack {
 
         // 4. Control plane.
         let api_key = "aj_test_key".to_string();
-        let ctl = ControlPlane::with_stores(
+        let ctl = ControlPlane::with_all_stores(
             ControlPlaneConfig {
                 tokens: tokens.clone(),
                 keys: keys.clone(),
@@ -134,6 +134,9 @@ impl Stack {
             Arc::new(InMemorySessionStore::new()),
             Arc::new(InMemoryCredentialStore::new()),
             audit.clone(),
+            Arc::new(agentjail_ctl::InMemoryJailStore::new()),
+            Arc::new(agentjail_ctl::InMemoryWorkspaceStore::new()),
+            Arc::new(agentjail_ctl::InMemorySnapshotStore::new()),
         );
         let ctl_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ctl_addr = ctl_listener.local_addr().unwrap();

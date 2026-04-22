@@ -177,6 +177,10 @@ pub trait WorkspaceStore: Send + Sync + 'static {
     ) -> (Vec<Workspace>, u64);
     /// Mark deleted + set `deleted_at = now()`.
     async fn mark_deleted(&self, id: &str) -> Option<Workspace>;
+    /// Update a workspace's human-readable label. `None` clears it.
+    /// Returns the refreshed record, or `None` if the id is unknown or
+    /// soft-deleted.
+    async fn set_label(&self, id: &str, label: Option<&str>) -> Option<Workspace>;
     /// Bump `last_exec_at`. Called on every successful exec dispatch.
     async fn touch(&self, id: &str);
     /// Mark paused with an auto-snapshot id.
@@ -316,6 +320,7 @@ impl ActiveJailIps {
 }
 
 pub mod idle;
+pub mod slug;
 
 // ---------- in-memory impl ----------
 
@@ -411,6 +416,16 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
             return None;
         }
         ws.deleted_at = Some(OffsetDateTime::now_utc());
+        Some(ws.clone())
+    }
+
+    async fn set_label(&self, id: &str, label: Option<&str>) -> Option<Workspace> {
+        let mut g = self.inner.write().ok()?;
+        let ws = g.get_mut(id)?;
+        if ws.deleted_at.is_some() {
+            return None;
+        }
+        ws.label = label.map(|s| s.to_string());
         Some(ws.clone())
     }
 
@@ -571,5 +586,29 @@ mod tests {
         let w = store.get("wrk_a").await.unwrap();
         assert!(w.paused_at.is_none());
         assert!(w.auto_snapshot.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_label_updates_live_row_and_clears_to_none() {
+        let store = InMemoryWorkspaceStore::new();
+        store.insert(sample("wrk_a")).await.unwrap();
+
+        let updated = store.set_label("wrk_a", Some("quiet-falcon-1234")).await.unwrap();
+        assert_eq!(updated.label.as_deref(), Some("quiet-falcon-1234"));
+        let fetched = store.get("wrk_a").await.unwrap();
+        assert_eq!(fetched.label.as_deref(), Some("quiet-falcon-1234"));
+
+        let cleared = store.set_label("wrk_a", None).await.unwrap();
+        assert!(cleared.label.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_label_on_deleted_or_missing_returns_none() {
+        let store = InMemoryWorkspaceStore::new();
+        store.insert(sample("wrk_a")).await.unwrap();
+        store.mark_deleted("wrk_a").await.unwrap();
+
+        assert!(store.set_label("wrk_a", Some("x")).await.is_none());
+        assert!(store.set_label("wrk_missing", Some("x")).await.is_none());
     }
 }

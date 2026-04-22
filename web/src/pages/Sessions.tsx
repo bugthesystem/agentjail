@@ -32,18 +32,24 @@ export function Sessions() {
   return (
     <div className="grid grid-cols-[1fr_420px] gap-4">
       <Panel padded={false}>
-        <div className="px-5 py-4 flex items-center justify-between">
-          <PanelHeader
-            eyebrow="Sessions"
-            title={`${sessions?.length ?? 0} active`}
-            className="!mb-0"
-          />
-          <div className="text-[11px] mono text-ink-500">auto-refreshing</div>
+        <div className="px-5 py-4">
+          <div className="flex items-center justify-between">
+            <PanelHeader
+              eyebrow="API Sessions"
+              title={`${sessions?.length ?? 0} active`}
+              className="!mb-0"
+            />
+            <div className="text-[11px] mono text-ink-500">auto-refreshing</div>
+          </div>
+          <p className="mt-1.5 text-[12px] text-ink-400 max-w-[520px]">
+            A session bundles scoped{" "}
+            <span className="mono text-ink-300">phm_…</span> tokens for a single agent run — short-lived, revocable, and only good for the services you pick.
+          </p>
         </div>
         <div className="hairline" />
         {(sessions?.length ?? 0) === 0 ? (
           <Empty
-            title="No sessions yet"
+            title="No active sessions"
             hint="Mint one on the right — you'll get a set of phantom env vars ready to drop into a sandbox."
           />
         ) : (

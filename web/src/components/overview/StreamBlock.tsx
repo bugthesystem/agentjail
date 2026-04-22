@@ -12,7 +12,7 @@ export function StreamBlock({ rows }: { rows: AuditRow[] }) {
           eyebrow="Stream"
           title="Recent phantom requests"
           action={
-            <Link to="/stream">
+            <Link to="/operator/audit">
               <Button variant="ghost" size="sm">open stream →</Button>
             </Link>
           }

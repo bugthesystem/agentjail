@@ -1,42 +1,27 @@
-/**
- * Shared types across the SDK. These mirror the control-plane's JSON schemas
- * exactly — keep them in sync with `crates/agentjail-ctl/src/routes.rs`.
- */
+// Wire types. Mirror `crates/agentjail-ctl/src/routes/*` exactly; any
+// drift breaks the SDK against a deployed server.
 
-/** Stable string identifiers for upstream services. */
 export type ServiceId = "openai" | "anthropic" | "github" | "stripe";
 
-/** Public credential metadata. Never carries the secret. */
 export interface CredentialRecord {
   service: ServiceId;
-  /** RFC3339 timestamp. */
   added_at: string;
-  /** RFC3339 timestamp. */
   updated_at: string;
   /** Non-reversible fingerprint of the secret (for rotation detection). */
   fingerprint: string;
 }
 
-/** Creating a session returns this. */
 export interface Session {
   id: string;
-  /** RFC3339. */
   created_at: string;
-  /** RFC3339 or null. */
   expires_at: string | null;
   services: ServiceId[];
-  /**
-   * The environment variables to export in the sandbox. Contains the
-   * phantom token(s) and matching *_BASE_URL entries pointing at the
-   * phantom proxy.
-   */
+  /** Phantom tokens + matching *_BASE_URL entries pointing at the proxy. */
   env: Record<string, string>;
 }
 
-/** One row of the phantom-proxy audit log. */
 export interface AuditRow {
   id: number;
-  /** RFC3339 timestamp. */
   at: string;
   session_id: string;
   service: string;
@@ -47,13 +32,11 @@ export interface AuditRow {
   upstream_ms: number | null;
 }
 
-/** Paginated audit response. */
 export interface AuditList {
   rows: AuditRow[];
   total: number;
 }
 
-/** Result of executing a command in a session's jail. */
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -64,12 +47,13 @@ export interface ExecResult {
   stats?: ResourceStats;
 }
 
-/** Jail resource usage statistics. */
 export interface ResourceStats {
   memory_peak_bytes: number;
+  memory_current_bytes: number;
   cpu_usage_usec: number;
   io_read_bytes: number;
   io_write_bytes: number;
+  pids_current: number;
 }
 
 /**
@@ -199,10 +183,12 @@ export interface JailRecord {
   duration_ms: number | null;
   timed_out:   boolean | null;
   oom_killed:  boolean | null;
-  memory_peak_bytes: number | null;
-  cpu_usage_usec:    number | null;
-  io_read_bytes:     number | null;
-  io_write_bytes:    number | null;
+  memory_peak_bytes:    number | null;
+  memory_current_bytes: number | null;
+  cpu_usage_usec:       number | null;
+  io_read_bytes:        number | null;
+  io_write_bytes:       number | null;
+  pids_current:         number | null;
   stdout: string | null;
   stderr: string | null;
   error:  string | null;
@@ -229,9 +215,11 @@ export type StreamEvent =
   | { type: "stderr";    line: string }
   | { type: "stats";
       memory_peak_bytes: number;
+      memory_current_bytes: number;
       cpu_usage_usec: number;
       io_read_bytes: number;
       io_write_bytes: number;
+      pids_current: number;
     }
   | { type: "completed";
       exit_code: number;
@@ -239,7 +227,9 @@ export type StreamEvent =
       timed_out: boolean;
       oom_killed: boolean;
       memory_peak_bytes: number;
+      memory_current_bytes: number;
       cpu_usage_usec: number;
+      pids_current: number;
     }
   | { type: "error";     message: string };
 
@@ -387,7 +377,8 @@ export interface SnapshotList {
 export interface SnapshotManifestEntry {
   path:   string;
   mode:   number;
-  sha256: string;
+  /** Hex-encoded BLAKE3-256 of the file bytes. */
+  hash: string;
   size:   number;
 }
 

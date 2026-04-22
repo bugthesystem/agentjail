@@ -62,7 +62,7 @@ function FileChip({ name }: { name: string }) {
 }
 
 function fileNameFor(r: Recipe): string {
-  if (r.language === "javascript") return "main.js";
+  if (r.language === "javascript") return "main.mjs";
   if (r.language === "python")     return "main.py";
   if (r.language === "bash")       return "main.sh";
   if (r.display === "ts")          return `${r.id}.ts`;

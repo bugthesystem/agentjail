@@ -109,7 +109,7 @@ await aj.snapshots.delete(snap.id);`}</Code>
         <Code lang="ts">{`const m = await aj.snapshots.manifest(snap.id);
 if (m.kind === "incremental") {
   for (const e of m.entries) {
-    console.log(e.path, e.size, e.sha256.slice(0, 12));
+    console.log(e.path, e.size, e.hash.slice(0, 12));
   }
 } else {
   // kind === "classic" — full-copy snapshot; the file list is

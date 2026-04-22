@@ -71,18 +71,34 @@ impl OutputStream {
 
     pub async fn read_line(&mut self) -> Option<String> {
         let reader = self.reader.as_mut()?;
-        let mut line = String::new();
-        match reader.read_line(&mut line).await {
-            Ok(0) => None,
-            Ok(_) => {
-                // Truncate absurdly long lines to prevent OOM.
-                if line.len() > MAX_LINE_BYTES {
-                    line.truncate(MAX_LINE_BYTES);
-                }
-                Some(line)
-            }
-            Err(_) => None,
+
+        // `BufReader::read_line` allocates up to the next `\n` *before*
+        // we get a chance to truncate — a jail that emits a 4 GiB
+        // single-line blast would OOM the parent long before the
+        // post-read `.truncate` fires. Instead we use `read_until` on
+        // a bounded `take()` so the kernel only hands us at most
+        // `MAX_LINE_BYTES + 1` bytes per call, then we discard any
+        // tail until the real newline so the *next* call resumes on
+        // the next line rather than re-reading the overflow.
+        let mut buf: Vec<u8> = Vec::with_capacity(256);
+        let n = match reader.take((MAX_LINE_BYTES + 1) as u64).read_until(b'\n', &mut buf).await {
+            Ok(0) => return None,
+            Ok(n) => n,
+            Err(_) => return None,
+        };
+
+        // If we hit the cap before seeing a newline, drain the rest of
+        // the oversized line from the underlying stream so the next
+        // `read_line` doesn't start mid-line. Cap the drain to
+        // `MAX_OUTPUT_BYTES` so a process spewing an infinite
+        // newline-free stream still can't lock us up forever.
+        if n > MAX_LINE_BYTES && !buf.ends_with(b"\n") {
+            let mut sink = Vec::new();
+            let _ = reader.take(MAX_OUTPUT_BYTES).read_until(b'\n', &mut sink).await;
+            buf.truncate(MAX_LINE_BYTES);
         }
+
+        Some(String::from_utf8_lossy(&buf).into_owned())
     }
 
     pub async fn read_all(&mut self) -> Vec<u8> {

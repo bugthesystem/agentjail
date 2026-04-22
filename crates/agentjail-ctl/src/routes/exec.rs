@@ -129,9 +129,14 @@ pub(super) fn default_language() -> String {
 }
 
 /// Resolve a language string to `(file, command)` for the jailed runtime.
+///
+/// JavaScript snippets are written as `main.mjs` so Node loads them as
+/// ESM. The CommonJS loader rejects top-level `await` — and playground
+/// snippets almost always look like `const r = await fetch(...)` at the
+/// top of the file, so ESM is what users actually want.
 pub(super) fn language_runtime(lang: &str) -> Result<(&'static str, &'static str)> {
     match lang {
-        "javascript" | "js" => Ok(("main.js", "/usr/bin/node")),
+        "javascript" | "js" => Ok(("main.mjs", "/usr/bin/node")),
         "python" | "py"     => Ok(("main.py", "/usr/bin/python3")),
         "bash" | "sh"       => Ok(("main.sh", "/bin/sh")),
         other => Err(CtlError::BadRequest(format!("unsupported language: {other}"))),
@@ -154,10 +159,12 @@ pub(crate) struct ExecResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct StatsResponse {
-    memory_peak_bytes: u64,
-    cpu_usage_usec: u64,
-    io_read_bytes: u64,
-    io_write_bytes: u64,
+    memory_peak_bytes:    u64,
+    memory_current_bytes: u64,
+    cpu_usage_usec:       u64,
+    io_read_bytes:        u64,
+    io_write_bytes:       u64,
+    pids_current:         u64,
 }
 
 /// Build the jail-ledger config snapshot from an exec-options block.
@@ -205,10 +212,12 @@ pub(super) fn output_to_response(output: agentjail::Output) -> ExecResponse {
         timed_out: output.timed_out,
         oom_killed: output.oom_killed,
         stats: output.stats.map(|s| StatsResponse {
-            memory_peak_bytes: s.memory_peak_bytes,
-            cpu_usage_usec: s.cpu_usage_usec,
-            io_read_bytes: s.io_read_bytes,
-            io_write_bytes: s.io_write_bytes,
+            memory_peak_bytes:    s.memory_peak_bytes,
+            memory_current_bytes: s.memory_current_bytes,
+            cpu_usage_usec:       s.cpu_usage_usec,
+            io_read_bytes:        s.io_read_bytes,
+            io_write_bytes:       s.io_write_bytes,
+            pids_current:         s.pids_current,
         }),
     }
 }

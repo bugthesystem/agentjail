@@ -226,10 +226,6 @@ impl Postgres {
     }
 }
 
-// Re-export the rehydration helper so callers can reach it without opening
-// the db submodule.
-pub use db::rehydrate_keystore;
-
 /// Assembled control plane. Call [`Self::router`] for the axum router.
 pub struct ControlPlane {
     state: AppState,
@@ -242,26 +238,15 @@ impl ControlPlane {
     /// implementations.
     #[must_use]
     pub fn new(config: ControlPlaneConfig) -> Self {
-        Self::with_stores(
+        Self::with_all_stores(
             config,
             Arc::new(InMemorySessionStore::new()),
             Arc::new(InMemoryCredentialStore::new()),
             Arc::new(InMemoryAuditStore::new()),
+            Arc::new(InMemoryJailStore::new()),
+            Arc::new(InMemoryWorkspaceStore::new()),
+            Arc::new(InMemorySnapshotStore::new()),
         )
-    }
-
-    /// Build with explicit store implementations.
-    #[must_use]
-    pub fn with_stores(
-        config: ControlPlaneConfig,
-        sessions: Arc<dyn SessionStore>,
-        credentials: Arc<dyn CredentialStore>,
-        audit: Arc<dyn AuditStore>,
-    ) -> Self {
-        let jails: Arc<dyn JailStore> = Arc::new(InMemoryJailStore::new());
-        let workspaces: Arc<dyn WorkspaceStore> = Arc::new(InMemoryWorkspaceStore::new());
-        let snapshots: Arc<dyn SnapshotStore> = Arc::new(InMemorySnapshotStore::new());
-        Self::with_all_stores(config, sessions, credentials, audit, jails, workspaces, snapshots)
     }
 
     /// Build with explicit stores *including* the jail ledger + workspace
@@ -387,7 +372,9 @@ impl ControlPlane {
             )
             .route(
                 "/v1/workspaces/:id",
-                get(routes::get_workspace).delete(routes::delete_workspace),
+                get(routes::get_workspace)
+                    .patch(routes::patch_workspace)
+                    .delete(routes::delete_workspace),
             )
             .route(
                 "/v1/workspaces/:id/exec",

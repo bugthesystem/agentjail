@@ -3,11 +3,13 @@
 Four runnable scripts demonstrating the agentjail workspace surface,
 each one mirroring a well-known product pattern. They use the real
 [`@agentjail/sdk`](../../packages/sdk-node/) and run end-to-end against
-a live control plane.
+a live control plane. A Python port of demo #1 is included to show
+the same surface via [`agentjail`](../../packages/sdk-python/).
 
 | Script | Pattern | Key features |
 |---|---|---|
 | [`1-ai-assistant.ts`](1-ai-assistant.ts)    | OpenClaw / Claude / Cowork    | persistent workspace, idle auto-pause |
+| [`1-ai-assistant.py`](1-ai-assistant.py)    | Python port of #1             | same, via the Python SDK |
 | [`2-review-bot.ts`](2-review-bot.ts)        | Code Rabbit / Greptile        | git clone, multi-exec, branch on output |
 | [`3-background-agent.ts`](3-background-agent.ts) | Devin / Cursor Agent      | N-way workspace fork, parallel execs |
 | [`4-app-builder.ts`](4-app-builder.ts)      | Lovable / Bolt / V0           | dev server + hostname-routed gateway |
@@ -23,6 +25,9 @@ bun scripts/demos/1-ai-assistant.ts
 bun scripts/demos/2-review-bot.ts
 bun scripts/demos/3-background-agent.ts
 bun scripts/demos/4-app-builder.ts
+
+# Python variant (requires Python ≥ 3.10)
+uv run --with ./packages/sdk-python scripts/demos/1-ai-assistant.py
 ```
 
 All four respect the same env vars:

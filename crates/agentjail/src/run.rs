@@ -98,8 +98,10 @@ pub struct Output {
 /// Resource usage statistics from cgroup.
 #[derive(Debug, Clone, Default)]
 pub struct ResourceStats {
-    /// Peak memory usage in bytes.
+    /// Peak memory usage in bytes (watermark — never decreases).
     pub memory_peak_bytes: u64,
+    /// Current memory usage in bytes at sample time.
+    pub memory_current_bytes: u64,
     /// Total CPU time used in microseconds.
     pub cpu_usage_usec: u64,
     /// Whether OOM killer was triggered.
@@ -108,6 +110,8 @@ pub struct ResourceStats {
     pub io_read_bytes: u64,
     /// Total bytes written to disk.
     pub io_write_bytes: u64,
+    /// Processes/threads currently alive inside the jail.
+    pub pids_current: u64,
 }
 
 impl Jail {
@@ -209,6 +213,17 @@ impl Jail {
             None
         };
 
+        // For user_namespace mode, a second socketpair coordinates the
+        // userns handoff: child unshares NEWUSER, signals us, we write
+        // uid_map/gid_map against the *new* namespace (not the parent's
+        // init userns), then we signal back so the child can finish
+        // unsharing the remaining namespaces.
+        let userns_pair = if self.config.user_namespace {
+            Some(sync_socketpair()?)
+        } else {
+            None
+        };
+
         // All three clones are `Arc::clone` — refcount bumps, no deep
         // copy of config, env, allowlist, or seccomp BPF.
         let config = self.config.clone();
@@ -219,6 +234,7 @@ impl Jail {
 
         // Extract child-side fd before fork (child gets fds[0])
         let child_sync_fd = sync_pair.as_ref().map(|(child_fd, _)| child_fd.as_raw_fd());
+        let child_userns_fd = userns_pair.as_ref().map(|(child_fd, _)| child_fd.as_raw_fd());
         let barrier_read_fd = barrier_pipe.read.as_raw_fd();
 
         // SAFETY: fork() is safe when we immediately either _exit() or exec() in child.
@@ -258,6 +274,7 @@ impl Jail {
                         &cmd,
                         &args,
                         child_sync_fd,
+                        child_userns_fd,
                     ) {
                         eprintln!("jail setup failed: {e}");
                         libc::_exit(127);
@@ -277,16 +294,48 @@ impl Jail {
         // doesn't become a zombie leaking PIDs, cgroups and veth interfaces.
         let child_guard = ChildGuard(child_pid);
 
-        // Write UID/GID maps if using user namespace.
-        if config.user_namespace
-            && let Some(pid) = child_pid.to_rustix()
-                && let Err(e) = write_uid_gid_map(pid) {
-                    if rustix::process::getuid().is_root() {
-                        eprintln!("warning: uid/gid map failed (running as root): {e}");
-                    } else {
-                        return Err(e);
-                    }
+        // Write UID/GID maps if using user namespace. Ordering:
+        //   1. Child unshares NEWUSER, writes 1 byte on userns_pair.
+        //   2. We read that byte, proving the child is in its own
+        //      user namespace — so `/proc/<pid>/uid_map` now refers
+        //      to *that* ns, not our init namespace.
+        //   3. We write setgroups/uid_map/gid_map.
+        //   4. We write 1 byte back; the child wakes and proceeds.
+        if let (true, Some((_child_fd, parent_fd))) = (config.user_namespace, &userns_pair) {
+            let mut ready = [0u8; 1];
+            // SAFETY: valid fd from socketpair, one-byte read.
+            let n = unsafe {
+                libc::read(parent_fd.as_raw_fd(), ready.as_mut_ptr() as *mut _, 1)
+            };
+            if n != 1 {
+                return Err(JailError::UidMap(std::io::Error::other(
+                    "userns ready sync failed",
+                )));
+            }
+
+            if let Some(pid) = child_pid.to_rustix()
+                && let Err(e) = write_uid_gid_map(pid)
+            {
+                if rustix::process::getuid().is_root() {
+                    // Running as real root the map write is redundant
+                    // and some kernels refuse it; don't fail the spawn.
+                    eprintln!("warning: uid/gid map failed (running as root): {e}");
+                } else {
+                    return Err(e);
                 }
+            }
+
+            // Release child from the userns barrier.
+            // SAFETY: valid fd from socketpair, one-byte write.
+            let n = unsafe {
+                libc::write(parent_fd.as_raw_fd(), [1u8].as_ptr() as *const _, 1)
+            };
+            if n != 1 {
+                return Err(JailError::UidMap(std::io::Error::other(
+                    "userns ack sync failed",
+                )));
+            }
+        }
 
         // Create and configure cgroup BEFORE allowing child to proceed.
         let cgroup = self.create_cgroup(child_pid)?;
@@ -540,12 +589,10 @@ impl JailHandle {
         kill_tree(self.pid);
     }
 
-    /// Freeze all processes in this jail (via the cgroup freezer).
-    ///
-    /// Used during live forking to get a consistent filesystem snapshot.
-    /// The freeze is sub-millisecond. Returns `Ok(())` even if no cgroup
-    /// is configured (no-op in that case).
-    pub fn freeze(&self) -> Result<()> {
+    /// Freeze every process in this jail via the cgroup freezer so the
+    /// filesystem is quiescent for a `live_fork`. Sub-millisecond; no-op
+    /// when the jail was created without cgroup limits.
+    pub(crate) fn freeze(&self) -> Result<()> {
         if let Some(ref cg) = self.cgroup {
             cg.freeze()
         } else {
@@ -553,8 +600,7 @@ impl JailHandle {
         }
     }
 
-    /// Thaw (resume) all processes in this jail.
-    pub fn thaw(&self) -> Result<()> {
+    pub(crate) fn thaw(&self) -> Result<()> {
         if let Some(ref cg) = self.cgroup {
             cg.thaw()
         } else {
@@ -579,11 +625,13 @@ impl JailHandle {
         let cg = self.cgroup.as_ref()?;
         let io = cg.io_stats().unwrap_or_default();
         Some(ResourceStats {
-            memory_peak_bytes: cg.memory_peak().unwrap_or(0),
-            cpu_usage_usec: cg.cpu_usage_usec().unwrap_or(0),
-            oom_killed: cg.oom_killed(),
-            io_read_bytes: io.read_bytes,
-            io_write_bytes: io.write_bytes,
+            memory_peak_bytes:    cg.memory_peak().unwrap_or(0),
+            memory_current_bytes: cg.memory_current().unwrap_or(0),
+            cpu_usage_usec:       cg.cpu_usage_usec().unwrap_or(0),
+            oom_killed:           cg.oom_killed(),
+            io_read_bytes:        io.read_bytes,
+            io_write_bytes:       io.write_bytes,
+            pids_current:         cg.pids_current().unwrap_or(0),
         })
     }
 

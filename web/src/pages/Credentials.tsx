@@ -2,11 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApi } from "../lib/auth";
 import type { ServiceId } from "../lib/api";
 import { Panel, PanelHeader } from "../components/Panel";
+import { Pill } from "../components/Pill";
 import { ServiceCard } from "../components/credentials/ServiceCard";
 import { AttachForm } from "../components/credentials/AttachForm";
 import { SERVICES } from "../lib/format";
 
-/** Credentials page = grid of 4 service cards + attach form. */
+/** Integrations page = grid of service cards + attach form. */
 export function Credentials() {
   const api = useApi();
   const qc = useQueryClient();
@@ -24,20 +25,27 @@ export function Credentials() {
   const byService = new Map((creds ?? []).map((c) => [c.service, c] as const));
   const existing = new Set(byService.keys());
 
+  const count = creds?.length ?? 0;
+  const tone = count === 0 ? "ink" : count === SERVICES.length ? "phantom" : "flare";
+
   return (
     <div className="grid grid-cols-[1fr_420px] gap-4">
       <Panel padded={false}>
         <div className="px-5 py-4">
           <PanelHeader
-            eyebrow="Vault"
-            title="Upstream credentials"
+            eyebrow="Integrations"
+            title="Connected services"
             action={
-              <span className="text-[11px] mono text-ink-500">
-                {creds?.length ?? 0} of {SERVICES.length}
-              </span>
+              <Pill tone={tone} dot={count > 0}>
+                {count} of {SERVICES.length} connected
+              </Pill>
             }
             className="!mb-0"
           />
+          <p className="mt-1.5 text-[12px] text-ink-400 max-w-[520px]">
+            Attach your real API keys here — sandboxes only ever see{" "}
+            <span className="mono text-ink-300">phm_…</span> tokens that the proxy swaps back at request time.
+          </p>
         </div>
         <div className="hairline" />
         <div className="p-5 grid grid-cols-2 gap-3">

@@ -488,8 +488,8 @@ def test_snapshots_manifest_returns_entries() -> None:
             json={
                 "kind": "incremental",
                 "entries": [
-                    {"path": "a.txt", "mode": 0o644, "sha256": "aa", "size": 10},
-                    {"path": "b/c.txt", "mode": 0o755, "sha256": "bb", "size": 20},
+                    {"path": "a.txt", "mode": 0o644, "hash": "aa", "size": 10},
+                    {"path": "b/c.txt", "mode": 0o755, "hash": "bb", "size": 20},
                 ],
             },
         )

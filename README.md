@@ -1,46 +1,62 @@
 <p align="center">
-  <img src="logo.svg" width="100" height="100" alt="agentjail logo">
+  <img src="logo.svg" width="100" height="100" alt="agentjail">
 </p>
 
 <h1 align="center">agentjail</h1>
 
 <p align="center">
-  Minimal Linux sandboxes for running untrusted code
+  Minimal Linux sandboxes for running untrusted code.
 </p>
 
 ---
 
-Built for AI agents, build systems, and any scenario where you need to execute code you didn't write.
+A Rust library plus optional control plane. One jail is one child
+process inside a fresh set of Linux namespaces, pivot-rooted into a
+minimal filesystem, seccomp-filtered, cgroup-limited, and optionally
+walled behind an egress-proxy allowlist. No VM. No daemon. No setuid
+helper.
 
-> **Status — beta.** The Rust core (`crates/agentjail`) is the only piece
-> currently running in production. The control plane, TypeScript and Python SDK, and
-> web UI are open-source work-in-progress — useful, but expect rough
-> edges. Hardening is continuous; review the threat model and pin a
-> version before depending on it.
+> **Status — beta.** The core crate (`crates/agentjail`) is the
+> load-bearing piece and is covered by a privileged test suite
+> (`make test-rust-privileged`). The control plane, TypeScript/Python
+> SDKs, web UI, and gateway are useful but not yet production-hardened.
+> Pin a version, read the threat model, then depend on it.
 
-## Features
+## Isolation
 
-- **Rootless** — user namespaces, no setuid helper
-- **Network isolation** — none, loopback, or domain allowlist via built-in CONNECT proxy
-- **Filesystem isolation** — chroot with minimal mounts; Landlock on 5.13+
-- **Resource limits** — memory, CPU, PIDs, disk I/O via cgroups v2
-- **Syscall filtering** — seccomp-BPF blocklist (`Standard` / `Strict`)
-- **GPU passthrough** _(experimental)_ — NVIDIA per-device isolation
-- **OOM detection** — surfaced on the result, not silent
-- **Snapshotting** — save/restore output for incremental rebuilds
-- **Live forking** — clone a running jail in milliseconds via COW reflinks
-- **Event streaming** — real-time stdout/stderr/lifecycle events
-- **Persistent workspaces** — long-lived mount trees with multi-exec + named snapshots ([SDK ≥ 0.2](packages/sdk-node/README.md#persistent-workspaces--snapshots))
-- **Gateway** — hostname-routed reverse proxy with direct port-forward into the jail (`vm_port`) or a static backend URL, on the same server the control plane runs on
-- **Config snapshots** — every jail run records what it actually ran with (network policy, seccomp level, resource caps, git seed) so you can answer "what exactly did this run with" later
+- **Namespaces** — mount, network, IPC, PID; optionally user.
+- **Filesystem** — `pivot_root` onto a bind-mounted, 128-bit-random
+  temp root; old root is `umount2(MNT_DETACH)`-ed. Minimal `/bin`,
+  `/lib`, `/usr` binds; tmpfs `/etc` with just what dynamic linking
+  and DNS need. Landlock on Linux ≥ 5.13 (hard-fail if enabled on a
+  kernel that lacks it).
+- **Network** — `None`, `Loopback`, or `Allowlist(domains)`. Allowlist
+  mode routes through an in-process HTTP CONNECT proxy that resolves
+  the hostname once, rejects private/link-local/loopback/CGNAT IPs,
+  and connects to the resolved address (not the hostname) to close
+  DNS rebinding. Veth pair configured via netlink; no `ip` binary.
+- **Syscalls** — seccomp-BPF blocklist (`Standard` / `Strict`).
+  Blocks namespace, mount, module, keyring, BPF, perf, io_uring,
+  `chroot`, `name_to_handle_at`, `ptrace`, `personality`, `clone3`,
+  `mount_setattr`, `memfd_create`, `fanotify_init`, `quotactl`,
+  `syslog`; argument-filters `ioctl(*, TIOCSTI, …)` and
+  `socket(AF_NETLINK|AF_PACKET|AF_VSOCK, …)`.
+- **Privileges** — `PR_SET_NO_NEW_PRIVS`, `close_range(3, ~0, CLOEXEC)`
+  before exec, full bounding-set drop + `SECBIT_NOROOT_LOCKED |
+  SECBIT_NO_SETUID_FIXUP_LOCKED` + `capset` zeroing every effective,
+  permitted, and inheritable capability, in the grandchild after
+  `/proc` is remounted in the new PID namespace.
+- **Resources** — memory / CPU / PIDs / disk I/O via cgroup v2, gated
+  by a barrier pipe: the child blocks until the parent has assigned
+  the cgroup, so there is no unconstrained startup window.
 
 ## Requirements
 
-- Linux 5.13+, cgroups v2, user namespaces enabled
-- Rust 1.85+ (edition 2024)
-- `CAP_NET_ADMIN` (only for `Network::Allowlist`)
+- Linux ≥ 5.13, cgroup v2, user namespaces.
+- Rust 1.85+ (edition 2024).
+- `CAP_NET_ADMIN` — Allowlist mode only (veth + netlink).
 
-## Installation
+## Use
 
 ```toml
 [dependencies]
@@ -48,225 +64,194 @@ agentjail = "0.1"
 tokio = { version = "1", features = ["rt", "macros"] }
 ```
 
-## Quick Start
-
 ```rust
 use agentjail::{Jail, preset_build};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     let jail = Jail::new(preset_build("./src", "./out"))?;
-    let result = jail.run("npm", &["run", "build"]).await?;
-
-    println!("exit={} oom={}", result.exit_code, result.oom_killed);
+    let out  = jail.run("npm", &["run", "build"]).await?;
+    println!("exit={} oom={}", out.exit_code, out.oom_killed);
     Ok(())
 }
 ```
 
-## Presets
+### Presets
 
-Start with a preset; drop to `JailConfig` when you need to customize.
+| Preset | Network | Memory | Timeout |
+|---|---|---|---|
+| `preset_build`   | None       | 512 MB | 600 s |
+| `preset_install` | Allowlist  | 512 MB | 600 s |
+| `preset_agent`   | None       | 256 MB | 300 s |
+| `preset_gpu`     | None       | 8 GB   | 3600 s |
+| `preset_dev`     | Loopback   | 1 GB   | 3600 s |
 
-| Preset | Use case | Network | Memory | Timeout |
-|--------|----------|---------|--------|---------|
-| `preset_build` | Offline builds (vendored deps) | None | 512 MB | 10 min |
-| `preset_install` | `npm install`, `cargo build` | Allowlist | 512 MB | 10 min |
-| `preset_agent` | AI agent execution | None | 256 MB | 5 min |
-| `preset_gpu` | CUDA / PyTorch / training | None | 8 GB | 1 hour |
-| `preset_dev` | Dev servers (HMR) | Loopback | 1 GB | 1 hour |
-
-`preset_install` requires explicit allowed domains:
+`preset_install` requires explicit domains:
 
 ```rust
-let jail = Jail::new(preset_install("./src", "./out", vec![
+preset_install("./src", "./out", vec![
     "registry.npmjs.org".into(),
     "registry.yarnpkg.com".into(),
-]))?;
+])
 ```
 
-## Configuration
+### Config
 
 ```rust
 use agentjail::{Jail, JailConfig, Network, SeccompLevel};
 
-let config = JailConfig {
-    source: "/code".into(),           // read-only at /workspace
-    output: "/artifacts".into(),      // read-write at /output
-    network: Network::None,           // None | Loopback | Allowlist(_)
-    seccomp: SeccompLevel::Standard,  // Standard | Strict | Disabled
-    memory_mb: 512,
-    cpu_percent: 100,                 // 100 = 1 core
-    max_pids: 64,
-    io_read_mbps: 100,                // 0 = unlimited
+let jail = Jail::new(JailConfig {
+    source:       "/code".into(),       // read-only at /workspace
+    output:       "/artifacts".into(),  // read-write at /output
+    network:      Network::None,
+    seccomp:      SeccompLevel::Standard,
+    memory_mb:    512,
+    cpu_percent:  100,                  // 100 = 1 core
+    max_pids:     64,
+    io_read_mbps: 100,
     io_write_mbps: 50,
     timeout_secs: 300,
     ..Default::default()
-};
-let jail = Jail::new(config)?;
+})?;
 ```
 
-### Network modes
-
-| Mode | Access | Use case |
-|------|--------|----------|
-| `Network::None` | nothing | builds with vendored deps |
-| `Network::Loopback` | localhost only | dev servers |
-| `Network::Allowlist(_)` | listed domains only | agents, package installs |
+### Network
 
 ```rust
-network: Network::Allowlist(vec![
+Network::Allowlist(vec![
     "api.anthropic.com".into(),
     "registry.npmjs.org".into(),
-    "*.mcp.company.com".into(),  // wildcards
-]),
+    "*.mcp.example.com".into(),
+])
 ```
 
-A built-in HTTP CONNECT proxy runs in the parent with real network. The
-jail talks to it through a veth pair (configured via netlink, no `ip`
-binary needed) and can't reach anything else. DNS resolves at connect
-time. TLS protocols pass through unchanged — HTTPS, SSE, WebSocket (MCP).
+The proxy validates the hostname against the allowlist, resolves it
+via DNS, filters every private/loopback/link-local/CGNAT/test-net
+address, and connects to the remaining routable IP. TLS passes
+through unchanged (HTTPS, SSE, WebSocket).
 
-### GPU passthrough _(experimental)_
+### GPU (experimental)
 
-> Exposes the NVIDIA kernel driver attack surface. Trusted workloads only.
+Exposes the NVIDIA kernel-driver attack surface. Trusted workloads
+only.
 
 ```rust
-let config = JailConfig {
-    gpu: GpuConfig { enabled: true, devices: vec![0] },
-    ..Default::default()
-};
+JailConfig { gpu: GpuConfig { enabled: true, devices: vec![0] },
+             ..Default::default() }
 ```
-
-## Runtime features
 
 ### Resource monitoring
 
 ```rust
 let handle = jail.spawn("npm", &["run", "build"])?;
 if let Some(s) = handle.stats() {
-    println!("mem={} MB io_w={} MB",
-        s.memory_peak_bytes / 1_048_576,
-        s.io_write_bytes   / 1_048_576);
+    println!("mem {} / peak {} MB  pids {}",
+        s.memory_current_bytes / 1_048_576,
+        s.memory_peak_bytes    / 1_048_576,
+        s.pids_current);
 }
 let out = handle.wait().await?;
 if out.oom_killed { eprintln!("OOM"); }
 ```
 
-### Event streaming
+### Events
 
 ```rust
-let (handle, mut rx) = jail.spawn_with_events("npm", &["run", "build"])?;
+let (_handle, mut rx) = jail.spawn_with_events("npm", &["run", "build"])?;
 while let Some(ev) = rx.recv().await {
     match ev {
-        JailEvent::Stdout(l)            => println!("{l}"),
-        JailEvent::Stderr(l)            => eprintln!("{l}"),
-        JailEvent::OomKilled            => eprintln!("OOM"),
-        JailEvent::Completed { .. }     => break,
+        JailEvent::Stdout(l)        => println!("{l}"),
+        JailEvent::Stderr(l)        => eprintln!("{l}"),
+        JailEvent::OomKilled        => eprintln!("OOM"),
+        JailEvent::Completed { .. } => break,
         _ => {}
     }
 }
 ```
 
-### Snapshotting
+### Snapshots and live forks
 
 ```rust
-let snap = Snapshot::create(&output_dir, &snapshot_dir)?;
+let snap = Snapshot::create(&output, &snapshot_dir)?;
 snap.restore()?;
-```
 
-### Live forking
-
-Clone a running jail without pausing it:
-
-```rust
+// Clone a running jail's output without pausing it (reflink on btrfs/xfs,
+// fallback to regular copy elsewhere; the jail is frozen sub-millisecond
+// via the cgroup freezer for the clone's duration).
 let handle = jail.spawn("python", &["train.py"])?;
-let (forked, info) = jail.live_fork(Some(&handle), "/tmp/fork-out")?;
-let result = forked.run("python", &["evaluate.py"]).await?;
+let (forked, _info) = jail.live_fork(Some(&handle), "/tmp/fork-out")?;
 ```
 
-Uses `FICLONE` for instant reflink copies on btrfs/xfs; falls back to
-regular copy elsewhere. The original is frozen sub-millisecond via the
-cgroup freezer and immediately resumed. Multiple forks work independently.
+Snapshots restored through the incremental pool strip `S_ISUID` /
+`S_ISGID` bits and reject manifest entries with absolute or `..`
+paths.
 
-## Security
+## Verified threat model
 
-### Layers
+Each row links to the regression test that would fail if the
+protection ever did. All tests live in
+[`crates/agentjail/tests/`](crates/agentjail/tests/).
 
-1. **Namespaces** — mount, network, IPC, PID, user
-2. **Chroot** — minimal filesystem (no host `/etc`, `/home`, `/root`)
-3. **Seccomp** — comprehensive syscall blocklist
-4. **Cgroups v2** — limits assigned before child execs (barrier pipe)
-5. **Landlock** — filesystem ACLs (Linux 5.13+)
-6. **Hardening** — `PR_SET_NO_NEW_PRIVS`, `RLIMIT_NOFILE`, `RLIMIT_CORE=0`
-
-### What gets blocked
-
-Each row links to the regression test that proves it. Tests live in [crates/agentjail/tests/](crates/agentjail/tests/) and run on every build.
-
-| Attack | Protection | Verified by |
-|--------|------------|-------------|
-| Read `~/.ssh`, `~/.aws` | Not mounted | [`test_cannot_read_ssh_keys`](crates/agentjail/tests/security_test.rs) |
-| Read `/etc/shadow`, host keys | Minimal `/etc` (only ld.so, resolv.conf, ssl) | [`test_etc_shadow_not_accessible`](crates/agentjail/tests/audit_regression_test.rs) |
-| Network exfiltration | Network namespace + allowlist proxy | [`test_network_none_blocks_external`](crates/agentjail/tests/security_test.rs), [`test_allowlist_npm_install_blocked`](crates/agentjail/tests/security_test.rs), [`test_reverse_shell_blocked`](crates/agentjail/tests/security_test.rs) |
-| Fork bombs | PID limit via cgroup | [`test_pid_limit_blocks_fork_bomb`](crates/agentjail/tests/audit_regression_test.rs) |
-| Memory exhaustion | Memory limit + OOM detection | [`test_large_stdout_does_not_oom`](crates/agentjail/tests/audit_regression_test.rs) |
+| Attack | Protection | Test |
+|---|---|---|
+| Read host `~/.ssh` / `~/.aws` | Not mounted | [`test_cannot_read_ssh_keys`](crates/agentjail/tests/security_test.rs) |
+| Read `/etc/shadow`, machine-id | Minimal `/etc` | [`test_etc_shadow_not_accessible`](crates/agentjail/tests/audit_regression_test.rs) |
+| Network exfiltration | Netns + allowlist proxy | [`test_network_none_blocks_external`](crates/agentjail/tests/security_test.rs), [`test_reverse_shell_blocked`](crates/agentjail/tests/security_test.rs) |
+| Fork bomb | PID limit | [`test_pid_limit_blocks_fork_bomb`](crates/agentjail/tests/audit_regression_test.rs) |
+| Memory blow-up | Memory limit + OOM detection | [`test_large_stdout_does_not_oom`](crates/agentjail/tests/audit_regression_test.rs) |
 | Disk thrashing | I/O bandwidth limits | [`test_io_write_bandwidth_limit_enforced`](crates/agentjail/tests/audit_regression_test.rs) |
 | Signal host processes | PID namespace | [`test_pid_namespace_full_sandbox`](crates/agentjail/tests/security_test.rs) |
-| Mount manipulation | `mount`, `mount_setattr`, new mount API blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
-| io_uring bypass | `io_uring_setup`/`enter`/`register` blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
-| 32-bit compat escape | `personality()` blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
-| Namespace escape | `clone3`, `unshare`, `setns` blocked | [`test_seccomp_blocks_unshare`](crates/agentjail/tests/audit_regression_test.rs), [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
-| BPF / perf abuse | `bpf`, `perf_event_open`, `userfaultfd` blocked | [`test_seccomp_blocks_bpf`](crates/agentjail/tests/audit_regression_test.rs), [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| Mount manipulation | `mount` + new mount API blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| `chroot` escape | `pivot_root` + detach; `chroot` seccomp-blocked | [`test_chroot_no_home`](crates/agentjail/tests/security_test.rs) |
+| io_uring bypass | `io_uring_*` blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| Compat-mode escape | `personality()` blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
+| Namespace escape | `clone3`, `unshare`, `setns` blocked | [`test_seccomp_blocks_unshare`](crates/agentjail/tests/audit_regression_test.rs) |
+| BPF / perf | `bpf`, `perf_event_open`, `userfaultfd` blocked | [`test_seccomp_blocks_bpf`](crates/agentjail/tests/audit_regression_test.rs) |
 | Executable memory | `memfd_create` blocked | [`seccomp_standard_blocks_documented_syscalls`](crates/agentjail/tests/seccomp_blocklist_test.rs) |
-| Write+execute on `/tmp` | NOEXEC mount flag | [`test_tmp_noexec`](crates/agentjail/tests/audit_regression_test.rs) |
-| Setuid escalation | `PR_SET_NO_NEW_PRIVS` before exec | _no direct test (asserted by absence of namespace re-entry)_ |
-| Core dump leaks | `RLIMIT_CORE=0` | [`test_rlimit_core_disabled`](crates/agentjail/tests/audit_regression_test.rs) |
-| Stdout OOM of parent | Output capped at 256 MiB per stream | [`test_large_stdout_does_not_oom`](crates/agentjail/tests/audit_regression_test.rs) |
-| FD exhaustion | `RLIMIT_NOFILE` capped at 4096 | [`test_fd_limit_enforced`](crates/agentjail/tests/audit_regression_test.rs) |
-| Symlink traversal | Skipped in snapshots, forks, cleanup | [`test_snapshot_restore_does_not_follow_symlinks`](crates/agentjail/tests/audit_regression_test.rs), [`test_fork_symlink_in_output_not_followed`](crates/agentjail/tests/audit_regression_test.rs) |
-| Zombie / fd leak on crash | `PR_SET_PDEATHSIG` + kill+reap in `Drop` | [`test_drop_handle_kills_child`](crates/agentjail/tests/audit_regression_test.rs), [`test_no_zombie_after_drop`](crates/agentjail/tests/audit_regression_test.rs) |
-| PID reuse kill | Reaped flag prevents killing recycled PIDs | _internal invariant; no behavioral test_ |
+| Write + exec on `/tmp` | `NOEXEC` | [`test_tmp_noexec`](crates/agentjail/tests/audit_regression_test.rs) |
+| Setuid escalation | `PR_SET_NO_NEW_PRIVS` | — |
+| Core-dump leak | `RLIMIT_CORE=0` | [`test_rlimit_core_disabled`](crates/agentjail/tests/audit_regression_test.rs) |
+| Parent stdout OOM | Output capped at 256 MiB per stream | [`test_large_stdout_does_not_oom`](crates/agentjail/tests/audit_regression_test.rs) |
+| FD exhaustion | `RLIMIT_NOFILE` at 4096 | [`test_fd_limit_enforced`](crates/agentjail/tests/audit_regression_test.rs) |
+| Symlink traversal | Skipped in snapshots, forks, cleanup | [`test_snapshot_restore_does_not_follow_symlinks`](crates/agentjail/tests/audit_regression_test.rs) |
+| Zombie / fd leak | `PR_SET_PDEATHSIG` + Drop kills+reaps | [`test_no_zombie_after_drop`](crates/agentjail/tests/audit_regression_test.rs) |
 
-**91 regression tests** in the `agentjail` crate pin the scenarios above — every row in the table has at least one that would fail loudly if the protection ever regressed.
+## Limits
 
-## Limitations
-
-- **Linux only** — namespaces, seccomp, cgroups v2 required
-- **Not a VM** — kernel exploits could escape; use [gVisor](https://gvisor.dev) or [Firecracker](https://firecracker-microvm.github.io) if you need stronger isolation
-- **GPU requires trust** — NVIDIA kernel driver attack surface
-- **Allowlist proxy** — one veth pair per jail (auto-cleaned via `PR_SET_PDEATHSIG`; call `cleanup_stale_veths()` at startup for safety)
+- Linux-only. Not a VM; a kernel exploit escapes. For stronger
+  isolation pair with [gVisor](https://gvisor.dev) or run inside a
+  [Firecracker](https://firecracker-microvm.github.io) microVM.
+- GPU mode widens the attack surface to the NVIDIA driver.
+- Allowlist mode costs one veth pair per concurrent jail; stale
+  interfaces are reaped at `agentjail-server` startup via
+  `cleanup_stale_veths()`.
 
 ## Control plane
 
-agentjail also ships an HTTP control plane (`agentjail-server`) with a
-phantom-token credential broker, a TypeScript SDK, a Python SDK, and
-a web UI.
+An optional HTTP server (`agentjail-server`) sits in front of the
+library: phantom-token credential broker, jail/workspace/snapshot
+ledgers in Postgres, an SSE stream of upstream API calls, and a web
+UI. Installed pre-release; APIs may move. Useful for local dev,
+demos, and staging.
 
-> _Pre-release._ Not yet running in production. APIs may change. Use it
-> for local development, demos, and feedback.
+**Surface:**
 
-**Surface at a glance:**
-- `POST /v1/credentials` · `POST /v1/sessions` · `POST /v1/runs` (+ `fork`, `stream`)
-- `POST /v1/workspaces` (+ `/fork`, `/exec`) · `POST /v1/workspaces/:id/snapshot`
-- `GET /v1/workspaces?q=…` · `GET /v1/snapshots?q=…` — server-side search
+- `POST /v1/credentials` · `POST /v1/sessions` · `POST /v1/runs` (`fork`, `stream`)
+- `POST /v1/workspaces` (`/fork`, `/exec`) · `POST /v1/workspaces/:id/snapshot`
+- `GET /v1/workspaces?q=…` · `GET /v1/snapshots?q=…`
 - `GET /v1/snapshots/:id/manifest` — file listing for pool-backed snapshots
-- `GET /v1/jails/:id` — result + **config** the jail ran with
-- `GET /v1/audit` — phantom-proxy upstream requests
-- `GET /v1/config` — read-only snapshot of server settings (providers, bind addresses, GC policy, defaults)
+- `GET /v1/jails/:id` — result + the exact `JailConfig` the jail ran with
+- `GET /v1/audit` — upstream-proxy audit log
+- `GET /v1/config` — read-only snapshot of server settings
 
 ### Web UI
 
 ![control plane](media/control-plane.png)
 
-React 19 + Vite + Tailwind. Pages: **Overview · Jails · Workspaces ·
-Snapshots · Sessions · Credentials · Stream · Playground · Settings ·
-Docs**. The Jails ledger shows live runs with per-jail stats (mem, CPU,
-I/O, stdout tail), fork lineage, and the **exact config** each jail
-ran with (network policy, allowlist, seccomp level, memory/timeout/CPU
-caps, git seed). Workspaces and Snapshots share the ledger pattern —
-server-side substring search (`q`), paging, and metadata detail panels
-with recent-execs (workspaces) and file manifests (pool-backed
-snapshots).
+React 19 + Vite + Tailwind. Task-first pages (Dashboard, Projects,
+API Sessions, Integrations, Playground, Docs) with operator views
+(Execution Ledger, Snapshots, API Audit, System Settings) tucked
+behind an `Advanced` menu.
 
 ```bash
 export AGENTJAIL_API_KEY=aj_local_$(openssl rand -hex 16)
@@ -277,29 +262,26 @@ docker compose -f docker-compose.platform.yml up --build
 
 ### TypeScript SDK
 
-`@agentjail/sdk` — zero deps, Node ≥ 18. Sandboxes get phantom tokens
-(`phm_<hex>`) and a `*_BASE_URL` pointing at the proxy; real API keys
-never enter the jail.
+`@agentjail/sdk` — zero deps, Node ≥ 18. Sandboxes never see real
+API keys: they get phantom tokens (`phm_<hex>`) plus `*_BASE_URL`
+env vars pointing at the proxy.
 
 ```ts
 import { Agentjail } from "@agentjail/sdk";
 
 const aj = new Agentjail({
   baseUrl: "http://localhost:7000",
-  apiKey: process.env.AGENTJAIL_API_KEY!,
+  apiKey:  process.env.AGENTJAIL_API_KEY!,
 });
 
 await aj.credentials.put({ service: "openai", secret: process.env.OPENAI_API_KEY! });
 
-// One-shot run.
 const result = await aj.runs.create({ code: "print('hi')", language: "python" });
 
-// Stream events.
 for await (const ev of aj.runs.stream({ code, language: "python" })) {
   if (ev.type === "stdout") process.stdout.write(ev.line + "\n");
 }
 
-// Or hand a phantom env to your own sandbox.
 const session = await aj.sessions.create({
   services: ["openai", "github"],
   scopes:   { github: ["/repos/my-org/*"] },
@@ -308,19 +290,27 @@ const session = await aj.sessions.create({
 spawn("node", ["agent.js"], { env: { ...process.env, ...session.env } });
 ```
 
-Surface: `credentials`, `sessions`, `runs` (`create` / `fork` / `stream`),
-`jails`, `audit`. Full reference in
-[packages/sdk-node/README.md](packages/sdk-node/README.md).
+Surface: `credentials`, `sessions`, `runs` (`create` / `fork` /
+`stream`), `workspaces`, `snapshots`, `jails`, `audit`. Reference:
+[`packages/sdk-node/README.md`](packages/sdk-node/README.md).
 
-## Development
+### Python SDK
+
+`agentjail` — Python ≥ 3.10, depends on `httpx`. Symmetrical with
+the Node SDK; see [`packages/sdk-python/README.md`](packages/sdk-python/README.md).
+
+## Build and test
 
 ```bash
-docker compose run --rm dev cargo test
-( cd packages/sdk-node && npm test )
+make test-rust              # low-privilege unit slice (in Docker)
+make test-rust-privileged   # full security suite, --privileged Docker
+( cd packages/sdk-node    && npm test )
+( cd packages/sdk-python  && pytest )
 ( cd web && npm run build )
 ```
 
-GPU tests need an NVIDIA GPU + [Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html):
+GPU tests need an NVIDIA GPU + the
+[Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html):
 
 ```bash
 docker compose run --rm gpu cargo test --test gpu_test -- --nocapture
@@ -328,4 +318,4 @@ docker compose run --rm gpu cargo test --test gpu_test -- --nocapture
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

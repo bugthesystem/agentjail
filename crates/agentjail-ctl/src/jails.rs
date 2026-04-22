@@ -160,12 +160,16 @@ pub struct JailRecord {
     pub oom_killed:  Option<bool>,
     /// Peak memory used by the cgroup.
     pub memory_peak_bytes: Option<u64>,
+    /// Current memory at the last sample (live).
+    pub memory_current_bytes: Option<u64>,
     /// Total CPU time in microseconds.
     pub cpu_usage_usec:    Option<u64>,
     /// Bytes read from disk inside the jail.
     pub io_read_bytes:     Option<u64>,
     /// Bytes written to disk inside the jail.
     pub io_write_bytes:    Option<u64>,
+    /// Processes alive at the last sample.
+    pub pids_current:      Option<u64>,
     /// Captured stdout (truncated).
     pub stdout: Option<String>,
     /// Captured stderr (truncated).
@@ -204,9 +208,11 @@ impl JailRecord {
             timed_out: None,
             oom_killed: None,
             memory_peak_bytes: None,
+            memory_current_bytes: None,
             cpu_usage_usec: None,
             io_read_bytes: None,
             io_write_bytes: None,
+            pids_current: None,
             stdout: None,
             stderr: None,
             error: None,
@@ -338,10 +344,12 @@ impl JailStore for InMemoryJailStore {
             rec.timed_out   = Some(output.timed_out);
             rec.oom_killed  = Some(output.oom_killed);
             if let Some(s) = output.stats.as_ref() {
-                rec.memory_peak_bytes = Some(s.memory_peak_bytes);
-                rec.cpu_usage_usec    = Some(s.cpu_usage_usec);
-                rec.io_read_bytes     = Some(s.io_read_bytes);
-                rec.io_write_bytes    = Some(s.io_write_bytes);
+                rec.memory_peak_bytes    = Some(s.memory_peak_bytes);
+                rec.memory_current_bytes = Some(s.memory_current_bytes);
+                rec.cpu_usage_usec       = Some(s.cpu_usage_usec);
+                rec.io_read_bytes        = Some(s.io_read_bytes);
+                rec.io_write_bytes       = Some(s.io_write_bytes);
+                rec.pids_current         = Some(s.pids_current);
             }
             rec.stdout = Some(truncate(&String::from_utf8_lossy(&output.stdout), OUTPUT_CAP));
             rec.stderr = Some(truncate(&String::from_utf8_lossy(&output.stderr), OUTPUT_CAP));
@@ -354,10 +362,12 @@ impl JailStore for InMemoryJailStore {
             Err(p) => p.into_inner(),
         };
         if let Some(rec) = g.rows.iter_mut().find(|r| r.id == id) {
-            rec.memory_peak_bytes = Some(stats.memory_peak_bytes);
-            rec.cpu_usage_usec    = Some(stats.cpu_usage_usec);
-            rec.io_read_bytes     = Some(stats.io_read_bytes);
-            rec.io_write_bytes    = Some(stats.io_write_bytes);
+            rec.memory_peak_bytes    = Some(stats.memory_peak_bytes);
+            rec.memory_current_bytes = Some(stats.memory_current_bytes);
+            rec.cpu_usage_usec       = Some(stats.cpu_usage_usec);
+            rec.io_read_bytes        = Some(stats.io_read_bytes);
+            rec.io_write_bytes       = Some(stats.io_write_bytes);
+            rec.pids_current         = Some(stats.pids_current);
         }
     }
 

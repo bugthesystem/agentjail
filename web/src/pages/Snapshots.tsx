@@ -337,7 +337,7 @@ function ManifestList({
             </thead>
             <tbody>
               {filtered.slice(0, 2000).map((e) => (
-                <tr key={e.sha256 + e.path} className="hover:bg-ink-900/60">
+                <tr key={e.hash + e.path} className="hover:bg-ink-900/60">
                   <td className="px-3 py-1 text-ink-200 truncate max-w-0">{e.path}</td>
                   <td className="px-3 py-1 text-right text-ink-400">{humanBytes(e.size)}</td>
                   <td className="px-3 py-1 text-ink-500">{(e.mode & 0o777).toString(8).padStart(3, "0")}</td>

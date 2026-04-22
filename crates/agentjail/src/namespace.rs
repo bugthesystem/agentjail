@@ -59,6 +59,18 @@ pub fn enter_namespaces(config: NamespaceConfig) -> Result<()> {
     Ok(())
 }
 
+/// Enter only a new user namespace. Paired with the parent writing
+/// `setgroups` / `uid_map` / `gid_map` on our behalf — we signal
+/// readiness, the parent writes, and we then proceed with the
+/// remaining namespace unshares. Doing NEWUSER in isolation is the
+/// only way to get the map write to land on the correct namespace:
+/// if the child unshares `NEWUSER` *and* `NEWNS`/`NEWNET`/etc. all
+/// at once after the parent's write, the write races past a
+/// pre-unshare process and is effectively a no-op.
+pub fn enter_user_namespace_alone() -> Result<()> {
+    unshare(UnshareFlags::NEWUSER).map_err(JailError::Namespace)
+}
+
 /// Write UID/GID mappings for user namespace.
 ///
 /// Maps the current user to root (0) inside the namespace.

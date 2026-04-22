@@ -45,11 +45,13 @@ fn read_io(path: &Path) -> (u64, u64) {
 pub fn sample(path: &Path) -> agentjail::ResourceStats {
     let (io_read, io_write) = read_io(path);
     agentjail::ResourceStats {
-        memory_peak_bytes: read_u64(path.join("memory.peak")),
-        cpu_usage_usec:    read_cpu_usec(path),
-        oom_killed:        false,
-        io_read_bytes:     io_read,
-        io_write_bytes:    io_write,
+        memory_peak_bytes:    read_u64(path.join("memory.peak")),
+        memory_current_bytes: read_u64(path.join("memory.current")),
+        cpu_usage_usec:       read_cpu_usec(path),
+        oom_killed:           false,
+        io_read_bytes:        io_read,
+        io_write_bytes:       io_write,
+        pids_current:         read_u64(path.join("pids.current")),
     }
 }
 

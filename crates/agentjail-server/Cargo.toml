@@ -18,10 +18,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros",
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json"] }
 anyhow.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 http.workspace = true
-bytes = "1"
-futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

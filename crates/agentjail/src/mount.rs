@@ -3,8 +3,10 @@
 use crate::config::Access;
 use crate::error::{JailError, Result};
 use rustix::mount::{MountFlags, MountPropagationFlags, mount, mount_remount};
+use std::ffi::CString;
 use std::fs;
-use std::path::Path;
+use std::os::unix::fs::DirBuilderExt;
+use std::path::{Path, PathBuf};
 
 /// Bind mount a source path to a destination inside the jail.
 pub fn bind_mount(src: &Path, dst: &Path, access: Access) -> Result<()> {
@@ -70,14 +72,97 @@ pub fn mount_tmpfs_noexec(dst: &Path, size_mb: u64) -> Result<()> {
     Ok(())
 }
 
-/// Mount /proc inside the jail.
+/// Mount /proc inside the jail with `hidepid=invisible` so processes
+/// belonging to other uids are not listed. Defence-in-depth against
+/// information leaks through `/proc/<pid>/*`.
 pub fn mount_proc(dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).map_err(JailError::Io)?;
 
     let flags = MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
-    mount("proc", dst, "proc", flags, "").map_err(JailError::Mount)?;
+    mount("proc", dst, "proc", flags, "hidepid=invisible").map_err(JailError::Mount)?;
 
     Ok(())
+}
+
+/// Bind-mount `path` onto itself. `pivot_root(2)` requires the new
+/// root to be a mount point, and a freshly-`mkdir`'d directory is not
+/// one; this turns it into one without changing its contents.
+pub fn bind_self(path: &Path) -> Result<()> {
+    mount(path, path, "", MountFlags::BIND | MountFlags::REC, "").map_err(JailError::Mount)
+}
+
+/// Create a pre-pivot temp root at a 128-bit-random path with mode
+/// 0o700. `mkdir(2)` (not `mkdir -p`) fails EEXIST on any pre-planted
+/// file/dir/symlink, so a host-side attacker can't race a symlink in
+/// front of us before the bind mounts land.
+pub fn make_jail_root() -> Result<PathBuf> {
+    let mut bytes = [0u8; 16];
+    // SAFETY: getrandom writes at most `bytes.len()` bytes into the
+    // buffer; flags=0 requests default (blocking for entropy, but on
+    // modern kernels this is effectively non-blocking after boot).
+    let n = unsafe {
+        libc::getrandom(
+            bytes.as_mut_ptr() as *mut libc::c_void,
+            bytes.len(),
+            0,
+        )
+    };
+    if n != bytes.len() as isize {
+        return Err(JailError::Io(std::io::Error::last_os_error()));
+    }
+    let mut suffix = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut suffix, "{b:02x}");
+    }
+
+    let path = std::env::temp_dir().join(format!("agentjail-{suffix}"));
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&path)
+        .map_err(JailError::Io)?;
+    Ok(path)
+}
+
+/// Swap the process root with `new_root` and detach the old root.
+///
+/// After this returns:
+/// - `/` is the former `new_root`.
+/// - The previous filesystem tree is no longer reachable (not just
+///   hidden — the mount is gone, so `/proc/self/root/..` and friends
+///   cannot walk out).
+///
+/// `new_root` must already be a mount point (see [`bind_self`]).
+pub fn pivot_into(new_root: &Path) -> Result<()> {
+    std::env::set_current_dir(new_root).map_err(JailError::Exec)?;
+
+    // pivot_root(".", ".") is the canonical idiom: new-root and
+    // put_old both resolve to the cwd, so we don't need a free
+    // subdirectory for the old root. After the call the old root is
+    // mounted on top of itself at "/"; we immediately detach it.
+    let dot = CString::new(".").expect("no nuls in \".\"");
+    // SAFETY: both pointers are valid C strings; the syscall is the
+    // libc wrapper around the kernel's SYS_pivot_root, no memory
+    // invariants to uphold.
+    let rc = unsafe { libc::syscall(libc::SYS_pivot_root, dot.as_ptr(), dot.as_ptr()) };
+    if rc != 0 {
+        return Err(JailError::Mount(rustix::io::Errno::from_raw_os_error(
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+        )));
+    }
+
+    // Detach the old root. MNT_DETACH is lazy so busy mounts under
+    // it (e.g. our own /proc bind) don't block us.
+    // SAFETY: "." is a valid C string; umount2 has no memory safety
+    // requirements beyond that.
+    let rc = unsafe { libc::umount2(dot.as_ptr(), libc::MNT_DETACH) };
+    if rc != 0 {
+        return Err(JailError::Mount(rustix::io::Errno::from_raw_os_error(
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+        )));
+    }
+
+    std::env::set_current_dir("/").map_err(JailError::Exec)
 }
 
 /// Make the root mount private to prevent mount propagation.
@@ -109,6 +194,10 @@ pub fn setup_root(
 ) -> Result<()> {
     fs::create_dir_all(new_root).map_err(JailError::Io)?;
 
+    // pivot_root(2) requires the new root to be a mount point. Bind
+    // the directory onto itself so the later pivot succeeds.
+    bind_self(new_root)?;
+
     // User directories
     let workspace = new_root.join("workspace");
     let output_dir = new_root.join("output");
@@ -129,8 +218,20 @@ pub fn setup_root(
         bind_mount(src, &dst, Access::ReadOnly)?;
     }
 
-    // Mount a minimal /etc — only files needed for dynamic linking and DNS.
-    // Full /etc would leak host secrets (shadow, ssh keys, machine-id).
+    // Mount a minimal /etc — only files needed for dynamic linking and
+    // DNS. Full /etc leaks host secrets (shadow, ssh keys, machine-id).
+    //
+    // We deliberately do NOT bind the whole `/etc/ssl` or
+    // `/etc/alternatives` directories:
+    //   - `/etc/ssl` commonly contains `private/` with real TLS keys
+    //     (perms are usually 0700, but the filenames are themselves a
+    //     disclosure, and a uid-matched jail would read the bodies).
+    //     We bind only the CA bundle and OpenSSL's default config.
+    //   - `/etc/alternatives` is a symlink tree pointing into `/usr/bin`
+    //     etc. Since `/usr` and `/bin` are already bound, the binaries
+    //     are reachable directly; the symlinks themselves are not
+    //     required for agent workloads and re-exporting them just
+    //     widens the surface.
     let etc_dst = new_root.join("etc");
     mount_tmpfs(&etc_dst, 1)?;
     let safe_etc_files = [
@@ -140,8 +241,9 @@ pub fn setup_root(
         "nsswitch.conf",
         "passwd",
         "group",
-        "ssl",
-        "alternatives",
+        // Specific SSL files, not the whole directory.
+        "ssl/certs/ca-certificates.crt",
+        "ssl/openssl.cnf",
     ];
     for name in &safe_etc_files {
         let src = Path::new("/etc").join(name);

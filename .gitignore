@@ -22,3 +22,9 @@ target/
 **/.tox/
 **/.coverage
 **/htmlcov/
+
+# Bench results — only milestone-labelled JSONs are committed.
+# Anything else (scratch runs, experiments) stays local.
+bench-results/*-scratch.json
+bench-results/*-local.json
+bench-results/*-wip.json

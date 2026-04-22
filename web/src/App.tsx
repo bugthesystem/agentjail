@@ -51,15 +51,24 @@ function Gate() {
       </Route>
       {auth ? (
         <Route element={<Shell />}>
-          <Route index element={<Overview />} />
-          <Route path="jails"       element={<Jails />} />
-          <Route path="workspaces"  element={<Workspaces />} />
-          <Route path="snapshots"   element={<Snapshots />} />
-          <Route path="sessions"    element={<Sessions />} />
-          <Route path="credentials" element={<Credentials />} />
-          <Route path="stream"      element={<Stream />} />
-          <Route path="playground"  element={<Playground />} />
-          <Route path="settings"    element={<Settings />} />
+          <Route index                     element={<Overview />} />
+          <Route path="projects"           element={<Workspaces />} />
+          <Route path="sessions"           element={<Sessions />} />
+          <Route path="integrations"       element={<Credentials />} />
+          <Route path="playground"         element={<Playground />} />
+          <Route path="operator/ledger"    element={<Jails />} />
+          <Route path="operator/snapshots" element={<Snapshots />} />
+          <Route path="operator/audit"     element={<Stream />} />
+          <Route path="operator/settings"  element={<Settings />} />
+
+          {/* Legacy paths — redirect so bookmarks keep working. */}
+          <Route path="workspaces"  element={<Navigate to="/projects" replace />} />
+          <Route path="credentials" element={<Navigate to="/integrations" replace />} />
+          <Route path="jails"       element={<Navigate to="/operator/ledger" replace />} />
+          <Route path="snapshots"   element={<Navigate to="/operator/snapshots" replace />} />
+          <Route path="stream"      element={<Navigate to="/operator/audit" replace />} />
+          <Route path="settings"    element={<Navigate to="/operator/settings" replace />} />
+
           <Route path="login"       element={<Navigate to="/" replace />} />
           <Route path="*"           element={<Navigate to="/" replace />} />
         </Route>

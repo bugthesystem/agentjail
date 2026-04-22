@@ -232,9 +232,3 @@ pub fn env_vars(config: &GpuConfig) -> Vec<(String, String)> {
 
     vars
 }
-
-/// Check if any NVIDIA GPU is available on the host.
-#[allow(dead_code)]
-pub fn is_available() -> bool {
-    Path::new("/dev/nvidiactl").exists()
-}

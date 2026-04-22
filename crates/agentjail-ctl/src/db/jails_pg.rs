@@ -35,7 +35,17 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> JailRecord {
         timed_out:         row.get::<Option<bool>, _>("timed_out"),
         oom_killed:        row.get::<Option<bool>, _>("oom_killed"),
         memory_peak_bytes: row.get::<Option<i64>, _>("memory_peak_bytes").map(|v| v as u64),
+        memory_current_bytes: row
+            .try_get::<Option<i64>, _>("memory_current_bytes")
+            .ok()
+            .flatten()
+            .map(|v| v as u64),
         cpu_usage_usec:    row.get::<Option<i64>, _>("cpu_usage_usec").map(|v| v as u64),
+        pids_current: row
+            .try_get::<Option<i64>, _>("pids_current")
+            .ok()
+            .flatten()
+            .map(|v| v as u64),
         io_read_bytes:     row.get::<Option<i64>, _>("io_read_bytes").map(|v| v as u64),
         io_write_bytes:    row.get::<Option<i64>, _>("io_write_bytes").map(|v| v as u64),
         stdout:            row.get::<Option<String>, _>("stdout"),
@@ -94,14 +104,16 @@ impl JailStore for PgJailStore {
 
     async fn finish(&self, id: i64, output: &agentjail::Output) {
         let duration_ms = i64::try_from(output.duration.as_millis()).unwrap_or(i64::MAX);
-        let (mem, cpu, ior, iow) = match output.stats.as_ref() {
+        let (mem_peak, mem_cur, cpu, ior, iow, pids) = match output.stats.as_ref() {
             Some(s) => (
                 Some(s.memory_peak_bytes as i64),
+                Some(s.memory_current_bytes as i64),
                 Some(s.cpu_usage_usec as i64),
                 Some(s.io_read_bytes as i64),
                 Some(s.io_write_bytes as i64),
+                Some(s.pids_current as i64),
             ),
-            None => (None, None, None, None),
+            None => (None, None, None, None, None, None),
         };
         let stdout = truncate(&String::from_utf8_lossy(&output.stdout), OUTPUT_CAP);
         let stderr = truncate(&String::from_utf8_lossy(&output.stderr), OUTPUT_CAP);
@@ -111,9 +123,11 @@ impl JailStore for PgJailStore {
                 ended_at = now(), status = 'completed',
                 exit_code = $2, duration_ms = $3,
                 timed_out = $4, oom_killed = $5,
-                memory_peak_bytes = $6, cpu_usage_usec = $7,
-                io_read_bytes = $8, io_write_bytes = $9,
-                stdout = $10, stderr = $11
+                memory_peak_bytes = $6, memory_current_bytes = $7,
+                cpu_usage_usec = $8,
+                io_read_bytes = $9, io_write_bytes = $10,
+                pids_current = $11,
+                stdout = $12, stderr = $13
              WHERE id = $1",
         )
         .bind(id)
@@ -121,7 +135,10 @@ impl JailStore for PgJailStore {
         .bind(duration_ms)
         .bind(output.timed_out)
         .bind(output.oom_killed)
-        .bind(mem).bind(cpu).bind(ior).bind(iow)
+        .bind(mem_peak).bind(mem_cur)
+        .bind(cpu)
+        .bind(ior).bind(iow)
+        .bind(pids)
         .bind(stdout).bind(stderr)
         .execute(&self.pool)
         .await;
@@ -130,17 +147,21 @@ impl JailStore for PgJailStore {
     async fn sample_stats(&self, id: i64, stats: &agentjail::ResourceStats) {
         let _ = sqlx::query(
             "UPDATE jails SET
-                memory_peak_bytes = $2,
-                cpu_usage_usec    = $3,
-                io_read_bytes     = $4,
-                io_write_bytes    = $5
+                memory_peak_bytes    = $2,
+                memory_current_bytes = $3,
+                cpu_usage_usec       = $4,
+                io_read_bytes        = $5,
+                io_write_bytes       = $6,
+                pids_current         = $7
              WHERE id = $1 AND status = 'running'",
         )
         .bind(id)
         .bind(stats.memory_peak_bytes as i64)
+        .bind(stats.memory_current_bytes as i64)
         .bind(stats.cpu_usage_usec as i64)
         .bind(stats.io_read_bytes as i64)
         .bind(stats.io_write_bytes as i64)
+        .bind(stats.pids_current as i64)
         .execute(&self.pool)
         .await;
     }

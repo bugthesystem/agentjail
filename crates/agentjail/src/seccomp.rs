@@ -106,14 +106,39 @@ fn base_blocked_syscalls() -> Vec<i64> {
         // mount_setattr (Linux 5.12+) — can strip RDONLY, NOEXEC, NOSUID
         // from existing mounts, defeating bind-mount protections.
         libc::SYS_mount_setattr,
+        // chroot — the jail uses pivot_root + detach, so chroot is never
+        // needed inside. Left unblocked it enables the classic nested-
+        // chroot + fchdir("..") escape.
+        libc::SYS_chroot,
+        // File-handle reopen (CAP_DAC_READ_SEARCH-gated) — name_to_handle_at
+        // encodes a path as a 32-byte handle, open_by_handle_at resolves
+        // it against any mount of the same fs. Escapes a bind mount if
+        // the underlying fs is shared with a more permissive mount.
+        libc::SYS_name_to_handle_at,
+        libc::SYS_open_by_handle_at,
+        // Device-node creation — defence-in-depth; writable mounts are
+        // already NODEV so a bogus mknod can't be opened, but blocking
+        // the syscall means the node never lands on disk in the first
+        // place (matters for snapshots).
+        libc::SYS_mknodat,
+        // Host-wide fanotify — marks can be placed on mounts the
+        // attacker doesn't own (CAP_SYS_ADMIN-gated in init userns).
+        libc::SYS_fanotify_init,
+        // Quota control — turn on/off fs quotas, DoS on shared disks.
+        libc::SYS_quotactl,
+        // Kernel syslog ring buffer — read or clear dmesg. Information
+        // leak (kptr, kernel-stack traces) and evidence destruction.
+        libc::SYS_syslog,
     ];
 
     // iopl/ioperm are x86-only (hardware port I/O).
+    // SYS_mknod is also x86_64-only — aarch64 exposes only mknodat.
     #[cfg(target_arch = "x86_64")]
     {
         v.push(libc::SYS_iopl);
         v.push(libc::SYS_ioperm);
         v.push(libc::SYS_kexec_file_load);
+        v.push(libc::SYS_mknod);
     }
 
     v
@@ -150,10 +175,65 @@ fn build_blocklist_filter(blocked_syscalls: &[i64]) -> Result<SeccompFilter> {
     // Match action: Errno (blocked syscalls return EPERM)
     // Empty rules vec = match unconditionally for that syscall number
 
-    let rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = blocked_syscalls
+    let mut rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = blocked_syscalls
         .iter()
         .map(|&num| (num, vec![]))
         .collect();
+
+    // Conditional block: `ioctl` with request == TIOCSTI.
+    //
+    // TIOCSTI pushes characters back into the input queue of the
+    // terminal on the given fd. If the jailed process still holds
+    // an fd referring to the parent's controlling tty (possible
+    // when stdin wasn't redirected), this lets it inject keystrokes
+    // as if the operator typed them. `setsid()` mitigates the
+    // common case but argument-filtering closes the door for good.
+    //
+    // Only `ioctl` with arg[1] == 0x5412 is rejected; any other
+    // `ioctl` (e.g. `FIONBIO`, terminal-size queries) still passes.
+    const TIOCSTI: u64 = 0x5412;
+    let tiocsti_cond = seccompiler::SeccompCondition::new(
+        1,
+        seccompiler::SeccompCmpArgLen::Dword,
+        seccompiler::SeccompCmpOp::Eq,
+        TIOCSTI,
+    )
+    .map_err(|e| JailError::Seccomp(e.to_string()))?;
+    let tiocsti_rule = seccompiler::SeccompRule::new(vec![tiocsti_cond])
+        .map_err(|e| JailError::Seccomp(e.to_string()))?;
+    rules.insert(libc::SYS_ioctl, vec![tiocsti_rule]);
+
+    // Conditional block: `socket(domain, ...)` with dangerous
+    // families.
+    //   AF_NETLINK (16) — observability/control channels; some
+    //                     families are per-netns but others
+    //                     (NETLINK_AUDIT, NETLINK_KOBJECT_UEVENT
+    //                     subsystem-dependent) reach host state.
+    //   AF_PACKET  (17) — raw packet capture / injection.
+    //   AF_VSOCK   (40) — virtio socket to the hypervisor.
+    //
+    // The fd itself is a probing oracle even with caps dropped;
+    // blocking the `socket()` call closes that door. AF_UNIX (1),
+    // AF_INET (2), AF_INET6 (10) stay available. Strict mode already
+    // blocks `socket` unconditionally via the base list, so only
+    // install the arg-filter when the key is still absent.
+    if let std::collections::btree_map::Entry::Vacant(entry) = rules.entry(libc::SYS_socket) {
+        let mut socket_rules = Vec::new();
+        for af in [libc::AF_NETLINK, libc::AF_PACKET, libc::AF_VSOCK] {
+            let cond = seccompiler::SeccompCondition::new(
+                0,
+                seccompiler::SeccompCmpArgLen::Dword,
+                seccompiler::SeccompCmpOp::Eq,
+                af as u64,
+            )
+            .map_err(|e| JailError::Seccomp(e.to_string()))?;
+            socket_rules.push(
+                seccompiler::SeccompRule::new(vec![cond])
+                    .map_err(|e| JailError::Seccomp(e.to_string()))?,
+            );
+        }
+        entry.insert(socket_rules);
+    }
 
     SeccompFilter::new(
         rules,

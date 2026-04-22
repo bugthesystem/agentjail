@@ -116,10 +116,12 @@ pub(crate) async fn create_stream_run(
                 }
                 Some(s) = sse_rx.recv() => {
                     let payload = serde_json::json!({
-                        "memory_peak_bytes": s.memory_peak_bytes,
-                        "cpu_usage_usec":    s.cpu_usage_usec,
-                        "io_read_bytes":     s.io_read_bytes,
-                        "io_write_bytes":    s.io_write_bytes,
+                        "memory_peak_bytes":    s.memory_peak_bytes,
+                        "memory_current_bytes": s.memory_current_bytes,
+                        "cpu_usage_usec":       s.cpu_usage_usec,
+                        "io_read_bytes":        s.io_read_bytes,
+                        "io_write_bytes":       s.io_write_bytes,
+                        "pids_current":         s.pids_current,
                     });
                     if let Ok(ev) = Event::default().event("stats").json_data(payload) {
                         yield Ok(ev);
@@ -135,12 +137,14 @@ pub(crate) async fn create_stream_run(
         let ev = match &output {
             Ok(o) => {
                 let payload = serde_json::json!({
-                    "exit_code":         o.exit_code,
-                    "duration_ms":       u64::try_from(o.duration.as_millis()).unwrap_or(u64::MAX),
-                    "timed_out":         o.timed_out,
-                    "oom_killed":        o.oom_killed,
-                    "memory_peak_bytes": o.stats.as_ref().map(|s| s.memory_peak_bytes).unwrap_or(0),
-                    "cpu_usage_usec":    o.stats.as_ref().map(|s| s.cpu_usage_usec).unwrap_or(0),
+                    "exit_code":            o.exit_code,
+                    "duration_ms":          u64::try_from(o.duration.as_millis()).unwrap_or(u64::MAX),
+                    "timed_out":            o.timed_out,
+                    "oom_killed":           o.oom_killed,
+                    "memory_peak_bytes":    o.stats.as_ref().map(|s| s.memory_peak_bytes).unwrap_or(0),
+                    "memory_current_bytes": o.stats.as_ref().map(|s| s.memory_current_bytes).unwrap_or(0),
+                    "cpu_usage_usec":       o.stats.as_ref().map(|s| s.cpu_usage_usec).unwrap_or(0),
+                    "pids_current":         o.stats.as_ref().map(|s| s.pids_current).unwrap_or(0),
                 });
                 Event::default().event("completed").json_data(payload)
             }

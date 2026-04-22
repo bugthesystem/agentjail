@@ -62,9 +62,11 @@ class AuditList(TypedDict):
 
 class ResourceStats(TypedDict):
     memory_peak_bytes: int
+    memory_current_bytes: int
     cpu_usage_usec: int
     io_read_bytes: int
     io_write_bytes: int
+    pids_current: int
 
 
 class ExecResult(TypedDict):
@@ -143,9 +145,11 @@ class JailRecord(TypedDict):
     timed_out: bool | None
     oom_killed: bool | None
     memory_peak_bytes: int | None
+    memory_current_bytes: int | None
     cpu_usage_usec: int | None
     io_read_bytes: int | None
     io_write_bytes: int | None
+    pids_current: int | None
     stdout: str | None
     stderr: str | None
     error: str | None
@@ -271,9 +275,11 @@ class StreamLine(TypedDict):
 class StreamStats(TypedDict):
     type: Literal["stats"]
     memory_peak_bytes: int
+    memory_current_bytes: int
     cpu_usage_usec: int
     io_read_bytes: int
     io_write_bytes: int
+    pids_current: int
 
 
 class StreamCompleted(TypedDict):
@@ -283,7 +289,9 @@ class StreamCompleted(TypedDict):
     timed_out: bool
     oom_killed: bool
     memory_peak_bytes: int
+    memory_current_bytes: int
     cpu_usage_usec: int
+    pids_current: int
 
 
 class StreamErrorEvent(TypedDict):
@@ -300,7 +308,7 @@ StreamEvent = StreamStarted | StreamLine | StreamStats | StreamCompleted | Strea
 class SnapshotManifestEntry(TypedDict):
     path: str
     mode: int
-    sha256: str
+    hash: str  # hex-encoded BLAKE3-256 of the file bytes
     size: int
 
 

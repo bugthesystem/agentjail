@@ -13,7 +13,7 @@ export function VaultPanel({ creds }: { creds?: CredentialRecord[] }) {
         eyebrow="Vault"
         title="Upstream credentials"
         action={
-          <Link to="/credentials">
+          <Link to="/integrations">
             <Button variant="ghost" size="sm">manage →</Button>
           </Link>
         }

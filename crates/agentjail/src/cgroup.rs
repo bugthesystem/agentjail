@@ -6,6 +6,53 @@ use std::path::PathBuf;
 
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
+/// Deadline for `Cgroup::freeze`. The kernel typically transitions to
+/// `frozen 1` in hundreds of microseconds; we give it 50 ms before
+/// giving up, because even a disk-bound task usually unblocks well
+/// within that window. If a cgroup legitimately can't freeze in 50 ms
+/// something deeper is wrong — better to surface than to silently
+/// snapshot a running filesystem.
+const FREEZE_DEADLINE_MS: u64 = 50;
+
+/// Poll `cgroup.events` until it reports `frozen 1`. Returns the
+/// observed latency in the success case and an error otherwise.
+///
+/// `cgroup.events` is a sysfs file that supports `poll(POLLPRI)` —
+/// inotify-style notifications — but a tight `read` + sleep is simpler
+/// and well-bounded at 50 ms. One outstanding freeze per jail, and we
+/// only pay this cost during `live_fork`, so polling is fine.
+fn wait_for_frozen(path: &std::path::Path, deadline: std::time::Duration) -> Result<()> {
+    use std::time::Instant;
+
+    let events_path = path.join("cgroup.events");
+    let start = Instant::now();
+    let mut backoff_us = 100u64;
+
+    loop {
+        if let Ok(contents) = fs::read_to_string(&events_path) {
+            for line in contents.lines() {
+                if line == "frozen 1" {
+                    return Ok(());
+                }
+            }
+        }
+        if start.elapsed() >= deadline {
+            return Err(JailError::Cgroup(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "cgroup did not reach frozen state within {:?}",
+                    deadline
+                ),
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_micros(backoff_us));
+        // Back off: 100us → 200us → 400us → 800us → 1.6ms then cap.
+        // Fast to wake for the common sub-ms case, gentle for the rare
+        // multi-ms case.
+        backoff_us = (backoff_us * 2).min(1_600);
+    }
+}
+
 /// Handle to a cgroup for resource limiting.
 pub struct Cgroup {
     path: PathBuf,
@@ -60,9 +107,17 @@ impl Cgroup {
         fs::write(self.path.join("cgroup.procs"), pid.to_string()).map_err(JailError::Cgroup)
     }
 
-    /// Read current memory usage in bytes.
-    #[allow(dead_code)]
-    pub fn memory_usage(&self) -> Option<u64> {
+    /// Read peak memory usage in bytes.
+    pub fn memory_peak(&self) -> Option<u64> {
+        fs::read_to_string(self.path.join("memory.peak"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Read current memory usage in bytes at call time.
+    pub fn memory_current(&self) -> Option<u64> {
         fs::read_to_string(self.path.join("memory.current"))
             .ok()?
             .trim()
@@ -70,9 +125,9 @@ impl Cgroup {
             .ok()
     }
 
-    /// Read peak memory usage in bytes.
-    pub fn memory_peak(&self) -> Option<u64> {
-        fs::read_to_string(self.path.join("memory.peak"))
+    /// Read the number of processes/threads currently alive in the jail.
+    pub fn pids_current(&self) -> Option<u64> {
+        fs::read_to_string(self.path.join("pids.current"))
             .ok()?
             .trim()
             .parse()
@@ -88,16 +143,6 @@ impl Cgroup {
             }
         }
         None
-    }
-
-    /// Read current number of processes.
-    #[allow(dead_code)]
-    pub fn pids_current(&self) -> Option<u64> {
-        fs::read_to_string(self.path.join("pids.current"))
-            .ok()?
-            .trim()
-            .parse()
-            .ok()
     }
 
     /// Check if OOM killer was triggered.
@@ -116,16 +161,29 @@ impl Cgroup {
         false
     }
 
-    /// Freeze all processes in this cgroup.
+    /// Freeze all processes in this cgroup and **wait for quiescence**.
     ///
-    /// Pauses every process so it makes no progress. Used during live
-    /// forking to get a consistent filesystem snapshot. The freeze is
-    /// typically sub-millisecond.
+    /// Writing `1` to `cgroup.freeze` only *requests* freeze — tasks in
+    /// uninterruptible syscalls (disk I/O, network) don't stop until
+    /// those syscalls return. Without waiting, a follow-up snapshot
+    /// reads a torn filesystem.
+    ///
+    /// We therefore poll `cgroup.events` (a small virtual file with
+    /// `frozen 0|1` lines) until the kernel reports `frozen 1` or the
+    /// deadline elapses. Typical freeze latency: **sub-millisecond**.
+    /// Under heavy disk I/O the deadline gives us a bounded fallback —
+    /// we return an error rather than proceed with an inconsistent
+    /// snapshot.
     pub fn freeze(&self) -> Result<()> {
-        fs::write(self.path.join("cgroup.freeze"), "1").map_err(JailError::Cgroup)
+        fs::write(self.path.join("cgroup.freeze"), "1").map_err(JailError::Cgroup)?;
+        wait_for_frozen(&self.path, std::time::Duration::from_millis(FREEZE_DEADLINE_MS))
     }
 
     /// Thaw (resume) all processes in this cgroup.
+    ///
+    /// Does not wait — thawing is already fire-and-forget from the
+    /// caller's perspective; processes resume as soon as the kernel
+    /// flips the state.
     pub fn thaw(&self) -> Result<()> {
         fs::write(self.path.join("cgroup.freeze"), "0").map_err(JailError::Cgroup)
     }

@@ -16,6 +16,18 @@ import type { JailRecord, Workspace, WorkspaceCreateRequest } from "../lib/api";
 
 const PAGE_SIZE = 50;
 
+/**
+ * Truncate a `wrk_<24hex>` id to `wrk_abcd…wxyz` for inline display
+ * alongside the label. Keeps the last 4 chars so two workspaces that
+ * share a label remain visually distinguishable.
+ */
+function shortWsId(id: string): string {
+  if (id.length <= 12) return id;
+  const head = id.slice(0, 8);
+  const tail = id.slice(-4);
+  return `${head}…${tail}`;
+}
+
 export function Workspaces() {
   const api = useApi();
   const [q, setQ]             = useState("");
@@ -53,11 +65,17 @@ export function Workspaces() {
     setOffset, page, pageCount, pageSize: PAGE_SIZE,
   });
 
+  // Zero-state: no filter applied + no projects at all → welcome wizard.
+  const isZero = !q && total === 0 && data !== undefined;
+  if (isZero) {
+    return <ProjectsWelcome />;
+  }
+
   return (
     <div className="grid gap-4 grid-cols-[minmax(0,1fr)_420px] items-stretch">
       <Panel padded={false}>
         <div className="px-5 py-3 flex items-center justify-between gap-3">
-          <PanelHeader eyebrow="Workspaces" title="Workspace ledger" className="!mb-0 min-w-0" />
+          <PanelHeader eyebrow="Projects" title="Your projects" className="!mb-0 min-w-0" />
           <div className="flex items-center gap-2">
             <Pill tone="phantom" dot>live</Pill>
             <span className="text-[11px] mono text-ink-500">
@@ -78,7 +96,7 @@ export function Workspaces() {
 
         {rows.length === 0 ? (
           <Empty
-            title={q ? "No workspaces match" : "No workspaces yet"}
+            title={q ? "No projects match" : "No projects yet"}
             hint={q ? "Try a different query — search matches id, label, or git repo."
                    : "Create one on the right — clone a repo, run multi-step builds, snapshot the result."}
           />
@@ -151,6 +169,33 @@ function ToggleBtn({
 
 // ─── row ─────────────────────────────────────────────────────────────────
 
+/** Label convention: workspaces auto-restored from a snapshot carry
+ *  `restored from snap_<hex>`. Parse it once so the row can show a
+ *  distinct chip + short snapshot id instead of a 60-char string. */
+function parseRestoredFrom(label: string | null): string | null {
+  if (!label) return null;
+  const m = label.match(/^restored from (snap_[a-f0-9]+)$/);
+  return m ? m[1] : null;
+}
+
+function shortSnapId(id: string): string {
+  if (id.length <= 18) return id;
+  return `${id.slice(0, 9)}…${id.slice(-4)}`;
+}
+
+function RestoreGlyph() {
+  // 14×14 curved arrow — signals "came back from" at a glance.
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden
+      className="shrink-0 text-[var(--color-iris)]">
+      <path d="M3 7 A4 4 0 1 1 7 11" fill="none" stroke="currentColor"
+        strokeWidth="1.4" strokeLinecap="round" />
+      <path d="M3 7 L1.5 5.4 M3 7 L4.6 5.4" fill="none" stroke="currentColor"
+        strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function WorkspaceRow({
   ws, selected, onSelect,
 }: {
@@ -159,6 +204,7 @@ function WorkspaceRow({
   onSelect: () => void;
 }) {
   const paused = ws.paused_at !== null;
+  const restoredFrom = parseRestoredFrom(ws.label);
   return (
     <button
       onClick={onSelect}
@@ -168,10 +214,31 @@ function WorkspaceRow({
       )}
     >
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="mono text-[13px] text-ink-100 truncate">{ws.id}</span>
-          {ws.label && (
-            <span className="text-[11px] text-ink-400">· {ws.label}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          {restoredFrom ? (
+            <>
+              <span
+                className="inline-flex items-center gap-1.5 shrink-0 h-[22px] px-2 rounded-full
+                           ring-1 ring-[var(--color-iris)]/30
+                           bg-[var(--color-iris-bg)] text-[var(--color-iris)]
+                           text-[11px] mono"
+                title={`restored from ${restoredFrom}`}
+              >
+                <RestoreGlyph />
+                restored
+              </span>
+              <span className="mono text-[11.5px] text-ink-300 truncate" title={restoredFrom}>
+                {shortSnapId(restoredFrom)}
+              </span>
+              <span className="mono text-[10px] text-ink-500 shrink-0">{shortWsId(ws.id)}</span>
+            </>
+          ) : ws.label ? (
+            <>
+              <span className="text-[13px] text-ink-100 truncate">{ws.label}</span>
+              <span className="mono text-[10px] text-ink-500 shrink-0">{shortWsId(ws.id)}</span>
+            </>
+          ) : (
+            <span className="mono text-[13px] text-ink-100 truncate">{ws.id}</span>
           )}
           {paused && (
             <span className="text-[10px] uppercase tracking-[0.18em] px-1.5 py-0.5 rounded bg-ink-850 text-[var(--color-flare)] ring-1 ring-[var(--color-flare)]/30">
@@ -209,6 +276,9 @@ function WorkspaceDetail({
 }) {
   const api = useApi();
   const qc  = useQueryClient();
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [renaming, setRenaming]         = useState(false);
+  const [labelDraft, setLabelDraft]     = useState("");
 
   const del = useMutation({
     mutationFn: (id: string) => api.workspaces.delete(id),
@@ -218,11 +288,21 @@ function WorkspaceDetail({
     },
   });
 
+  const rename = useMutation({
+    mutationFn: ({ id, label }: { id: string; label: string }) =>
+      api.workspaces.rename(id, label),
+    onSuccess: (fresh) => {
+      qc.setQueryData(["workspace", fresh.id], fresh);
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+      setRenaming(false);
+    },
+  });
+
   if (!ws) {
     return (
       <Panel>
         <div className="py-10 text-center text-xs text-ink-500 mono">
-          select a workspace to inspect
+          select a project to inspect
         </div>
       </Panel>
     );
@@ -232,11 +312,55 @@ function WorkspaceDetail({
   return (
     <Panel padded={false} className="flex-1 min-h-0 flex flex-col">
       <div className="px-5 py-3 flex items-start justify-between gap-3">
-        <PanelHeader
-          eyebrow="Workspace"
-          title={ws.label ?? ws.id}
-          className="!mb-0 min-w-0"
-        />
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] uppercase tracking-[0.22em] text-ink-400 mb-1">Project</div>
+          {renaming ? (
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                rename.mutate({ id: ws.id, label: labelDraft });
+              }}
+            >
+              <input
+                autoFocus
+                value={labelDraft}
+                onChange={(e) => setLabelDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") setRenaming(false); }}
+                placeholder="label"
+                className="bg-ink-900 ring-1 ring-ink-700 rounded px-2 py-1 text-[13px] text-ink-100 focus:outline-none focus:ring-phantom min-w-0 flex-1"
+              />
+              <button type="submit" className="text-[11px] mono text-phantom hover:text-ink-100" disabled={rename.isPending}>
+                {rename.isPending ? "…" : "save"}
+              </button>
+              <button type="button" className="text-[11px] mono text-ink-500 hover:text-ink-200" onClick={() => setRenaming(false)}>
+                cancel
+              </button>
+            </form>
+          ) : (
+            <div className="flex items-center gap-2 min-w-0">
+              <h3 className="display text-[18px] leading-tight font-semibold truncate">
+                {ws.label ?? ws.id}
+              </h3>
+              <button
+                type="button"
+                onClick={() => { setLabelDraft(ws.label ?? ""); setRenaming(true); }}
+                className="text-[11px] mono text-ink-500 hover:text-ink-200 shrink-0"
+                title="Rename project"
+              >
+                rename
+              </button>
+            </div>
+          )}
+          {ws.label && (
+            <div className="mono text-[11px] text-ink-500 mt-0.5 truncate">{ws.id}</div>
+          )}
+          {rename.error && (
+            <div className="text-[11px] text-[var(--color-siren)] mt-1">
+              {rename.error instanceof Error ? rename.error.message : String(rename.error)}
+            </div>
+          )}
+        </div>
         <Button variant="outline" size="sm" onClick={() => del.mutate(ws.id)} disabled={del.isPending}>
           {del.isPending ? "deleting…" : "delete"}
         </Button>
@@ -259,36 +383,6 @@ function WorkspaceDetail({
             <Row label="Auto-snap" value={ws.auto_snapshot} />
           )}
         </Section>
-
-        <Section label="Config">
-          <Row label="Memory"  value={`${ws.config.memory_mb} MB`} />
-          <Row label="Timeout" value={`${ws.config.timeout_secs} s`} />
-          <Row label="CPU"     value={`${ws.config.cpu_percent}%`} />
-          <Row label="Max PIDs" value={String(ws.config.max_pids)} />
-          <Row label="Seccomp"  value={ws.config.seccomp} />
-          <Row
-            label="Network"
-            value={
-              ws.config.network_mode === "allowlist"
-                ? `allowlist · ${ws.config.network_domains.length}`
-                : ws.config.network_mode
-            }
-          />
-          <Row
-            label="Idle"
-            value={ws.config.idle_timeout_secs === 0 ? "never" : `${ws.config.idle_timeout_secs} s`}
-          />
-        </Section>
-
-        {ws.config.network_mode === "allowlist" && ws.config.network_domains.length > 0 && (
-          <Section label="Allowlist">
-            <div className="flex flex-wrap gap-1.5">
-              {ws.config.network_domains.map((d) => (
-                <span key={d} className="mono text-[11px] text-phantom bg-ink-800/60 rounded px-2 py-0.5">{d}</span>
-              ))}
-            </div>
-          </Section>
-        )}
 
         {ws.git_repo && (
           <Section label="Git seed">
@@ -316,12 +410,58 @@ function WorkspaceDetail({
           </Section>
         )}
 
-        <Section label="Filesystem">
-          <Row label="Source" value={ws.source_dir} span />
-          <Row label="Output" value={ws.output_dir} span />
-        </Section>
-
         <RecentExecs wsId={ws.id} />
+
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((x) => !x)}
+            aria-expanded={showAdvanced}
+            className="text-[11px] mono text-ink-400 hover:text-ink-200 flex items-center gap-1.5"
+          >
+            <span className={cn("inline-block transition-transform", showAdvanced && "rotate-90")}>›</span>
+            {showAdvanced ? "hide" : "show"} technical config
+          </button>
+        </div>
+
+        {showAdvanced && (
+          <>
+            <Section label="Config">
+              <Row label="Memory"  value={`${ws.config.memory_mb} MB`} />
+              <Row label="Timeout" value={`${ws.config.timeout_secs} s`} />
+              <Row label="CPU"     value={`${ws.config.cpu_percent}%`} />
+              <Row label="Max PIDs" value={String(ws.config.max_pids)} />
+              <Row label="Seccomp"  value={ws.config.seccomp} />
+              <Row
+                label="Network"
+                value={
+                  ws.config.network_mode === "allowlist"
+                    ? `allowlist · ${ws.config.network_domains.length}`
+                    : ws.config.network_mode
+                }
+              />
+              <Row
+                label="Idle"
+                value={ws.config.idle_timeout_secs === 0 ? "never" : `${ws.config.idle_timeout_secs} s`}
+              />
+            </Section>
+
+            {ws.config.network_mode === "allowlist" && ws.config.network_domains.length > 0 && (
+              <Section label="Allowlist">
+                <div className="flex flex-wrap gap-1.5">
+                  {ws.config.network_domains.map((d) => (
+                    <span key={d} className="mono text-[11px] text-phantom bg-ink-800/60 rounded px-2 py-0.5">{d}</span>
+                  ))}
+                </div>
+              </Section>
+            )}
+
+            <Section label="Filesystem">
+              <Row label="Source" value={ws.source_dir} span />
+              <Row label="Output" value={ws.output_dir} span />
+            </Section>
+          </>
+        )}
       </div>
     </Panel>
   );
@@ -346,7 +486,7 @@ function RecentExecs({ wsId }: { wsId: string }) {
           Recent execs
         </div>
         <Link
-          to={`/jails?q=${encodeURIComponent(`workspace:${wsId}`)}&kind=workspace`}
+          to={`/operator/ledger?q=${encodeURIComponent(`workspace:${wsId}`)}&kind=workspace`}
           className="text-[10px] mono text-ink-500 hover:text-ink-200"
         >see all →</Link>
       </div>
@@ -369,7 +509,7 @@ function RecentExecRow({ rec }: { rec: JailRecord }) {
   const err = rec.status === "error" || (rec.status === "completed" && rec.exit_code !== 0);
   return (
     <Link
-      to={`/jails?selected=${rec.id}`}
+      to={`/operator/ledger?selected=${rec.id}`}
       className="bg-ink-900/60 px-3 py-2 grid grid-cols-[1fr_auto_auto] gap-3 items-center text-[11.5px] hover:bg-ink-900 transition-colors"
     >
       <span className="mono text-ink-200 truncate">{cmd}</span>
@@ -468,7 +608,7 @@ function CreateWorkspaceForm() {
   return (
     <Panel padded={false} className="flex-1 min-h-0 flex flex-col">
       <div className="px-5 py-4">
-        <PanelHeader eyebrow="Create" title="New workspace" className="!mb-0" />
+        <PanelHeader eyebrow="Create" title="New project" className="!mb-0" />
       </div>
       <div className="hairline" />
       <form onSubmit={submit} className="p-5 space-y-3 overflow-y-auto flex-1 min-h-0">
@@ -492,7 +632,7 @@ function CreateWorkspaceForm() {
         />
         <div className="grid grid-cols-2 gap-3">
           <Field
-            label="Idle timeout (s)"
+            label="Auto-pause after (s)"
             placeholder="0"
             inputMode="numeric"
             value={idle}
@@ -508,7 +648,7 @@ function CreateWorkspaceForm() {
         </div>
         <div className="pt-1">
           <Button type="submit" variant="primary" size="md" disabled={create.isPending}>
-            {create.isPending ? "creating…" : "create workspace"}
+            {create.isPending ? "creating…" : "create project"}
           </Button>
         </div>
         {create.error && (
@@ -518,5 +658,31 @@ function CreateWorkspaceForm() {
         )}
       </form>
     </Panel>
+  );
+}
+
+// ─── zero-state welcome ─────────────────────────────────────────────────
+
+function ProjectsWelcome() {
+  return (
+    <div className="max-w-[720px] mx-auto pt-6">
+      <div className="text-center mb-6">
+        <div className="text-[10px] uppercase tracking-[0.22em] text-ink-400 mb-1.5">
+          Projects
+        </div>
+        <h1 className="display text-[28px] leading-tight font-semibold text-balance">
+          Create your first project
+        </h1>
+        <p className="mt-2 text-sm text-ink-400 max-w-[480px] mx-auto">
+          A project is a persistent sandbox where your agent runs — clone a
+          repo or start empty, run commands, snapshot the result. Nothing the
+          agent does escapes the jail.
+        </p>
+      </div>
+      <CreateWorkspaceForm />
+      <p className="mt-4 text-center text-[11.5px] text-ink-500">
+        Next up: <Link to="/sessions" className="text-ink-300 hover:text-ink-100 underline decoration-ink-700 underline-offset-2">mint an API session</Link> so the sandbox can call Anthropic, OpenAI, GitHub, or Stripe through the phantom proxy.
+      </p>
+    </div>
   );
 }

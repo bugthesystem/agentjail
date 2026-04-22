@@ -15,9 +15,10 @@ landlock = "0.4"
 libc = "0.2"
 tokio = { version = "1", features = ["process", "io-util", "rt", "sync", "time", "fs", "net", "macros"] }
 thiserror.workspace = true
-# `asm` turns on hand-tuned SHA-256: ARMv8 SHA extensions on aarch64,
-# SHA-NI on x86_64 (Ice Lake+). Free 5-10× for the snapshot hasher.
-sha2 = { version = "0.10", default-features = false, features = ["asm"] }
+# BLAKE3: SIMD-native, ~3× faster than SHA-NI SHA-256 and parallelizes
+# within a file. We switched while the incremental-snapshot manifest
+# format was unshipped — see docs/internal.md invariant 13.
+blake3 = { version = "1", default-features = false }
 # `no_std` builds of hex need explicit features; keep the local spec
 # rather than inheriting the default workspace one.
 hex = { version = "0.4", default-features = false, features = ["alloc"] }

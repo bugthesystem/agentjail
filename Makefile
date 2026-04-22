@@ -186,6 +186,27 @@ test-rust:
 	  cargo test -p agentjail --test snapshot_test && \
 	  cargo check -p agentjail-server' | tail -20
 
+# Privileged run — exercises every integration/security test. Needs
+# CAP_SYS_ADMIN for unshare/mount/seccomp, hence --privileged. Runs
+# one test at a time because they share cgroup paths and veth IDs.
+# On OrbStack / Docker Desktop, host→jail veth routing may fail in the
+# container's netns (inbound_reach_test) — that's environmental, not
+# a code bug.
+test-rust-privileged:
+	@printf "$(C_BOLD)→ test-rust-privileged$(C_RESET)  $(C_DIM)full agentjail suite under --privileged docker$(C_RESET)\n"
+	@docker run --rm --privileged -v "$$PWD":/src -w /src rust:1.88-slim-bookworm bash -c '\
+	  apt-get update -qq && \
+	  apt-get install -y --no-install-recommends pkg-config libssl-dev libseccomp-dev python3 >/dev/null 2>&1 && \
+	  cargo test -p agentjail \
+	    --test security_test \
+	    --test malicious_test \
+	    --test seccomp_blocklist_test \
+	    --test integration \
+	    --test fork_test \
+	    --test audit_regression_test \
+	    --test snapshot_test \
+	    -- --test-threads=1'
+
 test-node:
 	@printf "$(C_BOLD)→ test-node$(C_RESET)  $(C_DIM)@agentjail/sdk$(C_RESET)\n"
 	@cd $(SDK_NODE_DIR) && $(PKG) install --silent >/dev/null 2>&1 && $(PKG) test 2>&1 | tail -10

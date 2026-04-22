@@ -50,6 +50,7 @@ pub(crate) use snapshots::{
 pub(crate) use stream::create_stream_run;
 pub(crate) use workspaces::{
     create_workspace, delete_workspace, fork_workspace, get_workspace, list_workspaces,
+    patch_workspace,
     reconcile_on_startup as reconcile_workspaces_on_startup,
 };
 pub(crate) use workspaces_exec::exec_in_workspace;

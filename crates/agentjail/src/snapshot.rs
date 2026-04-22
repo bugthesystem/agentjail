@@ -7,7 +7,7 @@
 //!    zero coupling to other snapshots.
 //! 2. **Content-addressed incremental** —
 //!    [`Snapshot::create_incremental`] writes each unique file body into
-//!    a shared *object pool* keyed by SHA-256, plus a `manifest.json`
+//!    a shared *object pool* keyed by BLAKE3, plus a `manifest.json`
 //!    under `snapshot_dir`. Later snapshots of the same bytes dedupe to
 //!    zero extra disk. [`Snapshot::restore_incremental`] hardlinks (or
 //!    falls back to copy) each blob back into a target dir.
@@ -17,23 +17,59 @@
 
 use crate::error::{JailError, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Freeze every process in a cgroup so its filesystem writes pause while
-/// a snapshot is captured. Sub-millisecond under normal load. No-op path
-/// for callers who already know they have no cgroup — just pass the
-/// appropriate [`freeze_cgroup`] / [`thaw_cgroup`] calls yourself.
+/// Freeze every process in a cgroup and wait for quiescence.
+///
+/// Writing `1` to `cgroup.freeze` only *requests* the transition — the
+/// kernel reports `frozen 1` in `cgroup.events` once every task is
+/// actually stopped. Without polling that file, a snapshot captured
+/// immediately after the write can include torn writes from tasks
+/// that were in flight. We poll for up to 50 ms (sub-ms is typical)
+/// and return an error if the deadline elapses, rather than proceed
+/// with an inconsistent filesystem.
 pub fn freeze_cgroup(cgroup_path: &Path) -> Result<()> {
-    fs::write(cgroup_path.join("cgroup.freeze"), "1").map_err(JailError::Cgroup)
+    fs::write(cgroup_path.join("cgroup.freeze"), "1").map_err(JailError::Cgroup)?;
+    wait_for_frozen(cgroup_path, std::time::Duration::from_millis(50))
 }
 
 /// Unfreeze every process in a cgroup. Idempotent — thawing an already
-/// thawed cgroup is safe.
+/// thawed cgroup is safe. Does not wait: resume is instant from the
+/// caller's perspective.
 pub fn thaw_cgroup(cgroup_path: &Path) -> Result<()> {
     fs::write(cgroup_path.join("cgroup.freeze"), "0").map_err(JailError::Cgroup)
+}
+
+/// Poll `cgroup.events` until the kernel reports `frozen 1` or the
+/// deadline elapses. Back-off starts at 100 µs and caps at 1.6 ms, so
+/// the common sub-ms case wakes fast and the rare multi-ms case
+/// doesn't spin-loop.
+fn wait_for_frozen(cgroup_path: &Path, deadline: std::time::Duration) -> Result<()> {
+    use std::time::Instant;
+
+    let events_path = cgroup_path.join("cgroup.events");
+    let start = Instant::now();
+    let mut backoff_us = 100u64;
+
+    loop {
+        if let Ok(contents) = fs::read_to_string(&events_path) {
+            for line in contents.lines() {
+                if line == "frozen 1" {
+                    return Ok(());
+                }
+            }
+        }
+        if start.elapsed() >= deadline {
+            return Err(JailError::Cgroup(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("cgroup did not freeze within {:?}", deadline),
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_micros(backoff_us));
+        backoff_us = (backoff_us * 2).min(1_600);
+    }
 }
 
 /// Capture a [`Snapshot`] while optionally freezing the source cgroup so
@@ -224,6 +260,11 @@ fn clear_dir(dir: &Path) -> Result<()> {
 // ---------------- content-addressed incremental ----------------
 
 /// One entry in an incremental manifest.
+///
+/// `hash` is a hex-encoded BLAKE3-256 of the file's bytes. BLAKE3 was
+/// chosen over SHA-256 for its SIMD throughput; its digest is the same
+/// 32-byte width so blob paths in the pool keep the `{prefix}/{hash}`
+/// layout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestEntry {
     /// Path relative to the snapshot's output root, using `/` separators.
@@ -231,16 +272,28 @@ pub struct ManifestEntry {
     /// Unix mode bits. We preserve the executable bit and general perms
     /// on restore; symlinks and non-regular files are skipped at capture.
     pub mode: u32,
-    /// Hex-encoded SHA-256 of the file's bytes.
-    pub sha256: String,
+    /// Hex-encoded BLAKE3-256 of the file's bytes.
+    pub hash: String,
     /// File size in bytes (cached so a restore can allocate).
     pub size: u64,
+    /// Modification time as nanoseconds since the Unix epoch. Enables the
+    /// fast-path in [`Snapshot::create_incremental_with_hint`]: when the
+    /// prior manifest has the same `(path, size, mtime_ns)`, we skip the
+    /// hash and reuse the prior blob. `None` on older manifests that
+    /// predate the field — gracefully falls back to full hashing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtime_ns: Option<u128>,
 }
+
+/// Manifest format version for BLAKE3-hashed entries. Readers must
+/// refuse higher majors than they understand.
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// Manifest format written under `snapshot_dir/manifest.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
-    /// Format version. Bump when [`ManifestEntry`] changes.
+    /// `1` = legacy SHA-256 entries; `2` = BLAKE3 entries + `mtime_ns`
+    /// fast-path. Readers refuse majors higher than they understand.
     pub version: u32,
     /// Files, sorted by path for deterministic output.
     pub entries: Vec<ManifestEntry>,
@@ -255,7 +308,7 @@ impl Manifest {
 
     /// Hex-encoded blob hashes referenced by this manifest. Useful for GC.
     pub fn referenced_blobs(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|e| e.sha256.as_str())
+        self.entries.iter().map(|e| e.hash.as_str())
     }
 }
 
@@ -263,8 +316,8 @@ const MANIFEST_NAME: &str = "manifest.json";
 
 impl Snapshot {
     /// Create an incremental snapshot: each regular file's bytes go into
-    /// a content-addressed `objects_pool` (by sha256), and a manifest of
-    /// `(path, sha, mode, size)` lives in `snapshot_dir`. Files whose
+    /// a content-addressed `objects_pool` (by BLAKE3), and a manifest of
+    /// `(path, hash, mode, size)` lives in `snapshot_dir`. Files whose
     /// hash is already in the pool are free.
     ///
     /// The pool layout is `{pool}/{hash[0..2]}/{hash}`. Pool writes are
@@ -275,18 +328,49 @@ impl Snapshot {
         snapshot_dir: &Path,
         objects_pool: &Path,
     ) -> Result<Self> {
+        Self::create_incremental_with_hint(output_dir, snapshot_dir, objects_pool, None)
+    }
+
+    /// Same as [`Self::create_incremental`], but with a fast-path hint:
+    /// when `prior` matches a file's `(relative-path, size, mtime_ns)`
+    /// and the prior blob is still present in `objects_pool`, we skip
+    /// the BLAKE3 hash and the temp-file write entirely — the prior
+    /// hash is reused verbatim.
+    ///
+    /// Typical cost for an unchanged 10 GB / 100 k-file tree drops from
+    /// *full read + hash + write-to-tmp per file* to *one `stat` per
+    /// file*. Matters a lot on the game-engine farm where most
+    /// snapshots follow very small diffs.
+    ///
+    /// Pass `prior` as the manifest returned from the most recent
+    /// successful snapshot of the same `output_dir`. Load via
+    /// [`load_manifest`] if you only have the on-disk form.
+    pub fn create_incremental_with_hint(
+        output_dir: &Path,
+        snapshot_dir: &Path,
+        objects_pool: &Path,
+        prior: Option<&Manifest>,
+    ) -> Result<Self> {
         if !output_dir.exists() {
             return Err(JailError::PathNotFound(output_dir.to_path_buf()));
         }
         fs::create_dir_all(snapshot_dir).map_err(JailError::Snapshot)?;
         fs::create_dir_all(objects_pool).map_err(JailError::Snapshot)?;
 
+        let prior_map = prior.map(build_prior_lookup).unwrap_or_default();
+
         let mut entries: Vec<ManifestEntry> = Vec::new();
-        walk_and_hash(output_dir, output_dir, objects_pool, &mut entries)?;
+        walk_and_hash(
+            output_dir,
+            output_dir,
+            objects_pool,
+            &prior_map,
+            &mut entries,
+        )?;
         entries.sort_by(|a, b| a.path.cmp(&b.path));
 
         let manifest = Manifest {
-            version: 1,
+            version: MANIFEST_VERSION,
             entries,
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
@@ -320,11 +404,20 @@ impl Snapshot {
         }
 
         for entry in manifest.entries {
-            let blob = blob_path(objects_pool, &entry.sha256);
+            // Reject manifest entries whose path escapes `target_dir`.
+            //
+            // `Path::join` with an absolute right-hand side *replaces*
+            // the left, so a malicious manifest entry `path:
+            // "/etc/shadow"` (or `"../../etc/shadow"`) would land the
+            // blob anywhere the parent process can write. Accept only
+            // paths made of normal components.
+            validate_relative_path(&entry.path)?;
+
+            let blob = blob_path(objects_pool, &entry.hash);
             if !blob.exists() {
                 return Err(JailError::Snapshot(std::io::Error::other(format!(
                     "blob {} missing from pool",
-                    entry.sha256,
+                    entry.hash,
                 ))));
             }
             let dst = target_dir.join(&entry.path);
@@ -342,6 +435,37 @@ impl Snapshot {
     }
 }
 
+/// Reject any manifest entry path that could escape the target dir.
+///
+/// Manifest files are cheap to forge once an attacker can write one
+/// — so a strict check-at-restore is the right trust boundary even
+/// though `create_incremental` only emits relative paths today.
+fn validate_relative_path(p: &str) -> Result<()> {
+    use std::path::Component;
+    let path = Path::new(p);
+    if p.is_empty() {
+        return Err(JailError::Snapshot(std::io::Error::other(
+            "manifest entry has empty path",
+        )));
+    }
+    if path.is_absolute() {
+        return Err(JailError::Snapshot(std::io::Error::other(format!(
+            "manifest entry path is absolute: {p}",
+        ))));
+    }
+    for c in path.components() {
+        match c {
+            Component::Normal(_) => {}
+            _ => {
+                return Err(JailError::Snapshot(std::io::Error::other(format!(
+                    "manifest entry path contains non-normal component: {p}",
+                ))));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Load and return a manifest from a snapshot dir created with
 /// [`Snapshot::create_incremental`]. Errors when the file is missing —
 /// useful for tools distinguishing full vs incremental snapshots.
@@ -357,10 +481,30 @@ fn blob_path(pool: &Path, sha: &str) -> PathBuf {
     pool.join(prefix).join(sha)
 }
 
+/// Lookup from prior manifest: `(relpath → (size, mtime_ns, sha))`.
+///
+/// Only entries with a recorded `mtime_ns` participate — older manifests
+/// without the field fall back to full hashing. Using a `HashMap` keyed
+/// on path alone (not `(path, size, mtime)`) lets us distinguish "same
+/// file, changed" from "missing from tree" in the walk.
+type PriorLookup<'a> = std::collections::HashMap<&'a str, (u64, u128, &'a str)>;
+
+fn build_prior_lookup(prior: &Manifest) -> PriorLookup<'_> {
+    prior
+        .entries
+        .iter()
+        .filter_map(|e| {
+            e.mtime_ns
+                .map(|ns| (e.path.as_str(), (e.size, ns, e.hash.as_str())))
+        })
+        .collect()
+}
+
 fn walk_and_hash(
     root: &Path,
     current: &Path,
     pool: &Path,
+    prior: &PriorLookup<'_>,
     out: &mut Vec<ManifestEntry>,
 ) -> Result<()> {
     for entry in fs::read_dir(current).map_err(JailError::Snapshot)? {
@@ -372,7 +516,7 @@ fn walk_and_hash(
             continue;
         }
         if ft.is_dir() {
-            walk_and_hash(root, &src, pool, out)?;
+            walk_and_hash(root, &src, pool, prior, out)?;
             continue;
         }
         if !ft.is_file() {
@@ -388,22 +532,68 @@ fn walk_and_hash(
             .collect::<Vec<_>>()
             .join("/");
 
-        let (sha, size) = hash_into_pool(&src, pool)?;
+        let mode = get_unix_mode(&src);
+
+        // Fast path: one `stat` per file instead of full read + hash +
+        // tmp-file write. Requires the prior manifest to carry mtime,
+        // the prior blob to still exist in the pool, and (size, mtime)
+        // to match exactly.
+        if let Some((prior_size, prior_mtime, prior_hash)) = prior.get(rel_str.as_str())
+            && let Some((size, mtime_ns)) = stat_size_mtime(&src)
+            && size == *prior_size
+            && mtime_ns == *prior_mtime
+            && blob_path(pool, prior_hash).exists()
+        {
+            out.push(ManifestEntry {
+                path: rel_str,
+                mode,
+                hash: (*prior_hash).to_string(),
+                size,
+                mtime_ns: Some(mtime_ns),
+            });
+            continue;
+        }
+
+        let (hash, size) = hash_into_pool(&src, pool)?;
+        let mtime_ns = stat_size_mtime(&src).map(|(_, m)| m);
         out.push(ManifestEntry {
             path: rel_str,
-            mode: get_unix_mode(&src),
-            sha256: sha,
+            mode,
+            hash,
             size,
+            mtime_ns,
         });
     }
     Ok(())
 }
 
-/// Stream a file through SHA-256 into a temp file in the pool, then
+/// Read `(size, mtime_ns)` in a single `stat`. Returns `None` on any
+/// filesystem error — callers then fall through to the full-hash path
+/// rather than treating the file as missing.
+#[cfg(unix)]
+fn stat_size_mtime(p: &Path) -> Option<(u64, u128)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(p).ok()?;
+    // mtime() returns seconds, mtime_nsec() nanoseconds. Combine so
+    // sub-second edits of the same size don't collide.
+    let seconds = meta.mtime() as u128;
+    let nsec = meta.mtime_nsec() as u128;
+    Some((meta.size(), seconds.saturating_mul(1_000_000_000) + nsec))
+}
+
+#[cfg(not(unix))]
+fn stat_size_mtime(p: &Path) -> Option<(u64, u128)> {
+    let meta = fs::metadata(p).ok()?;
+    let modified = meta.modified().ok()?;
+    let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((meta.len(), dur.as_nanos()))
+}
+
+/// Stream a file through BLAKE3 into a temp file in the pool, then
 /// atomically rename to the final blob path if it doesn't already exist.
 fn hash_into_pool(src: &Path, pool: &Path) -> Result<(String, u64)> {
     let mut f = fs::File::open(src).map_err(JailError::Snapshot)?;
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
     let mut buf = [0u8; 64 * 1024];
     let mut size: u64 = 0;
     let tmp = pool.join(format!(".tmp-{}", uniq()));
@@ -421,8 +611,8 @@ fn hash_into_pool(src: &Path, pool: &Path) -> Result<(String, u64)> {
     tmp_writer.flush().map_err(JailError::Snapshot)?;
     drop(tmp_writer);
 
-    let sha = hex::encode(hasher.finalize());
-    let final_path = blob_path(pool, &sha);
+    let hash = hex::encode(hasher.finalize().as_bytes());
+    let final_path = blob_path(pool, &hash);
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent).map_err(JailError::Snapshot)?;
     }
@@ -438,7 +628,7 @@ fn hash_into_pool(src: &Path, pool: &Path) -> Result<(String, u64)> {
             return Err(JailError::Snapshot(e));
         }
     }
-    Ok((sha, size))
+    Ok((hash, size))
 }
 
 fn uniq() -> String {
@@ -464,7 +654,13 @@ fn get_unix_mode(_p: &Path) -> u32 {
 #[cfg(unix)]
 fn set_unix_mode(p: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(p, fs::Permissions::from_mode(mode));
+    // Strip S_ISUID (0o4000) and S_ISGID (0o2000) — snapshots are
+    // portable artifacts. If a workspace authored a setuid binary
+    // and the snapshot is later restored to a mount without NOSUID,
+    // the bit would be live. Dropping the bits at restore keeps the
+    // protection local to the jail's mount-flag posture.
+    let safe = mode & !0o6000;
+    let _ = fs::set_permissions(p, fs::Permissions::from_mode(safe));
 }
 
 #[cfg(not(unix))]

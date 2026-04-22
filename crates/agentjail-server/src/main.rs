@@ -62,6 +62,11 @@ use tokio::sync::watch;
 async fn main() -> Result<()> {
     init_tracing();
 
+    // Reap any `aj-h*` veth interfaces left behind by a previous crash.
+    // `PR_SET_PDEATHSIG` handles the graceful-exit case inside each
+    // jail; this covers the "killed -9" / "OOM'd" / "power lost" gap.
+    agentjail::cleanup_stale_veths();
+
     let config = Config::from_env()?;
     let stores = Stores::new_from_env();
 

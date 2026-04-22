@@ -218,6 +218,23 @@ impl WorkspaceStore for PgWorkspaceStore {
         row_to_workspace(&row).ok()
     }
 
+    async fn set_label(&self, id: &str, label: Option<&str>) -> Option<Workspace> {
+        let q = format!(
+            "UPDATE workspaces
+             SET label = $2
+             WHERE id = $1 AND deleted_at IS NULL
+             RETURNING {WORKSPACE_COLS}",
+        );
+        let row = sqlx::query(&q)
+            .bind(id)
+            .bind(label)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()?;
+        row_to_workspace(&row).ok()
+    }
+
     async fn touch(&self, id: &str) {
         let _ = sqlx::query(
             "UPDATE workspaces SET last_exec_at = now() WHERE id = $1 AND deleted_at IS NULL",

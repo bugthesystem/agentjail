@@ -148,10 +148,11 @@ export interface SnapshotList {
 }
 
 export interface SnapshotManifestEntry {
-  path:   string;
-  mode:   number;
-  sha256: string;
-  size:   number;
+  path: string;
+  mode: number;
+  /** Hex-encoded BLAKE3-256 of the file bytes. */
+  hash: string;
+  size: number;
 }
 
 export interface SnapshotManifest {
@@ -183,10 +184,12 @@ export interface JailRecord {
   duration_ms: number | null;
   timed_out:   boolean | null;
   oom_killed:  boolean | null;
-  memory_peak_bytes: number | null;
-  cpu_usage_usec:    number | null;
-  io_read_bytes:     number | null;
-  io_write_bytes:    number | null;
+  memory_peak_bytes:    number | null;
+  memory_current_bytes: number | null;
+  cpu_usage_usec:       number | null;
+  io_read_bytes:        number | null;
+  io_write_bytes:       number | null;
+  pids_current:         number | null;
   stdout: string | null;
   stderr: string | null;
   error:  string | null;
@@ -218,10 +221,12 @@ export interface ExecResult {
   timed_out: boolean;
   oom_killed: boolean;
   stats?: {
-    memory_peak_bytes: number;
-    cpu_usage_usec: number;
-    io_read_bytes: number;
-    io_write_bytes: number;
+    memory_peak_bytes:    number;
+    memory_current_bytes: number;
+    cpu_usage_usec:       number;
+    io_read_bytes:        number;
+    io_write_bytes:       number;
+    pids_current:         number;
   };
 }
 
@@ -329,6 +334,8 @@ export function createApi(baseUrl: string, apiKey: string) {
       get: (id: string) => call<Workspace>("GET", `/v1/workspaces/${id}`),
       create: (req: WorkspaceCreateRequest) =>
         call<Workspace>("POST", "/v1/workspaces", req),
+      rename: (id: string, label: string) =>
+        call<Workspace>("PATCH", `/v1/workspaces/${id}`, { label }),
       delete: (id: string) => call<void>("DELETE", `/v1/workspaces/${id}`),
       exec: (
         id: string,
