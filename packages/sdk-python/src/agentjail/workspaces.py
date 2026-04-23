@@ -29,6 +29,7 @@ class Workspaces:
         timeout_secs: int | None = None,
         idle_timeout_secs: int | None = None,
         domains: list[WorkspaceDomain] | None = None,
+        flavors: list[str] | None = None,
         network: NetworkSpec | None = None,
         seccomp: str | None = None,
         cpu_percent: int | None = None,
@@ -38,6 +39,11 @@ class Workspaces:
 
         ``git`` accepts either the single-repo shape ``{"repo": url, "ref"?: ref}``
         or the multi-repo shape ``{"repos": [{"repo": url, "ref"?: ref, "dir"?: subdir}]}``.
+
+        ``flavors`` lists runtime overlays to bind-mount into the jail
+        (e.g. ``["nodejs", "python"]``). Each name is validated against
+        the server's registry (see ``GET /v1/flavors``); unknown names
+        return 400 at create.
         """
         body: dict[str, Any] = {}
         if git is not None:
@@ -52,6 +58,8 @@ class Workspaces:
             body["idle_timeout_secs"] = idle_timeout_secs
         if domains is not None:
             body["domains"] = domains
+        if flavors is not None:
+            body["flavors"] = flavors
         if network is not None:
             body["network"] = network
         if seccomp is not None:

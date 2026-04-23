@@ -164,7 +164,12 @@ fn clone_jail_config(dst: &Path, host: &str) -> Result<JailConfig> {
         output: scratch.clone(),
         source_rw: true,
         network: Network::Allowlist(vec![host.to_string()]),
-        seccomp: SeccompLevel::Strict,
+        // Standard, not Strict: Strict blocks SYS_socket/SYS_connect,
+        // which kills git before it can even reach the allowlist
+        // proxy. Standard still blocks ptrace, mount, bpf, io_uring,
+        // and the rest of the escape-flavoured surface — net syscalls
+        // are the only real difference, and git needs them.
+        seccomp: SeccompLevel::Standard,
         landlock: false,
         memory_mb: 512,
         cpu_percent: 100,
@@ -219,7 +224,9 @@ mod tests {
     fn clone_jail_config_honors_hardening_shape() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = clone_jail_config(tmp.path(), "github.com").unwrap();
-        assert!(matches!(cfg.seccomp, SeccompLevel::Strict));
+        // Standard (socket-enabling) seccomp is required here — see
+        // the comment on the config construction.
+        assert!(matches!(cfg.seccomp, SeccompLevel::Standard));
         match cfg.network {
             Network::Allowlist(ref doms) => assert_eq!(doms, &vec!["github.com".to_string()]),
             _ => panic!("expected allowlist network"),

@@ -328,6 +328,12 @@ export interface WorkspaceCreateRequest extends ExecOptions {
   idleTimeoutSecs?: number;
   /** Inbound hostname forwards served by the server's gateway listener. */
   domains?: WorkspaceDomain[];
+  /**
+   * Runtime flavors mounted read-only into the jail (e.g.
+   * `["nodejs", "python"]`). Each name is resolved against
+   * `GET /v1/flavors`; unknown names 400 at create.
+   */
+  flavors?: string[];
 }
 
 /**

@@ -207,6 +207,34 @@ test-rust-privileged:
 	    --test snapshot_test \
 	    -- --test-threads=1'
 
+# End-to-end clone-jail test. Separate target because the tests are
+# `#[ignore]`-gated (need privileged docker + internet) and exercise
+# the agentjail-ctl crate, not agentjail directly. `git` + CA bundle
+# are installed so the jail's rootfs has them via the bind-mount of
+# `/usr/bin` and `/etc/ssl`.
+#
+# Two tests run:
+#
+#   host_clone_mode_still_works_as_fallback       — expected green
+#                                                   anywhere with internet.
+#   clone_jail_clones_a_small_public_repo         — green on real Linux
+#                                                   hosts / CI runners;
+#                                                   fails on OrbStack /
+#                                                   Docker Desktop due
+#                                                   to nested-virt netns
+#                                                   restrictions (the
+#                                                   per-jail allowlist
+#                                                   proxy can't bind).
+#                                                   See the test docstring.
+test-rust-privileged-clone:
+	@printf "$(C_BOLD)→ test-rust-privileged-clone$(C_RESET)  $(C_DIM)clone-jail end-to-end under --privileged docker$(C_RESET)\n"
+	@docker run --rm --privileged -v "$$PWD":/src -w /src \
+	  -e RUST_LOG=agentjail=debug,agentjail_ctl=debug \
+	  rust:1.88-slim-bookworm bash -c '\
+	  apt-get update -qq && \
+	  apt-get install -y --no-install-recommends pkg-config libssl-dev libseccomp-dev git ca-certificates iproute2 >/dev/null 2>&1 && \
+	  cargo test -p agentjail-ctl --test clone_jail_test -- --ignored --test-threads=1 --nocapture 2>&1'
+
 test-node:
 	@printf "$(C_BOLD)→ test-node$(C_RESET)  $(C_DIM)@agentjail/sdk$(C_RESET)\n"
 	@cd $(SDK_NODE_DIR) && $(PKG) install --silent >/dev/null 2>&1 && $(PKG) test 2>&1 | tail -10

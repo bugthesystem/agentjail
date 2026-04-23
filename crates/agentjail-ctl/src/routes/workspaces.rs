@@ -185,24 +185,26 @@ pub(crate) async fn create_workspace(
 
     // Optional git clone. Two modes:
     //
-    //   host  (default) — runs `git clone` on the host with every
-    //                     known hardening flag. Fast, no extra caps.
-    //   jail            — runs git inside a short-lived agentjail with
-    //                     strict seccomp + per-repo allowlist. Extra
-    //                     defense-in-depth but requires CAP_SYS_ADMIN
-    //                     on the server process.
+    //   jail  (default) — runs git inside a short-lived agentjail with
+    //                     strict seccomp + per-repo allowlist. Requires
+    //                     CAP_SYS_ADMIN on the server (the same cap
+    //                     workspace exec already needs, so this is
+    //                     free on any real agentjail deployment).
+    //   host            — runs on the host with config-pin hardening.
+    //                     Fallback for containers that can't nest
+    //                     namespaces.
     //
-    // Opt-in via `AGENTJAIL_CLONE_MODE=jail` so the existing safer-
-    // on-paper default doesn't regress on container runtimes that
-    // can't spawn nested namespaces.
+    // Opt-out with `AGENTJAIL_CLONE_MODE=host`. `jail` is the default
+    // so a fresh deployment gets the stronger isolation without
+    // having to know the flag exists.
     let (git_repo, git_ref_value) = if let Some(g) = &req.git {
-        let use_jail = std::env::var("AGENTJAIL_CLONE_MODE")
-            .map(|v| v.eq_ignore_ascii_case("jail"))
+        let use_host = std::env::var("AGENTJAIL_CLONE_MODE")
+            .map(|v| v.eq_ignore_ascii_case("host"))
             .unwrap_or(false);
-        let cloned = if use_jail {
-            git_clone_in_jail(g, &source_dir).await
-        } else {
+        let cloned = if use_host {
             git_clone(g, &source_dir).await
+        } else {
+            git_clone_in_jail(g, &source_dir).await
         };
         cloned.inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&ws_root);

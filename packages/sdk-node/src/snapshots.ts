@@ -90,15 +90,20 @@ export class Snapshots {
   }
 
   /**
-   * Rehydrate a snapshot into a brand-new workspace. The new workspace
-   * inherits its parent's jail config (memory/network/etc) when the parent
-   * is still around; otherwise sensible defaults apply.
+   * Rehydrate a snapshot into a brand-new workspace. `parentWorkspaceId`
+   * is the ownership gate — it must match the snapshot's recorded
+   * parent; the server returns 404 otherwise so no hints leak about
+   * snapshots that belong to other tenants. The new workspace inherits
+   * its parent's jail config (memory/network/flavors/etc).
    */
   async createWorkspaceFrom(
     snapshotId: string,
-    params: { label?: string } = {},
+    params: { parentWorkspaceId: string; label?: string },
   ): Promise<Workspace> {
-    const body: Record<string, unknown> = { snapshot_id: snapshotId };
+    const body: Record<string, unknown> = {
+      snapshot_id:         snapshotId,
+      parent_workspace_id: params.parentWorkspaceId,
+    };
     if (params.label !== undefined) body.label = params.label;
     return this.http.request<Workspace>({
       method: "POST",

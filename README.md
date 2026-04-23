@@ -215,6 +215,11 @@ protection ever did. All tests live in
 | FD exhaustion | `RLIMIT_NOFILE` at 4096 | [`test_fd_limit_enforced`](crates/agentjail/tests/audit_regression_test.rs) |
 | Symlink traversal | Skipped in snapshots, forks, cleanup | [`test_snapshot_restore_does_not_follow_symlinks`](crates/agentjail/tests/audit_regression_test.rs) |
 | Zombie / fd leak | `PR_SET_PDEATHSIG` + Drop kills+reaps | [`test_no_zombie_after_drop`](crates/agentjail/tests/audit_regression_test.rs) |
+| Cross-tenant read | `tenant_id` stamped on every row; list filters, get returns 404 | [`operator_cannot_read_other_tenants_workspace_by_id`](crates/agentjail-ctl/tests/api.rs), [`credentials_are_tenant_scoped`](crates/agentjail-ctl/tests/api.rs) |
+| Token spent on foreign tenant's bill | `TokenRecord.tenant_id`; proxy looks up `keys.get(tenant, service)` | [`agentjail-phantom`](crates/agentjail-phantom/src/proxy.rs) |
+| Malicious `.gitmodules` / `core.sshCommand` RCE on host | Clone-jail: strict-ish seccomp, allowlist network, no host access | [`clone_jail_clones_a_small_public_repo`](crates/agentjail-ctl/tests/clone_jail_test.rs) |
+| Operator enumerates platform bind addrs / state_dir via `GET /v1/config` | Admin-only fields; omitted for operator role | [`settings_bind_addrs_hidden_from_operators`](crates/agentjail-ctl/tests/api.rs) |
+| Snapshot rehydrate spoofing (id guessing) | Requires `parent_workspace_id`, verified against the snapshot's recorded parent | [`from_snapshot_requires_and_checks_parent_workspace_id`](crates/agentjail-ctl/tests/api.rs) |
 
 ## Limits
 
@@ -234,31 +239,85 @@ ledgers in Postgres, an SSE stream of upstream API calls, and a web
 UI. Installed pre-release; APIs may move. Useful for local dev,
 demos, and staging.
 
-**Surface:**
+### Tenancy
 
-- `POST /v1/credentials` · `POST /v1/sessions` · `POST /v1/runs` (`fork`, `stream`)
-- `POST /v1/workspaces` (`/fork`, `/exec`) · `POST /v1/workspaces/:id/snapshot`
-- `GET /v1/workspaces?q=…` · `GET /v1/snapshots?q=…`
-- `GET /v1/snapshots/:id/manifest` — file listing for pool-backed snapshots
-- `GET /v1/jails/:id` — result + the exact `JailConfig` the jail ran with
-- `GET /v1/audit` — upstream-proxy audit log
-- `GET /v1/config` — read-only snapshot of server settings
+Every workspace, snapshot, session, jail-ledger row, and upstream
+credential is stamped with a `tenant_id`. API keys carry it plus a
+role:
+
+```
+token@tenant:role            # role ∈ { admin, operator }
+```
+
+Operators see only their own tenant. Admins see every tenant and can
+target a specific one via `?tenant=<id>`. Cross-tenant direct-id
+access returns **404**, never 403 — the server never reveals whether
+a row outside the caller's scope exists.
+
+```bash
+# Multiple keys, comma-separated. Every component is mandatory; a
+# misconfigured entry fails loud rather than silently granting admin.
+export AGENTJAIL_API_KEY="\
+  ak_ops@platform:admin,\
+  ak_acme_alice@acme:operator,\
+  ak_globex_ops@globex:operator"
+docker compose -f docker-compose.platform.yml up --build
+# UI:  http://localhost:3000/t/<tenant>
+# API: http://localhost:7000
+```
+
+See [`docs/tenancy.md`](docs/tenancy.md) for the full key format, role
+semantics, DB shape, and test coverage.
+
+### Flavors
+
+Runtime "flavors" (`nodejs`, `python`, `bun`, …) are host directories
+under `$state_dir/flavors/<name>/` bind-mounted **read-only** into
+each jail at `/opt/flavors/<name>/`, with `bin/` auto-prepended to
+`PATH`. The jail engine stays language-agnostic — adding `deno` or
+`ruby` is a matter of dropping a directory, not touching core code.
+
+```json
+POST /v1/workspaces
+{ "flavors": ["nodejs", "python"] }
+```
+
+Discovery: `GET /v1/flavors` returns names only (host paths stay
+admin-internal). See [`docs/flavors.md`](docs/flavors.md).
+
+### Clone-jail
+
+`git clone` runs **inside its own short-lived jail** by default —
+strict-ish seccomp, per-repo network allowlist, 60 s timeout, no
+host access. A malicious `.gitmodules` or `core.sshCommand` can't
+reach anything outside the target dir. Opt back into the old
+host-side path on restricted container runtimes:
+
+```bash
+export AGENTJAIL_CLONE_MODE=host   # default is `jail`
+```
+
+### Surface
+
+- **Identity:** `GET /v1/whoami` · `GET /v1/flavors`
+- **Credentials** (per-tenant): `POST /v1/credentials` · `GET /v1/credentials` · `DELETE /v1/credentials/:service` (all accept `?tenant=<id>` for admins)
+- **Sessions:** `POST /v1/sessions` · `POST /v1/sessions/:id/exec`
+- **Runs:** `POST /v1/runs` (`/fork`, `/stream`)
+- **Workspaces:** `POST /v1/workspaces` (`/fork`, `/exec`) · `PATCH /v1/workspaces/:id` · `POST /v1/workspaces/:id/snapshot` · `POST /v1/workspaces/from-snapshot` (requires `parent_workspace_id`)
+- **Lists (tenant-filtered):** `GET /v1/workspaces` · `GET /v1/snapshots` · `GET /v1/sessions` · `GET /v1/jails` · `GET /v1/audit`
+- **Detail:** `GET /v1/snapshots/:id/manifest` · `GET /v1/jails/:id` · `GET /v1/config` (bind-addrs + state_dir admin-only)
 
 ### Web UI
 
 ![control plane](media/control-plane.png)
 
-React 19 + Vite + Tailwind. Task-first pages (Dashboard, Projects,
-API Sessions, Integrations, Playground, Docs) with operator views
-(Execution Ledger, Snapshots, API Audit, System Settings) tucked
-behind an `Advanced` menu.
-
-```bash
-export AGENTJAIL_API_KEY=aj_local_$(openssl rand -hex 16)
-docker compose -f docker-compose.platform.yml up --build
-# UI:  http://localhost:3000
-# API: http://localhost:7000
-```
+React 19 + Vite + Tailwind. Every dashboard page lives at
+`/t/:tenant/...` so the active tenant is visible + bookmarkable;
+the shell header shows a tenant + role badge. Pages: Dashboard,
+Projects, API Sessions, Integrations, Playground, Docs. Operator
+tools behind an `Advanced` menu: Execution Ledger, Snapshots, API
+Audit, Accounts, System Settings. Admins browsing another tenant
+via URL see a **cross-tenant view** chip on sensitive pages.
 
 ### TypeScript SDK
 
@@ -302,8 +361,10 @@ the Node SDK; see [`packages/sdk-python/README.md`](packages/sdk-python/README.m
 ## Build and test
 
 ```bash
-make test-rust              # low-privilege unit slice (in Docker)
-make test-rust-privileged   # full security suite, --privileged Docker
+make test-rust                     # low-privilege unit slice (in Docker)
+make test-rust-privileged          # full security suite, --privileged Docker
+make test-rust-privileged-clone    # end-to-end clone-jail + workspace-exec
+                                   # pipeline (real git + two jails)
 ( cd packages/sdk-node    && npm test )
 ( cd packages/sdk-python  && pytest )
 ( cd web && npm run build )

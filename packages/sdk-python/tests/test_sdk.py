@@ -407,9 +407,15 @@ def test_snapshots_create_workspace_from() -> None:
         )
 
     aj = make(h)
-    ws = aj.snapshots.create_workspace_from("snap_xyz", label="recovered")
+    ws = aj.snapshots.create_workspace_from(
+        "snap_xyz", parent_workspace_id="wrk_parent", label="recovered"
+    )
     assert seen["url"] == "http://api/v1/workspaces/from-snapshot"
-    assert seen["body"] == {"snapshot_id": "snap_xyz", "label": "recovered"}
+    assert seen["body"] == {
+        "snapshot_id": "snap_xyz",
+        "parent_workspace_id": "wrk_parent",
+        "label": "recovered",
+    }
     assert ws["id"] == "wrk_new"
 
 

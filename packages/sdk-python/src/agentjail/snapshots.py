@@ -67,10 +67,22 @@ class Snapshots:
         self._http.request("DELETE", f"/v1/snapshots/{id}")
 
     def create_workspace_from(
-        self, id: str, *, label: str | None = None
+        self,
+        id: str,
+        *,
+        parent_workspace_id: str,
+        label: str | None = None,
     ) -> Workspace:
-        """Rehydrate a snapshot into a brand-new workspace."""
-        body: dict[str, Any] = {"snapshot_id": id}
+        """Rehydrate a snapshot into a brand-new workspace.
+
+        ``parent_workspace_id`` is the ownership gate — it must match
+        the snapshot's recorded parent. The server returns 404 on
+        mismatch so no hints leak about other tenants' snapshots.
+        """
+        body: dict[str, Any] = {
+            "snapshot_id":         id,
+            "parent_workspace_id": parent_workspace_id,
+        }
         if label is not None:
             body["label"] = label
         return self._http.request("POST", "/v1/workspaces/from-snapshot", json=body)

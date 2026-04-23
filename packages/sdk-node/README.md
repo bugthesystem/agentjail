@@ -8,6 +8,14 @@ containing phantom tokens (`phm_<hex>`) plus `*_BASE_URL` entries
 pointing at the phantom proxy; the proxy swaps the phantom for the
 real key at request time.
 
+Tenancy is handled server-side from your API key — there's nothing
+to thread through the SDK. Key format on the server:
+`token@tenant:role` (see the [root README](../../README.md#tenancy)).
+Credentials, sessions, workspaces, snapshots, and the jail ledger
+are all scoped to the key's tenant automatically. Admins targeting
+a specific tenant use the control plane directly via
+`?tenant=<id>` query params — not yet exposed through the SDK.
+
 ```ts
 import { Agentjail } from "@agentjail/sdk";
 
@@ -59,12 +67,23 @@ await aj.sessions.create({
 Workspaces are long-lived mount trees. Multiple execs share the same
 filesystem — `bun install` in one call persists for the next.
 Snapshots capture the workspace's output dir; rehydrate into a fresh
-workspace with `createWorkspaceFrom`.
+workspace with `createWorkspaceFrom(snapshotId, { parentWorkspaceId,
+label? })` — `parentWorkspaceId` is a required ownership proof (the
+snapshot's recorded parent must match).
+
+`git:` is served by the clone-jail: the repo is fetched inside a
+short-lived agentjail pinned to the repo host only. No host-side
+`git` process ever sees your request.
+
+`flavors:` selects runtime overlays the server has under
+`$state_dir/flavors/` — see `GET /v1/flavors` for the live list.
+Unknown names 400 at create.
 
 ```ts
 const ws = await aj.workspaces.create({
-  git:   { repo: "https://github.com/my-org/app", ref: "main" },
-  label: "ci",
+  git:     { repo: "https://github.com/my-org/app", ref: "main" },
+  flavors: ["nodejs", "python"],
+  label:   "ci",
 });
 
 await aj.workspaces.exec(ws.id, { cmd: "bun", args: ["install"] });

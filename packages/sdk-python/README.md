@@ -5,6 +5,12 @@ Python client for the [agentjail] control plane. Mirrors the
 
 Python ≥ 3.10. Depends on [httpx].
 
+Tenancy is handled server-side from your API key — there's nothing
+to thread through the SDK. Key format on the server:
+`token@tenant:role` (see the [root README](../../README.md#tenancy)).
+Credentials, sessions, workspaces, snapshots, and the jail ledger
+are all scoped to the key's tenant automatically.
+
 ```bash
 pip install agentjail
 ```
@@ -34,9 +40,23 @@ session = aj.sessions.create(services=["openai"], ttl_secs=600)
 
 ### Persistent workspaces and snapshots
 
+`git:` is served by the clone-jail: the repo is fetched inside a
+short-lived agentjail pinned to the repo host only. No host-side
+`git` process ever sees your request.
+
+`flavors:` selects runtime overlays the server has under
+`$state_dir/flavors/` — see `GET /v1/flavors` for the live list.
+Unknown names 400 at create.
+
+`create_workspace_from(...)` requires `parent_workspace_id` — the
+server verifies it matches the snapshot's recorded parent and
+returns 404 on mismatch, so nothing leaks about other tenants'
+snapshots.
+
 ```python
 ws = aj.workspaces.create(
     git={"repo": "https://github.com/my-org/app", "ref": "main"},
+    flavors=["nodejs", "python"],
     label="ci",
     idle_timeout_secs=60,
 )
@@ -46,7 +66,11 @@ baseline = aj.snapshots.create(ws["id"], name="deps-ready")
 
 lint = aj.workspaces.exec(ws["id"], cmd="bun", args=["run", "lint"])
 if lint["exit_code"] != 0:
-    clean = aj.snapshots.create_workspace_from(baseline["id"], label="recovered")
+    clean = aj.snapshots.create_workspace_from(
+        baseline["id"],
+        parent_workspace_id=ws["id"],
+        label="recovered",
+    )
     # retry against clean["id"]
 ```
 

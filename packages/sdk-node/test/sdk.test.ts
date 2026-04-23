@@ -813,11 +813,13 @@ describe("Snapshots", () => {
       }),
     });
     const ws = await aj.snapshots.createWorkspaceFrom("snap_xyz", {
+      parentWorkspaceId: "wrk_parent",
       label: "recovered",
     });
     expect(seenUrl).toBe("http://api/v1/workspaces/from-snapshot");
     expect(JSON.parse(bodyText)).toEqual({
       snapshot_id: "snap_xyz",
+      parent_workspace_id: "wrk_parent",
       label: "recovered",
     });
     expect(ws.id).toBe("wrk_new");

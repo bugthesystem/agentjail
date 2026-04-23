@@ -92,15 +92,7 @@ refuses to silently overlay one on top of the other.
 
 ## Clone-jail
 
-Git clone can run inside a short-lived jail instead of on the host.
-Opt-in:
-
-```sh
-export AGENTJAIL_CLONE_MODE=jail
-```
-
-Default is `host` so environments lacking `CAP_SYS_ADMIN` don't
-regress. In `jail` mode, each clone runs with:
+Git clone runs inside a short-lived jail by default. Each clone uses:
 
 - strict seccomp
 - network allowlist pinned to the repo host only
@@ -108,11 +100,21 @@ regress. In `jail` mode, each clone runs with:
 - read-write `/workspace` mounted from the target dir
 - no access to anything else on the host
 
-Same config-pin flags as the host-side path
+Same config-pin flags as the old host-side path
 (`protocol.allow=never`, `core.sshCommand=false`, `fsckObjects=true`,
-etc.). Before flipping the default to `jail`, an integration test
-under Linux should confirm the jail spawns cleanly on a real repo +
-that stderr capture surfaces auth failures intelligibly.
+etc.).
+
+**Fallback:** container runtimes that can't spawn nested namespaces
+can opt back into the host path with:
+
+```sh
+export AGENTJAIL_CLONE_MODE=host
+```
+
+This keeps the full hardening flags in place but runs git directly
+on the host process. Any deployment that can already run workspace
+exec can also run the clone-jail (same cap requirement), so the
+fallback is primarily for heavily-restricted CI/container environments.
 
 ## Adding a flavor
 
