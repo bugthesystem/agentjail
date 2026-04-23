@@ -128,6 +128,10 @@ pub struct JailConfigSnapshot {
 pub struct JailRecord {
     /// Monotonic id assigned by the store.
     pub id: i64,
+    /// Tenant the invoking request belongs to. Stamped at `start()`
+    /// time; route-layer filters keep ops from reading rows outside
+    /// their own tenant.
+    pub tenant_id: String,
     /// What invocation produced this row.
     pub kind: JailKind,
     /// When the jail started.
@@ -189,6 +193,7 @@ impl JailRecord {
     /// Build a `Running` row with the passed invocation context.
     pub fn new_running(
         id: i64,
+        tenant_id: String,
         kind: JailKind,
         label: String,
         session_id: Option<String>,
@@ -196,6 +201,7 @@ impl JailRecord {
     ) -> Self {
         Self {
             id,
+            tenant_id,
             kind,
             started_at: OffsetDateTime::now_utc(),
             ended_at: None,
@@ -224,9 +230,12 @@ impl JailRecord {
 /// Bounded store contract. Implementations must be cheap to clone via Arc.
 #[async_trait]
 pub trait JailStore: Send + Sync + 'static {
-    /// Insert a `Running` record and return its id.
+    /// Insert a `Running` record and return its id. `tenant_id` is
+    /// stamped onto the row; route handlers pass the caller's
+    /// [`crate::tenant::TenantScope::tenant`].
     async fn start(
         &self,
+        tenant_id: String,
         kind: JailKind,
         label: String,
         session_id: Option<String>,
@@ -261,6 +270,9 @@ pub trait JailStore: Send + Sync + 'static {
 /// Paged query over the jail ledger.
 #[derive(Debug, Clone, Default)]
 pub struct JailQuery {
+    /// Tenant filter. `None` = cross-tenant (admin); `Some(id)` keeps
+    /// only rows stamped with that tenant.
+    pub tenant: Option<String>,
     /// Max rows to return (1..=500).
     pub limit: usize,
     /// Skip this many rows from the head (newest).
@@ -312,6 +324,7 @@ impl Default for InMemoryJailStore {
 impl JailStore for InMemoryJailStore {
     async fn start(
         &self,
+        tenant_id: String,
         kind: JailKind,
         label: String,
         session_id: Option<String>,
@@ -323,7 +336,7 @@ impl JailStore for InMemoryJailStore {
         };
         let id = g.next_id;
         g.next_id = g.next_id.wrapping_add(1);
-        let rec = JailRecord::new_running(id, kind, label, session_id, parent_id);
+        let rec = JailRecord::new_running(id, tenant_id, kind, label, session_id, parent_id);
         if g.rows.len() >= self.capacity {
             g.rows.pop_front();
         }
@@ -415,7 +428,9 @@ impl JailStore for InMemoryJailStore {
             Err(p) => p.into_inner(),
         };
         let needle = q.q.as_deref().map(|s| s.to_lowercase());
+        let tenant = q.tenant.as_deref();
         let matches = |r: &JailRecord| -> bool {
+            if let Some(t) = tenant      { if r.tenant_id != t { return false; } }
             if let Some(s) = q.status    { if r.status != s { return false; } }
             if let Some(k) = q.kind      { if !matches_kind(r.kind, k) { return false; } }
             if let Some(n) = needle.as_deref() {
@@ -455,6 +470,42 @@ impl JailStore for InMemoryJailStore {
             Err(p) => p.into_inner(),
         };
         g.rows.iter().find(|r| r.id == id).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn page_filters_by_tenant() {
+        let store = InMemoryJailStore::new();
+        let _ = store.start("acme".into(),  JailKind::Run,  "a".into(), None, None).await;
+        let _ = store.start("other".into(), JailKind::Run,  "b".into(), None, None).await;
+        let _ = store.start("acme".into(),  JailKind::Exec, "c".into(), None, None).await;
+
+        let (rows, total) = store.page(JailQuery {
+            tenant: Some("acme".into()),
+            limit: 100, offset: 0,
+            status: None, kind: None, q: None,
+        }).await;
+        assert_eq!(total, 2);
+        for r in &rows {
+            assert_eq!(r.tenant_id, "acme");
+        }
+    }
+
+    #[tokio::test]
+    async fn page_admin_sees_every_tenant() {
+        let store = InMemoryJailStore::new();
+        let _ = store.start("a".into(), JailKind::Run, "x".into(), None, None).await;
+        let _ = store.start("b".into(), JailKind::Run, "y".into(), None, None).await;
+
+        let (_, total) = store.page(JailQuery {
+            tenant: None, limit: 100, offset: 0,
+            status: None, kind: None, q: None,
+        }).await;
+        assert_eq!(total, 2);
     }
 }
 

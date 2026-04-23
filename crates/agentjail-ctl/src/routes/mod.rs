@@ -17,10 +17,12 @@ use crate::credential::CredentialStore;
 use crate::error::CtlError;
 use crate::jails::JailStore;
 use crate::session::SessionStore;
+use crate::flavors::FlavorRegistry;
 use crate::snapshots::SnapshotStore;
 use crate::workspaces::{ActiveCgroups, ActiveJailIps, WorkspaceLocks, WorkspaceStore};
 
 mod audit;
+mod clone_jail;
 mod credentials;
 mod exec;
 mod exec_git;
@@ -42,7 +44,7 @@ pub(crate) use fork::create_fork_run;
 pub(crate) use health::{healthz, stats};
 pub(crate) use jails::{get_jail, list_jails};
 pub(crate) use sessions::{create_session, delete_session, get_session, list_sessions};
-pub(crate) use settings::get_settings;
+pub(crate) use settings::{get_settings, list_flavors, whoami};
 pub(crate) use snapshots::{
     create_snapshot, create_workspace_from_snapshot, delete_snapshot, get_snapshot,
     get_snapshot_manifest, list_snapshots,
@@ -87,14 +89,27 @@ pub(crate) struct AppState {
     /// safe-to-display fields (bind addresses, GC policy, provider
     /// metadata). Never carries secrets.
     pub(crate) platform: Option<crate::PlatformInfo>,
+    /// Where jail "flavors" (runtime rootfs layers — nodejs, python,
+    /// bun, ...) are resolved. Empty / missing directory = no flavors
+    /// available; workspaces that request one are rejected at create.
+    pub(crate) flavors: Arc<dyn FlavorRegistry>,
 }
 
 impl IntoResponse for CtlError {
     fn into_response(self) -> Response {
         let status = self.status();
-        let body = Json(serde_json::json!({
-            "error": self.to_string(),
-        }));
+        // 4xx messages come from caller-controlled input (BadRequest,
+        // NotFound, Conflict, Unauthorized, Config). Safe to surface as-is.
+        // 5xx messages can carry host paths, SQL fragments, seccomp
+        // failure details — anything that ended up in `Internal` /
+        // `Io` / `Jail` / `Phantom`. Log it for operators via
+        // `tracing::error`, return a generic string to the client.
+        let body = if status.is_server_error() {
+            tracing::error!(error = %self, "ctl route returned 5xx");
+            Json(serde_json::json!({ "error": "internal server error" }))
+        } else {
+            Json(serde_json::json!({ "error": self.to_string() }))
+        };
         (status, body).into_response()
     }
 }

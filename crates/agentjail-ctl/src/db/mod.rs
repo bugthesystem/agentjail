@@ -35,6 +35,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0003_workspace_idle",       include_str!("../../migrations/0003_workspace_idle.sql")),
     ("0004_workspace_domains",    include_str!("../../migrations/0004_workspace_domains.sql")),
     ("0005_jail_config_snapshot", include_str!("../../migrations/0005_jail_config_snapshot.sql")),
+    ("0006_jail_live_stats",      include_str!("../../migrations/0006_jail_live_stats.sql")),
+    ("0007_tenant_id",            include_str!("../../migrations/0007_tenant_id.sql")),
+    ("0008_credentials_tenant",   include_str!("../../migrations/0008_credentials_tenant.sql")),
 ];
 
 /// Connect to Postgres + run every embedded migration. Idempotent.

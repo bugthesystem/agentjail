@@ -53,16 +53,20 @@ pub(super) async fn git_clone(spec: &GitSpec, dst: &std::path::Path) -> Result<(
 
 /// Shallow-clone a single repo into `dst`, flattening the clone dir so
 /// `dst` ends up at the repo root.
+///
+/// Runs on the host before the jail is built, so every attacker-facing
+/// surface gets locked down here: reject non-`https` URLs and URLs with
+/// `userinfo` (tokens leaking into the ledger), reject refs starting with
+/// `-` (flag injection, CVE-2018-17456 class), force `--` to separate the
+/// ref from positional args, and pin git itself via `-c` overrides that
+/// defeat the usual "malicious repo runs code on clone" tricks
+/// (`core.sshCommand`, `core.fsmonitor`, `core.hooksPath`, external
+/// submodule protocols, pre-receive hook objects). Env is scrubbed to
+/// prevent `GIT_SSH_COMMAND` / `GIT_EXEC_PATH` / `GIT_CONFIG_*` inheritance.
 async fn clone_one(repo: &str, git_ref: Option<&str>, dst: &std::path::Path) -> Result<()> {
-    if !repo.starts_with("https://") || repo.len() > 512 {
-        return Err(CtlError::BadRequest(
-            "git.repo must be https:// (max 512 bytes)".into(),
-        ));
-    }
-    if let Some(r) = git_ref
-        && (r.len() > 200 || r.chars().any(|c| c.is_control()))
-    {
-        return Err(CtlError::BadRequest("git.ref invalid".into()));
+    validate_repo_url(repo)?;
+    if let Some(r) = git_ref {
+        validate_git_ref(r)?;
     }
 
     // git clone refuses to clone into a non-empty dir, so stage into a
@@ -71,12 +75,34 @@ async fn clone_one(repo: &str, git_ref: Option<&str>, dst: &std::path::Path) -> 
     std::fs::create_dir_all(&target).map_err(CtlError::Io)?;
 
     let mut cmd = tokio::process::Command::new("git");
-    cmd.arg("clone").arg("--depth=1").arg("--single-branch");
+    // Config pins applied *before* the `clone` subcommand so they bind
+    // for the whole invocation, including submodule recursion.
+    cmd.arg("-c").arg("protocol.allow=never")
+        .arg("-c").arg("protocol.https.allow=always")
+        .arg("-c").arg("protocol.ext.allow=never")
+        .arg("-c").arg("protocol.file.allow=never")
+        .arg("-c").arg("core.sshCommand=false")
+        .arg("-c").arg("core.fsmonitor=false")
+        .arg("-c").arg("core.hooksPath=/dev/null")
+        .arg("-c").arg("transfer.fsckObjects=true")
+        .arg("-c").arg("fetch.fsckObjects=true")
+        .arg("-c").arg("receive.fsckObjects=true")
+        .arg("clone").arg("--depth=1").arg("--single-branch")
+        .arg("--no-tags");
     if let Some(r) = git_ref {
         cmd.arg("--branch").arg(r);
     }
-    cmd.arg(repo).arg(&target);
+    // `--` guarantees the repo url is treated as a positional, never a
+    // flag — belt-and-braces next to the `!repo.starts_with("https://")`
+    // check above.
+    cmd.arg("--").arg(repo).arg(&target);
     cmd.kill_on_drop(true);
+    // Inherited env is a known RCE vector: `GIT_SSH_COMMAND`,
+    // `GIT_EXEC_PATH`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`, etc.
+    cmd.env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("HOME", "/tmp")
+        .env("GIT_TERMINAL_PROMPT", "0");
 
     let out = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
         .await
@@ -99,7 +125,7 @@ async fn clone_one(repo: &str, git_ref: Option<&str>, dst: &std::path::Path) -> 
     Ok(())
 }
 
-fn default_repo_subdir(url: &str) -> String {
+pub(super) fn default_repo_subdir(url: &str) -> String {
     url.rsplit('/')
         .next()
         .unwrap_or(url)
@@ -108,7 +134,7 @@ fn default_repo_subdir(url: &str) -> String {
         .to_string()
 }
 
-fn validate_subdir(name: &str) -> Result<()> {
+pub(super) fn validate_subdir(name: &str) -> Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(CtlError::BadRequest(format!("git.repos.dir invalid: {name:?}")));
     }
@@ -118,4 +144,82 @@ fn validate_subdir(name: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Security-critical: all the ways a malicious URL could subvert the
+/// host-side clone collapse into this one function.
+pub(super) fn validate_repo_url(repo: &str) -> Result<()> {
+    if !repo.starts_with("https://") || repo.len() > 512 {
+        return Err(CtlError::BadRequest(
+            "git.repo must be https:// (max 512 bytes)".into(),
+        ));
+    }
+    // `https://user:token@host/repo` — `git clone` accepts this and the
+    // token ends up in the ledger forever. Reject at ingest.
+    let host = repo["https://".len()..].split('/').next().unwrap_or("");
+    if host.contains('@') {
+        return Err(CtlError::BadRequest(
+            "git.repo must not embed credentials (user:token@host)".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Refs that start with `-` get interpreted as git flags
+/// (`--upload-pack=…` → RCE, CVE-2018-17456 class). Also block control
+/// chars and oversize inputs.
+pub(super) fn validate_git_ref(r: &str) -> Result<()> {
+    if r.is_empty() || r.len() > 200 || r.chars().any(|c| c.is_control()) {
+        return Err(CtlError::BadRequest("git.ref invalid".into()));
+    }
+    if r.starts_with('-') {
+        return Err(CtlError::BadRequest(
+            "git.ref must not start with `-`".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_url_requires_https() {
+        assert!(validate_repo_url("https://github.com/a/b").is_ok());
+        assert!(validate_repo_url("http://github.com/a/b").is_err());
+        assert!(validate_repo_url("ssh://git@github.com/a/b").is_err());
+        assert!(validate_repo_url("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn repo_url_rejects_userinfo() {
+        assert!(validate_repo_url("https://x:ghp_AAA@github.com/a/b").is_err());
+        assert!(validate_repo_url("https://user@github.com/a/b").is_err());
+        // An `@` later in the path is fine — only the host segment is checked.
+        assert!(validate_repo_url("https://github.com/a/b@tag").is_ok());
+    }
+
+    #[test]
+    fn repo_url_length_capped() {
+        let long = format!("https://github.com/{}", "a".repeat(600));
+        assert!(validate_repo_url(&long).is_err());
+    }
+
+    #[test]
+    fn git_ref_rejects_flag_injection() {
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("v1.2.3").is_ok());
+        assert!(validate_git_ref("-upload-pack=/bin/sh").is_err());
+        assert!(validate_git_ref("--upload-pack=/bin/sh").is_err());
+    }
+
+    #[test]
+    fn git_ref_rejects_control_and_size() {
+        assert!(validate_git_ref("").is_err());
+        assert!(validate_git_ref("a\nb").is_err());
+        assert!(validate_git_ref("a\0b").is_err());
+        let long = "a".repeat(201);
+        assert!(validate_git_ref(&long).is_err());
+    }
 }

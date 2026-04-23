@@ -17,6 +17,7 @@ use super::exec_monitor::{ExecRegistration, run_monitored_with};
 use super::workspaces::WorkspaceExecRequest;
 use crate::error::{CtlError, Result};
 use crate::jails::{JailKind, workspace_exec_label};
+use crate::tenant::TenantScope;
 use crate::workspaces::WorkspaceSpec;
 
 /// `POST /v1/workspaces/:id/exec`
@@ -30,6 +31,7 @@ use crate::workspaces::WorkspaceSpec;
 )]
 pub(crate) async fn exec_in_workspace(
     State(state): State<AppState>,
+    scope: TenantScope,
     AxumPath(id): AxumPath<String>,
     Json(req): Json<WorkspaceExecRequest>,
 ) -> Result<Json<ExecResponse>> {
@@ -38,6 +40,7 @@ pub(crate) async fn exec_in_workspace(
     }
 
     let ws = state.workspaces.get(&id).await
+        .filter(|w| scope.can_see(&w.tenant_id))
         .ok_or_else(|| CtlError::NotFound(format!("workspace {id}")))?;
 
     // Acquire exclusive exec lock on this workspace.
@@ -82,12 +85,29 @@ pub(crate) async fn exec_in_workspace(
     env.extend(req.env.iter().cloned());
 
     let options = spec_to_options(&ws.config)?;
+    // Resolve flavors fresh each exec so a flavor directory rename or
+    // a pulled runtime layer is picked up without the workspace having
+    // to be recreated. Unknown flavors fail loud — the workspace stays
+    // usable; the operator fixes the registry and retries.
+    let overlays: Vec<std::path::PathBuf> = if ws.config.flavors.is_empty() {
+        Vec::new()
+    } else {
+        state.flavors
+            .resolve(&ws.config.flavors)
+            .map_err(|missing| CtlError::BadRequest(
+                format!("flavor {missing:?} is no longer available on this server"),
+            ))?
+            .into_iter()
+            .map(|f| f.path)
+            .collect()
+    };
     // Workspaces follow the "one persistent dir" model — /workspace is
     // read-write so `bun install`, `cargo build`, etc. can mutate the
     // source tree directly.
     let config = jail_config(
         &ws.source_dir, &ws.output_dir, memory_mb, timeout, env, &options,
         /* source_rw */ true,
+        overlays,
     )?;
     let jail = agentjail::Jail::new(config)?;
     let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
@@ -97,7 +117,12 @@ pub(crate) async fn exec_in_workspace(
     state.workspaces.touch(&ws.id).await;
 
     let label = workspace_exec_label(&ws.id, &req.cmd);
-    let rec_id = state.jails.start(JailKind::Workspace, label, None, None).await;
+    // Jail row inherits the workspace's tenant — execs against a
+    // workspace belong to whoever owns it, not just whoever launched
+    // this call.
+    let rec_id = state.jails
+        .start(ws.tenant_id.clone(), JailKind::Workspace, label, None, None)
+        .await;
     state.jails.attach_config(
         rec_id,
         config_snapshot(&options, memory_mb, timeout, None),

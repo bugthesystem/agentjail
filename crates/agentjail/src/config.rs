@@ -121,6 +121,19 @@ pub struct JailConfig {
 
     /// GPU passthrough.
     pub gpu: GpuConfig,
+
+    /// Read-only host directories to bind-mount into the jail under
+    /// `/opt/flavors/<basename>/`. Used to layer in runtime "flavors"
+    /// (nodejs, python, bun, ...) without the engine needing to know
+    /// anything about what's inside — each overlay is just a dir.
+    ///
+    /// The jail's `PATH` is extended automatically with
+    /// `/opt/flavors/<basename>/bin` when that subdirectory exists, so
+    /// callers don't have to thread flavor-specific `env` entries through.
+    ///
+    /// Empty by default. Duplicate basenames are a `BadConfig` error so
+    /// the caller doesn't silently lose a flavor.
+    pub readonly_overlays: Vec<PathBuf>,
 }
 
 impl Default for JailConfig {
@@ -144,6 +157,7 @@ impl Default for JailConfig {
             ipc_namespace: true,
             workdir: PathBuf::from("/workspace"),
             gpu: GpuConfig::default(),
+            readonly_overlays: Vec::new(),
         }
     }
 }

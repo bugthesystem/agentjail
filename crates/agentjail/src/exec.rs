@@ -110,7 +110,13 @@ pub(crate) fn setup_child(
     // Unpredictable temp dir so a host-side attacker can't race a
     // symlink into place at a guessed path before setup_root runs.
     let new_root = mount::make_jail_root()?;
-    mount::setup_root(&new_root, &config.source, &config.output, config.source_rw)?;
+    mount::setup_root(
+        &new_root,
+        &config.source,
+        &config.output,
+        config.source_rw,
+        &config.readonly_overlays,
+    )?;
 
     if let Some(res) = gpu_resources {
         gpu::setup_mounts(&new_root, res)?;
@@ -154,6 +160,9 @@ pub(crate) fn setup_child(
     }
     if gpu_resources.is_some() {
         env.extend(gpu::env_vars(&config.gpu));
+    }
+    if !config.readonly_overlays.is_empty() {
+        prepend_flavor_bins_to_path(&mut env, &config.readonly_overlays);
     }
 
     // 7. Resource limits + privilege hardening.
@@ -426,6 +435,30 @@ fn drop_all_capabilities() {
     // pointers are valid and correctly aligned for the kernel ABI.
     unsafe {
         libc::syscall(libc::SYS_capset, &hdr as *const _, data.as_ptr());
+    }
+}
+
+/// Prepend each flavor's `bin/` directory to the jail's `PATH` so
+/// binaries shipped with an overlay are discoverable without the caller
+/// having to know anything about the flavor's layout.
+///
+/// Only entries that actually contain a `bin/` subdirectory are added —
+/// a flavor that ships libs + headers only won't pollute `PATH`.
+fn prepend_flavor_bins_to_path(env: &mut Vec<(String, String)>, overlays: &[std::path::PathBuf]) {
+    let mut bins: Vec<String> = Vec::new();
+    for overlay in overlays {
+        let Some(name) = overlay.file_name().and_then(|n| n.to_str()) else { continue };
+        if overlay.join("bin").is_dir() {
+            bins.push(format!("/opt/flavors/{name}/bin"));
+        }
+    }
+    if bins.is_empty() { return; }
+
+    let joined = bins.join(":");
+    match env.iter_mut().find(|(k, _)| k == "PATH") {
+        Some((_, v)) if v.is_empty() => *v = joined,
+        Some((_, v))                 => *v = format!("{joined}:{v}"),
+        None => env.push(("PATH".into(), joined)),
     }
 }
 

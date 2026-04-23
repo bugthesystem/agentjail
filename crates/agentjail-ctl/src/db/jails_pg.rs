@@ -24,6 +24,9 @@ impl PgJailStore {
 fn row_to_record(row: &sqlx::postgres::PgRow) -> JailRecord {
     JailRecord {
         id:                row.get::<i64, _>("id"),
+        tenant_id:         row
+            .try_get::<String, _>("tenant_id")
+            .unwrap_or_else(|_| "dev".to_string()),
         kind:              JailKind::from_str_or_run(row.get::<&str, _>("kind")),
         started_at:        row.get::<OffsetDateTime, _>("started_at"),
         ended_at:          row.get::<Option<OffsetDateTime>, _>("ended_at"),
@@ -64,6 +67,7 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> JailRecord {
 impl JailStore for PgJailStore {
     async fn start(
         &self,
+        tenant_id: String,
         kind: JailKind,
         label: String,
         session_id: Option<String>,
@@ -76,10 +80,11 @@ impl JailStore for PgJailStore {
         // ledger write never aborts an in-flight exec. We still log
         // loudly so operators see the failure.
         match sqlx::query_scalar::<_, i64>(
-            "INSERT INTO jails (kind, started_at, status, label, session_id, parent_id)
-             VALUES ($1, now(), 'running', $2, $3, $4)
+            "INSERT INTO jails (tenant_id, kind, started_at, status, label, session_id, parent_id)
+             VALUES ($1, $2, now(), 'running', $3, $4, $5)
              RETURNING id",
         )
+        .bind(&tenant_id)
         .bind(kind.as_str())
         .bind(&label)
         .bind(&session_id)
@@ -91,6 +96,7 @@ impl JailStore for PgJailStore {
             Err(e) => {
                 tracing::error!(
                     error = %e,
+                    tenant_id = %tenant_id,
                     kind = kind.as_str(),
                     label = %label,
                     session_id = session_id.as_deref().unwrap_or(""),
@@ -222,6 +228,12 @@ impl JailStore for PgJailStore {
         let mut args: Vec<String> = Vec::new();
         let mut idx: i32 = 0;
 
+        if let Some(t) = q.tenant.as_deref() {
+            idx += 1;
+            sql.push_str(&format!(" AND tenant_id = ${idx}"));
+            count_sql.push_str(&format!(" AND tenant_id = ${idx}"));
+            args.push(t.to_string());
+        }
         if let Some(s) = q.status {
             idx += 1;
             sql.push_str(&format!(" AND status = ${idx}"));

@@ -172,8 +172,12 @@ function SnapshotDetail({
     },
   });
 
+  // `from-snapshot` requires the caller to prove knowledge of the
+  // parent workspace id — it's the ownership gate for rehydrate.
+  // Orphaned snapshots (no recorded parent) can't be restored from the UI.
   const restore = useMutation({
-    mutationFn: (id: string) => api.snapshots.restoreToNew(id),
+    mutationFn: ({ id, parent }: { id: string; parent: string }) =>
+      api.snapshots.restoreToNew(id, parent),
     onSuccess:  () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
   });
 
@@ -201,8 +205,14 @@ function SnapshotDetail({
         <div className="flex items-center gap-1.5">
           <Button
             variant="outline" size="sm"
-            onClick={() => restore.mutate(snap.id)}
-            disabled={restore.isPending}
+            onClick={() => {
+              if (!snap.workspace_id) return;
+              restore.mutate({ id: snap.id, parent: snap.workspace_id });
+            }}
+            disabled={restore.isPending || !snap.workspace_id}
+            title={snap.workspace_id
+              ? "Rehydrate into a new workspace"
+              : "Orphaned snapshot — parent workspace missing"}
           >{restore.isPending ? "restoring…" : "restore"}</Button>
           <Button
             variant="outline" size="sm"

@@ -14,17 +14,21 @@ const PLACEHOLDERS: Record<ServiceId, string> = {
   stripe:    "sk_live_…",
 };
 
-export function AttachForm({ hasExisting }: { hasExisting: Set<ServiceId> }) {
+export function AttachForm(
+  { hasExisting, tenant }: { hasExisting: Set<ServiceId>; tenant?: string },
+) {
   const api = useApi();
   const qc = useQueryClient();
   const [service, setService] = useState<ServiceId>("openai");
   const [secret, setSecret] = useState("");
 
   const put = useMutation({
-    mutationFn: () => api.credentials.put(service, secret),
+    // `tenant` targets an explicit tenant — admins browsing another
+    // tenant land here. Operators omit it (server uses their scope).
+    mutationFn: () => api.credentials.put(service, secret, tenant),
     onSuccess: () => {
       setSecret("");
-      qc.invalidateQueries({ queryKey: ["credentials"] });
+      qc.invalidateQueries({ queryKey: ["credentials", tenant ?? ""] });
     },
   });
 

@@ -191,6 +191,7 @@ pub fn setup_root(
     source: &Path,
     output: &Path,
     source_rw: bool,
+    readonly_overlays: &[PathBuf],
 ) -> Result<()> {
     fs::create_dir_all(new_root).map_err(JailError::Io)?;
 
@@ -274,6 +275,31 @@ pub fn setup_root(
         let src = Path::new(node);
         let dst = new_root.join(node.trim_start_matches('/'));
         bind_mount_dev(src, &dst, Access::ReadOnly)?;
+    }
+
+    // Flavor overlays — each host dir becomes `/opt/flavors/<basename>/`
+    // read-only inside the jail. Duplicate basenames fail loud: the
+    // caller would silently lose a mount otherwise.
+    if !readonly_overlays.is_empty() {
+        let flavors_root = new_root.join("opt/flavors");
+        fs::create_dir_all(&flavors_root).map_err(JailError::Io)?;
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for overlay in readonly_overlays {
+            let name = overlay
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| JailError::BadConfig(format!(
+                    "readonly overlay has no utf-8 basename: {}",
+                    overlay.display()
+                )))?;
+            if !seen.insert(name.to_string()) {
+                return Err(JailError::BadConfig(format!(
+                    "duplicate flavor basename {name:?} in readonly_overlays"
+                )));
+            }
+            let dst = flavors_root.join(name);
+            bind_mount(overlay, &dst, Access::ReadOnly)?;
+        }
     }
 
     Ok(())

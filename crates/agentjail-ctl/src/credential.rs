@@ -14,6 +14,10 @@ use time::OffsetDateTime;
 /// User-facing record of a configured credential. Never contains the secret.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialRecord {
+    /// Tenant that owns this credential. A credential stamped with
+    /// `"acme"` is only spendable by tokens minted for the `"acme"`
+    /// tenant — enforced by the phantom proxy at forward time.
+    pub tenant_id: String,
     /// Service this credential is for.
     pub service: ServiceId,
     /// When it was first attached.
@@ -28,10 +32,12 @@ pub struct CredentialRecord {
     pub fingerprint: String,
 }
 
-/// Metadata-only storage for credentials.
+/// Metadata-only storage for credentials. All methods are keyed by the
+/// `(tenant_id, service)` pair so one tenant's OpenAI row is a
+/// different row from another tenant's.
 #[async_trait::async_trait]
 pub trait CredentialStore: Send + Sync + 'static {
-    /// Add or replace the metadata for a service.
+    /// Add or replace the metadata for a `(tenant, service)` pair.
     async fn upsert(&self, rec: CredentialRecord);
     /// Add or replace metadata AND the real secret. Default impl just
     /// defers to `upsert`; Postgres backend overrides to persist the
@@ -43,18 +49,19 @@ pub trait CredentialStore: Send + Sync + 'static {
     ) {
         self.upsert(rec).await;
     }
-    /// Remove metadata for a service.
-    async fn remove(&self, service: ServiceId) -> Option<CredentialRecord>;
-    /// List all records.
-    async fn list(&self) -> Vec<CredentialRecord>;
+    /// Remove metadata for a `(tenant, service)` pair.
+    async fn remove(&self, tenant: &str, service: ServiceId) -> Option<CredentialRecord>;
+    /// List records for one tenant (operator view) or every tenant
+    /// (`tenant = None`, admin view).
+    async fn list(&self, tenant: Option<&str>) -> Vec<CredentialRecord>;
     /// Fetch one.
-    async fn get(&self, service: ServiceId) -> Option<CredentialRecord>;
+    async fn get(&self, tenant: &str, service: ServiceId) -> Option<CredentialRecord>;
 }
 
 /// In-memory implementation.
 #[derive(Default)]
 pub struct InMemoryCredentialStore {
-    inner: RwLock<HashMap<ServiceId, CredentialRecord>>,
+    inner: RwLock<HashMap<(String, ServiceId), CredentialRecord>>,
 }
 
 impl InMemoryCredentialStore {
@@ -69,25 +76,35 @@ impl InMemoryCredentialStore {
 impl CredentialStore for InMemoryCredentialStore {
     async fn upsert(&self, rec: CredentialRecord) {
         if let Ok(mut g) = self.inner.write() {
-            g.insert(rec.service, rec);
+            g.insert((rec.tenant_id.clone(), rec.service), rec);
         }
     }
 
-    async fn remove(&self, service: ServiceId) -> Option<CredentialRecord> {
-        self.inner.write().ok()?.remove(&service)
+    async fn remove(&self, tenant: &str, service: ServiceId) -> Option<CredentialRecord> {
+        self.inner.write().ok()?.remove(&(tenant.to_string(), service))
     }
 
-    async fn list(&self) -> Vec<CredentialRecord> {
+    async fn list(&self, tenant: Option<&str>) -> Vec<CredentialRecord> {
         let Ok(g) = self.inner.read() else {
             return Vec::new();
         };
-        let mut v: Vec<CredentialRecord> = g.values().cloned().collect();
-        v.sort_by(|a, b| a.service.name().cmp(b.service.name()));
+        let mut v: Vec<CredentialRecord> = g
+            .values()
+            .filter(|r| match tenant {
+                None    => true,
+                Some(t) => r.tenant_id == t,
+            })
+            .cloned()
+            .collect();
+        v.sort_by(|a, b|
+            a.tenant_id.cmp(&b.tenant_id)
+                .then_with(|| a.service.name().cmp(b.service.name()))
+        );
         v
     }
 
-    async fn get(&self, service: ServiceId) -> Option<CredentialRecord> {
-        self.inner.read().ok()?.get(&service).cloned()
+    async fn get(&self, tenant: &str, service: ServiceId) -> Option<CredentialRecord> {
+        self.inner.read().ok()?.get(&(tenant.to_string(), service)).cloned()
     }
 }
 

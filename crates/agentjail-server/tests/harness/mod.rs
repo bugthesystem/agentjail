@@ -124,7 +124,7 @@ impl Stack {
                 tokens: tokens.clone(),
                 keys: keys.clone(),
                 proxy_base_url: format!("http://{proxy_addr}"),
-                api_keys: vec![api_key.clone()],
+                api_keys: vec![format!("{api_key}@test:admin")],
                 exec,
                 state_dir: None,
                 snapshot_pool_dir: None,

@@ -12,6 +12,9 @@ use time::OffsetDateTime;
 pub struct Session {
     /// Opaque identifier, `sess_<hex>`.
     pub id: String,
+    /// Tenant that owns this session. Stamped from the caller's
+    /// `TenantScope` on create; cross-tenant reads are filtered out.
+    pub tenant_id: String,
     /// When the session was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -32,8 +35,10 @@ pub trait SessionStore: Send + Sync + 'static {
     async fn insert(&self, session: Session) -> crate::Result<()>;
     /// Fetch by id.
     async fn get(&self, id: &str) -> Option<Session>;
-    /// Return every session, ordered newest first.
-    async fn list(&self) -> Vec<Session>;
+    /// Return every session, ordered newest first. `tenant`:
+    /// `Some(id)` restricts to a single tenant (operator); `None`
+    /// returns every tenant's sessions (admin).
+    async fn list(&self, tenant: Option<&str>) -> Vec<Session>;
     /// Remove and return the session.
     async fn remove(&self, id: &str) -> Option<Session>;
 }
@@ -73,11 +78,18 @@ impl SessionStore for InMemorySessionStore {
         self.inner.read().ok()?.get(id).cloned()
     }
 
-    async fn list(&self) -> Vec<Session> {
+    async fn list(&self, tenant: Option<&str>) -> Vec<Session> {
         let Ok(g) = self.inner.read() else {
             return Vec::new();
         };
-        let mut v: Vec<Session> = g.values().cloned().collect();
+        let mut v: Vec<Session> = g
+            .values()
+            .filter(|s| match tenant {
+                None    => true,
+                Some(t) => s.tenant_id == t,
+            })
+            .cloned()
+            .collect();
         v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         v
     }
@@ -94,4 +106,44 @@ pub(crate) fn new_session_id() -> String {
     let mut b = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut b);
     format!("sess_{}", hex::encode(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn sample(id: &str, tenant: &str) -> Session {
+        Session {
+            id: id.into(),
+            tenant_id: tenant.into(),
+            created_at: OffsetDateTime::now_utc(),
+            expires_at: None,
+            services: Vec::new(),
+            env: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_tenant_when_some() {
+        let store = InMemorySessionStore::new();
+        store.insert(sample("sess_a", "acme")).await.unwrap();
+        store.insert(sample("sess_b", "other")).await.unwrap();
+        store.insert(sample("sess_c", "acme")).await.unwrap();
+
+        let rows = store.list(Some("acme")).await;
+        assert_eq!(rows.len(), 2);
+        for r in &rows {
+            assert_eq!(r.tenant_id, "acme");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_none_returns_every_tenant() {
+        let store = InMemorySessionStore::new();
+        store.insert(sample("sess_a", "acme")).await.unwrap();
+        store.insert(sample("sess_b", "other")).await.unwrap();
+
+        assert_eq!(store.list(None).await.len(), 2);
+    }
 }

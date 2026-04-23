@@ -4,8 +4,9 @@ Scenario-driven benchmark harness for the `agentjail` crate. Measures
 spawn-to-exit latency, snapshot/restore throughput, and live-fork wall
 time under configurable concurrency.
 
-Exists so every perf claim is reproducible. Every change in [PERF.md](../../PERF.md)
-lands with a before/after pair of JSON runs committed to `bench-results/`.
+Every perf change lands with a before/after pair of JSON runs committed
+to [`bench-results/`](../../bench-results/). The summary table lives in
+[`BENCH_RESULTS.md`](../../BENCH_RESULTS.md).
 
 ## Requirements
 
@@ -92,7 +93,7 @@ jq -s '.[0].latency_us.p50 as $before
 ```
 
 A CI job should fail on regressions beyond an agreed threshold (say 20%
-on p99). Not wired yet — tracked in [PERF.md](../../PERF.md) phase 0.
+on p99). Not wired yet.
 
 ## What's measured, what isn't
 

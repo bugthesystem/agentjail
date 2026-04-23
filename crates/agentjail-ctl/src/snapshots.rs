@@ -20,6 +20,10 @@ use crate::error::{CtlError, Result};
 pub struct SnapshotRecord {
     /// Opaque id, `snap_<hex>`.
     pub id: String,
+    /// Tenant that owns the snapshot. Inherited from the parent
+    /// workspace at capture time; route-layer filters make cross-tenant
+    /// reads invisible.
+    pub tenant_id: String,
     /// The workspace this snapshot was taken from. `None` if the parent
     /// workspace was hard-deleted (ON DELETE SET NULL in Postgres).
     pub workspace_id: Option<String>,
@@ -42,12 +46,17 @@ pub trait SnapshotStore: Send + Sync + 'static {
     async fn insert(&self, snap: SnapshotRecord) -> Result<()>;
     /// Fetch by id.
     async fn get(&self, id: &str) -> Option<SnapshotRecord>;
-    /// List, newest first. When `workspace_id` is `Some`, filter to that
-    /// workspace only. When `q` is `Some`, further filter to rows whose
-    /// `id`, `name`, or `workspace_id` contain `q` (case-insensitive
-    /// substring); `total` reflects the filtered count.
+    /// List, newest first.
+    ///
+    /// `tenant`: `Some(id)` restricts to a single tenant (operator
+    /// role); `None` returns every tenant's rows (admin).
+    ///
+    /// `workspace_id`: narrow further to one workspace. `q`: substring
+    /// match on id/name/workspace_id. All filters compose; `total`
+    /// reflects the fully-filtered count.
     async fn list(
         &self,
+        tenant: Option<&str>,
         workspace_id: Option<&str>,
         limit: usize,
         offset: usize,
@@ -105,6 +114,7 @@ impl SnapshotStore for InMemorySnapshotStore {
 
     async fn list(
         &self,
+        tenant: Option<&str>,
         workspace_id: Option<&str>,
         limit: usize,
         offset: usize,
@@ -116,6 +126,10 @@ impl SnapshotStore for InMemorySnapshotStore {
         let needle = q.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
         let mut rows: Vec<SnapshotRecord> = g
             .values()
+            .filter(|r| match tenant {
+                Some(t) => r.tenant_id == t,
+                None => true,
+            })
             .filter(|r| match workspace_id {
                 Some(w) => r.workspace_id.as_deref() == Some(w),
                 None => true,
@@ -189,7 +203,9 @@ pub mod gc {
         // Pull up to 10k rows — enough to observe the full set for most
         // deployments. Oversized installations should prefer an external
         // retention job.
-        let (rows, _total) = store.list(None, 10_000, 0, None).await;
+        // GC sweeper runs unscoped — it's an admin-level background job
+        // that evicts across every tenant based on the same policy.
+        let (rows, _total) = store.list(None, None, 10_000, 0, None).await;
 
         let mut to_delete: Vec<SnapshotRecord> = Vec::new();
 
@@ -259,8 +275,13 @@ mod tests {
     use super::*;
 
     fn sample(id: &str, ws: Option<&str>) -> SnapshotRecord {
+        sample_in(id, ws, "dev")
+    }
+
+    fn sample_in(id: &str, ws: Option<&str>, tenant: &str) -> SnapshotRecord {
         SnapshotRecord {
             id: id.into(),
+            tenant_id: tenant.into(),
             workspace_id: ws.map(str::to_string),
             name: None,
             created_at: OffsetDateTime::now_utc(),
@@ -285,7 +306,7 @@ mod tests {
         store.insert(sample("snap_b", Some("wrk_y"))).await.unwrap();
         store.insert(sample("snap_c", Some("wrk_x"))).await.unwrap();
 
-        let (rows, total) = store.list(Some("wrk_x"), 100, 0, None).await;
+        let (rows, total) = store.list(None, Some("wrk_x"), 100, 0, None).await;
         assert_eq!(total, 2);
         assert_eq!(rows.len(), 2);
         for r in &rows {
@@ -306,27 +327,51 @@ mod tests {
 
         // match on id — "baseline" hits snap_baseline_a's id AND its
         // own name, but that's still one row.
-        let (rows, total) = store.list(None, 100, 0, Some("baseline")).await;
+        let (rows, total) = store.list(None, None, 100, 0, Some("baseline")).await;
         assert_eq!(total, 1);
         assert_eq!(rows[0].id, "snap_baseline_a");
 
         // match on name only
-        let (rows, total) = store.list(None, 100, 0, Some("after-bun")).await;
+        let (rows, total) = store.list(None, None, 100, 0, Some("after-bun")).await;
         assert_eq!(total, 1);
         assert_eq!(rows[0].id, "snap_after_bun_install");
 
         // match on workspace_id
-        let (rows, total) = store.list(None, 100, 0, Some("wrk_2")).await;
+        let (rows, total) = store.list(None, None, 100, 0, Some("wrk_2")).await;
         assert_eq!(total, 1);
         assert_eq!(rows[0].id, "snap_after_bun_install");
 
         // workspace_id filter + q combine (intersection)
-        let (_, total) = store.list(Some("wrk_1"), 100, 0, Some("baseline")).await;
+        let (_, total) = store.list(None, Some("wrk_1"), 100, 0, Some("baseline")).await;
         assert_eq!(total, 1);
 
         // empty needle = no filter
-        let (_, total) = store.list(None, 100, 0, Some("  ")).await;
+        let (_, total) = store.list(None, None, 100, 0, Some("  ")).await;
         assert_eq!(total, 2);
+    }
+
+    #[tokio::test]
+    async fn list_tenant_filter_isolates_rows() {
+        let store = InMemorySnapshotStore::new();
+        store.insert(sample_in("snap_a", Some("wrk_a"), "acme")).await.unwrap();
+        store.insert(sample_in("snap_b", Some("wrk_b"), "other")).await.unwrap();
+        store.insert(sample_in("snap_c", Some("wrk_c"), "acme")).await.unwrap();
+
+        // Admin scope — all rows.
+        let (_, total) = store.list(None, None, 100, 0, None).await;
+        assert_eq!(total, 3);
+
+        // Operator scope — only their tenant.
+        let (rows, total) = store.list(Some("acme"), None, 100, 0, None).await;
+        assert_eq!(total, 2);
+        for r in &rows {
+            assert_eq!(r.tenant_id, "acme");
+        }
+
+        // Tenant filter + workspace filter compose — cross-tenant
+        // workspace id returns nothing even if the id matches.
+        let (_, total) = store.list(Some("acme"), Some("wrk_b"), 100, 0, None).await;
+        assert_eq!(total, 0);
     }
 
     #[tokio::test]
@@ -342,6 +387,7 @@ mod tests {
     fn sample_at(id: &str, created_at: OffsetDateTime) -> SnapshotRecord {
         SnapshotRecord {
             id: id.into(),
+            tenant_id: "dev".into(),
             workspace_id: None,
             name: None,
             created_at,

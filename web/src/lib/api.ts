@@ -3,6 +3,8 @@ import type { ServiceId } from "./format";
 export type { ServiceId };
 
 export interface CredentialRecord {
+  /** Tenant that owns the credential. Stamped server-side. */
+  tenant_id: string;
   service: ServiceId;
   added_at: string;
   updated_at: string;
@@ -50,19 +52,22 @@ export interface ProviderInfo {
 export interface SettingsSnapshot {
   proxy: {
     base_url:  string;
-    bind_addr: string | null;
+    /** Omitted for non-admin scopes — host bind-addr is operator-only. */
+    bind_addr?: string;
     providers: ProviderInfo[];
   };
-  control_plane: { bind_addr: string | null };
-  gateway: { bind_addr: string } | null;
+  control_plane: { bind_addr?: string };
+  /** Admin-only. Absent for operator role. */
+  gateway?: { bind_addr: string } | null;
   exec: {
     default_memory_mb:    number;
     default_timeout_secs: number;
     max_concurrent:       number;
   } | null;
   persistence: {
-    state_dir:         string;
-    snapshot_pool_dir: string | null;
+    /** Admin-only. Absent for operator role. */
+    state_dir?:        string;
+    snapshot_pool_dir?: string;
     idle_check_secs:   number;
   };
   snapshots: {
@@ -86,6 +91,11 @@ export interface WorkspaceSpec {
   network_domains: string[];
   seccomp: "standard" | "strict";
   idle_timeout_secs: number;
+  /**
+   * Names of runtime flavors bind-mounted into the jail (see /v1/flavors).
+   * Empty for workspaces created before flavors existed.
+   */
+  flavors?: string[];
 }
 
 export interface WorkspaceDomain {
@@ -129,6 +139,11 @@ export interface WorkspaceCreateRequest {
   seccomp?: "standard" | "strict";
   cpu_percent?: number;
   max_pids?: number;
+  /**
+   * Runtime flavors to mount into the jail. Each name is validated
+   * server-side against `GET /v1/flavors`; unknown names fail with a 400.
+   */
+  flavors?: string[];
 }
 
 export interface SnapshotRecord {
@@ -277,11 +292,25 @@ export function createApi(baseUrl: string, apiKey: string) {
     stats: () => call<Stats>("GET", "/v1/stats"),
 
     credentials: {
-      list: () => call<CredentialRecord[]>("GET", "/v1/credentials"),
-      put: (service: ServiceId, secret: string) =>
-        call<CredentialRecord>("POST", "/v1/credentials", { service, secret }),
-      delete: (service: ServiceId) =>
-        call<void>("DELETE", `/v1/credentials/${service}`),
+      // `tenant` is only meaningful for admin callers browsing a
+      // different tenant's creds; operators can pass their own tenant
+      // or omit it (the server scopes either way).
+      list: (tenant?: string) =>
+        call<CredentialRecord[]>(
+          "GET",
+          `/v1/credentials${tenant ? `?tenant=${encodeURIComponent(tenant)}` : ""}`,
+        ),
+      put: (service: ServiceId, secret: string, tenant?: string) =>
+        call<CredentialRecord>(
+          "POST",
+          `/v1/credentials${tenant ? `?tenant=${encodeURIComponent(tenant)}` : ""}`,
+          { service, secret },
+        ),
+      delete: (service: ServiceId, tenant?: string) =>
+        call<void>(
+          "DELETE",
+          `/v1/credentials/${service}${tenant ? `?tenant=${encodeURIComponent(tenant)}` : ""}`,
+        ),
     },
 
     sessions: {
@@ -360,15 +389,38 @@ export function createApi(baseUrl: string, apiKey: string) {
         call<SnapshotRecord>("POST", `/v1/workspaces/${workspaceId}/snapshot`,
           name ? { name } : {}),
       delete: (id: string) => call<void>("DELETE", `/v1/snapshots/${id}`),
-      restoreToNew: (snapshotId: string, label?: string) =>
-        call<Workspace>("POST", "/v1/workspaces/from-snapshot",
-          label ? { snapshot_id: snapshotId, label } : { snapshot_id: snapshotId }),
+      restoreToNew: (
+        snapshotId: string,
+        parentWorkspaceId: string,
+        label?: string,
+      ) =>
+        call<Workspace>("POST", "/v1/workspaces/from-snapshot", {
+          snapshot_id: snapshotId,
+          parent_workspace_id: parentWorkspaceId,
+          ...(label ? { label } : {}),
+        }),
     },
 
     settings: {
       get: () => call<SettingsSnapshot>("GET", "/v1/config"),
     },
+
+    whoami: () => call<Whoami>("GET", "/v1/whoami"),
+
+    flavors: {
+      list: () => call<FlavorSummary[]>("GET", "/v1/flavors"),
+    },
   };
 }
 
 export type Api = ReturnType<typeof createApi>;
+
+export interface Whoami {
+  tenant: string;
+  role: "admin" | "operator";
+}
+
+/** A runtime flavor the server advertises for workspace creation. */
+export interface FlavorSummary {
+  name: string;
+}

@@ -259,8 +259,11 @@ async fn handle(State(state): State<Arc<PhantomProxy>>, req: Request) -> Respons
         return (StatusCode::FORBIDDEN, "path not in scope").into_response();
     }
 
-    // Resolve real key.
-    let Some(secret) = state.keys.get(record.service).await else {
+    // Resolve real key scoped to the token's tenant. A token minted
+    // for tenant A can't spend tenant B's credential even if their
+    // services match — that was the whole point of binding
+    // `tenant_id` into the TokenRecord.
+    let Some(secret) = state.keys.get(&record.tenant_id, record.service).await else {
         reject(
             &state,
             &record,

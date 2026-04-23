@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CtlError, Result};
 use crate::jails::{JailKind, JailQuery, JailRecord, JailStatus};
+use crate::tenant::TenantScope;
 
 use super::AppState;
 
@@ -34,6 +35,7 @@ pub(crate) struct JailsList {
 
 pub(crate) async fn list_jails(
     State(state): State<AppState>,
+    scope: TenantScope,
     Query(q):     Query<JailsQuery>,
 ) -> Json<JailsList> {
     let limit  = q.limit.unwrap_or(50).min(500);
@@ -52,7 +54,9 @@ pub(crate) async fn list_jails(
         Some("workspace") => Some(JailKind::Workspace),
         _ => None,
     };
+    let tenant = if scope.role.is_admin() { None } else { Some(scope.tenant.clone()) };
     let query = JailQuery {
+        tenant,
         limit, offset, status, kind,
         q: q.q.clone().filter(|s| !s.trim().is_empty()),
     };
@@ -62,9 +66,12 @@ pub(crate) async fn list_jails(
 
 pub(crate) async fn get_jail(
     State(state): State<AppState>,
+    scope: TenantScope,
     Path(id):     Path<String>,
 ) -> Result<Json<JailRecord>> {
     let id: i64 = id.parse().map_err(|_| CtlError::BadRequest("invalid id".into()))?;
-    state.jails.get(id).await.map(Json)
+    state.jails.get(id).await
+        .filter(|r| scope.can_see(&r.tenant_id))
+        .map(Json)
         .ok_or_else(|| CtlError::NotFound(format!("jail {id}")))
 }

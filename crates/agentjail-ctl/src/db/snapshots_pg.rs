@@ -24,6 +24,11 @@ impl PgSnapshotStore {
 fn row_to_record(row: &sqlx::postgres::PgRow) -> SnapshotRecord {
     SnapshotRecord {
         id:           row.get::<String, _>("id"),
+        // `try_get` for back-compat with rows that predate the tenancy
+        // migration — they surface under `"dev"`.
+        tenant_id:    row
+            .try_get::<String, _>("tenant_id")
+            .unwrap_or_else(|_| "dev".to_string()),
         workspace_id: row.get::<Option<String>, _>("workspace_id"),
         name:         row.get::<Option<String>, _>("name"),
         created_at:   row.get::<OffsetDateTime, _>("created_at"),
@@ -32,14 +37,18 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> SnapshotRecord {
     }
 }
 
+const SNAPSHOT_COLS: &str =
+    "id, tenant_id, workspace_id, name, created_at, path, size_bytes";
+
 #[async_trait]
 impl SnapshotStore for PgSnapshotStore {
     async fn insert(&self, snap: SnapshotRecord) -> Result<()> {
         let r = sqlx::query(
-            "INSERT INTO snapshots (id, workspace_id, name, created_at, path, size_bytes)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO snapshots (id, tenant_id, workspace_id, name, created_at, path, size_bytes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&snap.id)
+        .bind(&snap.tenant_id)
         .bind(snap.workspace_id.as_deref())
         .bind(snap.name.as_deref())
         .bind(snap.created_at)
@@ -58,20 +67,19 @@ impl SnapshotStore for PgSnapshotStore {
     }
 
     async fn get(&self, id: &str) -> Option<SnapshotRecord> {
-        let row = sqlx::query(
-            "SELECT id, workspace_id, name, created_at, path, size_bytes
-             FROM snapshots WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()?;
+        let sql = format!("SELECT {SNAPSHOT_COLS} FROM snapshots WHERE id = $1");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()?;
         Some(row_to_record(&row))
     }
 
     async fn list(
         &self,
+        tenant: Option<&str>,
         workspace_id: Option<&str>,
         limit: usize,
         offset: usize,
@@ -87,6 +95,11 @@ impl SnapshotStore for PgSnapshotStore {
         let mut args: Vec<String> = Vec::new();
         let mut idx: i32 = 0;
 
+        if let Some(t) = tenant {
+            idx += 1;
+            where_sql.push_str(&format!(" AND tenant_id = ${idx}"));
+            args.push(t.to_string());
+        }
         if let Some(w) = workspace_id {
             idx += 1;
             where_sql.push_str(&format!(" AND workspace_id = ${idx}"));
@@ -106,7 +119,7 @@ impl SnapshotStore for PgSnapshotStore {
 
         let count_sql = format!("SELECT COUNT(*) FROM snapshots WHERE {where_sql}");
         let rows_sql  = format!(
-            "SELECT id, workspace_id, name, created_at, path, size_bytes
+            "SELECT {SNAPSHOT_COLS}
              FROM snapshots
              WHERE {where_sql}
              ORDER BY created_at DESC
@@ -133,15 +146,15 @@ impl SnapshotStore for PgSnapshotStore {
     }
 
     async fn remove(&self, id: &str) -> Option<SnapshotRecord> {
-        let row = sqlx::query(
-            "DELETE FROM snapshots WHERE id = $1
-             RETURNING id, workspace_id, name, created_at, path, size_bytes",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()?;
+        let sql = format!(
+            "DELETE FROM snapshots WHERE id = $1 RETURNING {SNAPSHOT_COLS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()?;
         Some(row_to_record(&row))
     }
 }

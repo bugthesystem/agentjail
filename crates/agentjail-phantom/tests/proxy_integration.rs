@@ -107,8 +107,10 @@ impl Harness {
         // Build the phantom proxy pointed at the mock.
         let tokens = Arc::new(InMemoryTokenStore::new());
         let keys = Arc::new(InMemoryKeyStore::new());
-        keys.set(ServiceId::OpenAi, SecretString::new(real_key));
-        keys.set(ServiceId::Anthropic, SecretString::new(real_key));
+        // Integration tests run under the `"dev"` tenant, which is
+        // also what the harness passes into `tokens.issue(...)` below.
+        keys.set("dev", ServiceId::OpenAi,    SecretString::new(real_key));
+        keys.set("dev", ServiceId::Anthropic, SecretString::new(real_key));
 
         let proxy = PhantomProxy::builder()
             .provider(Arc::new(OpenAiProvider::with_base(format!(
@@ -161,7 +163,7 @@ async fn strips_phantom_and_injects_real_key_openai() {
     let h = Harness::openai_with_key("sk-real-openai").await;
     let token = h
         .tokens
-        .issue("sess_1".into(), ServiceId::OpenAi, Scope::any(), None)
+        .issue("sess_1".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
         .await;
 
     let client = reqwest::Client::new();
@@ -228,7 +230,7 @@ async fn rejects_wrong_service_for_token_403() {
     let h = Harness::openai_with_key("sk-real").await;
     let token = h
         .tokens
-        .issue("s".into(), ServiceId::OpenAi, Scope::any(), None)
+        .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
         .await;
 
     // Token is for openai but the request is addressed to anthropic.
@@ -252,7 +254,7 @@ async fn rejects_out_of_scope_path_403() {
     };
     let token = h
         .tokens
-        .issue("s".into(), ServiceId::OpenAi, scope, None)
+        .issue("s".into(), "dev".into(), ServiceId::OpenAi, scope, None)
         .await;
 
     // /v1/files is outside the allowed-paths glob.
@@ -271,6 +273,7 @@ async fn rejects_out_of_scope_path_403() {
         .tokens
         .issue(
             "s".into(),
+            "dev".into(),
             ServiceId::OpenAi,
             Scope {
                 allowed_paths: vec![PathGlob::new("/v1/chat/*")],
@@ -294,7 +297,7 @@ async fn anthropic_injects_x_api_key_and_version() {
     let h = Harness::openai_with_key("sk-ant-real").await;
     let token = h
         .tokens
-        .issue("s".into(), ServiceId::Anthropic, Scope::any(), None)
+        .issue("s".into(), "dev".into(), ServiceId::Anthropic, Scope::any(), None)
         .await;
 
     reqwest::Client::new()
@@ -328,7 +331,7 @@ async fn revoked_token_401() {
     let h = Harness::openai_with_key("sk").await;
     let token = h
         .tokens
-        .issue("s".into(), ServiceId::OpenAi, Scope::any(), None)
+        .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
         .await;
     h.tokens.revoke(&token).await;
 
@@ -348,7 +351,7 @@ async fn streaming_response_is_forwarded() {
     let h = Harness::openai_with_key("sk").await;
     let token = h
         .tokens
-        .issue("s".into(), ServiceId::OpenAi, Scope::any(), None)
+        .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
         .await;
 
     let resp = reqwest::Client::new()
@@ -378,7 +381,7 @@ async fn query_string_is_preserved() {
     let h = Harness::openai_with_key("sk").await;
     let token = h
         .tokens
-        .issue("s".into(), ServiceId::OpenAi, Scope::any(), None)
+        .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
         .await;
 
     reqwest::Client::new()
@@ -401,7 +404,7 @@ async fn unknown_service_path_404() {
     let h = Harness::openai_with_key("sk").await;
     let token = h
         .tokens
-        .issue("s".into(), ServiceId::OpenAi, Scope::any(), None)
+        .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
         .await;
 
     let resp = reqwest::Client::new()
@@ -466,7 +469,7 @@ async fn missing_upstream_key_502() {
     let proxy_addr = pr_rx.await.unwrap();
 
     let token = tokens
-        .issue("s".into(), ServiceId::OpenAi, Scope::any(), None)
+        .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
         .await;
     let resp = reqwest::Client::new()
         .post(format!("http://{proxy_addr}/v1/openai/v1/chat/completions"))

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useApi } from "../lib/auth";
+import { useApi, useIsAdmin } from "../lib/auth";
 import { Panel, PanelHeader } from "../components/Panel";
 import type { SettingsSnapshot } from "../lib/api";
 
@@ -46,9 +46,12 @@ function ProxyPanel({ s }: { s: SettingsSnapshot }) {
       <div className="hairline" />
       <div className="p-5 grid gap-4">
         <Row label="Sandbox base URL" value={s.proxy.base_url} />
-        <Row label="Bind"             value={s.proxy.bind_addr ?? "—"} />
-        {s.gateway && <Row label="Gateway bind" value={s.gateway.bind_addr} />}
-        <Row label="Control plane"    value={s.control_plane.bind_addr ?? "—"} />
+        {/* Bind addresses + gateway route are admin-only; the server
+            omits them for operator-role scopes. Render nothing rather
+            than a placeholder so the UI doesn't imply "we hid something". */}
+        {s.proxy.bind_addr      && <Row label="Bind"          value={s.proxy.bind_addr} />}
+        {s.gateway?.bind_addr   && <Row label="Gateway bind"  value={s.gateway.bind_addr} />}
+        {s.control_plane.bind_addr && <Row label="Control plane" value={s.control_plane.bind_addr} />}
 
         <div>
           <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-ink-400 mb-2">
@@ -106,8 +109,15 @@ function PersistencePanel({ s }: { s: SettingsSnapshot }) {
       </div>
       <div className="hairline" />
       <div className="p-5 grid gap-3">
-        <Row label="State dir"    value={s.persistence.state_dir} />
-        <Row label="Pool dir"     value={s.persistence.snapshot_pool_dir ?? "— (full-copy snapshots)"} />
+        {/* Host paths are admin-only — dashboards/screenshots shouldn't
+            teach viewers the daemon's on-disk layout. */}
+        {s.persistence.state_dir && (
+          <Row label="State dir" value={s.persistence.state_dir} />
+        )}
+        {s.persistence.snapshot_pool_dir !== undefined && (
+          <Row label="Pool dir"
+               value={s.persistence.snapshot_pool_dir ?? "— (full-copy snapshots)"} />
+        )}
         <Row label="Idle reaper"  value={s.persistence.idle_check_secs === 0 ? "disabled" : `every ${s.persistence.idle_check_secs} s`} />
         {s.snapshots.gc ? (
           <>

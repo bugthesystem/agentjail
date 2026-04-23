@@ -456,10 +456,16 @@ function WorkspaceDetail({
               </Section>
             )}
 
-            <Section label="Filesystem">
-              <Row label="Source" value={ws.source_dir} span />
-              <Row label="Output" value={ws.output_dir} span />
-            </Section>
+            {ws.config.flavors && ws.config.flavors.length > 0 && (
+              <Section label="Flavors">
+                <div className="flex flex-wrap gap-1.5">
+                  {ws.config.flavors.map((f) => (
+                    <span key={f} className="mono text-[11px] text-phantom bg-ink-800/60 rounded px-2 py-0.5">{f}</span>
+                  ))}
+                </div>
+              </Section>
+            )}
+
           </>
         )}
       </div>
@@ -580,6 +586,16 @@ function CreateWorkspaceForm() {
   const [label, setLabel] = useState("");
   const [idle, setIdle] = useState("");
   const [memory, setMemory] = useState("");
+  const [selectedFlavors, setSelectedFlavors] = useState<string[]>([]);
+
+  // Flavors are server-configured (dirs under $state_dir/flavors).
+  // Refetch modestly — operators add a new flavor by dropping a dir
+  // on the host; we don't need instant propagation.
+  const { data: flavors } = useQuery({
+    queryKey: ["flavors"],
+    queryFn:  () => api.flavors.list(),
+    staleTime: 30_000,
+  });
 
   const create = useMutation({
     mutationFn: (req: WorkspaceCreateRequest) => api.workspaces.create(req),
@@ -590,8 +606,15 @@ function CreateWorkspaceForm() {
       setLabel("");
       setIdle("");
       setMemory("");
+      setSelectedFlavors([]);
     },
   });
+
+  function toggleFlavor(name: string) {
+    setSelectedFlavors((prev) =>
+      prev.includes(name) ? prev.filter((f) => f !== name) : [...prev, name],
+    );
+  }
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -602,6 +625,7 @@ function CreateWorkspaceForm() {
     if (!Number.isNaN(idleN) && idleN > 0) req.idle_timeout_secs = idleN;
     const memN = parseInt(memory, 10);
     if (!Number.isNaN(memN) && memN > 0) req.memory_mb = memN;
+    if (selectedFlavors.length > 0) req.flavors = selectedFlavors;
     create.mutate(req);
   }
 
@@ -646,6 +670,37 @@ function CreateWorkspaceForm() {
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMemory(e.target.value)}
           />
         </div>
+        {flavors && flavors.length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.18em] text-ink-400 mb-1.5">
+              Runtime flavors
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {flavors.map((f) => {
+                const on = selectedFlavors.includes(f.name);
+                return (
+                  <button
+                    key={f.name}
+                    type="button"
+                    onClick={() => toggleFlavor(f.name)}
+                    className={cn(
+                      "mono text-[11px] rounded-full px-2.5 py-1 ring-1 transition-colors",
+                      on
+                        ? "bg-phantom/15 text-phantom ring-phantom/40"
+                        : "bg-ink-900/40 text-ink-300 ring-ink-700 hover:bg-ink-800/60",
+                    )}
+                    aria-pressed={on}
+                  >
+                    {on ? "✓ " : ""}{f.name}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="text-[11px] text-ink-500 mt-1.5">
+              Bind-mounted read-only into the jail at <code className="mono">/opt/flavors/&lt;name&gt;</code>; each flavor's <code className="mono">bin/</code> is prepended to <code className="mono">PATH</code>.
+            </div>
+          </div>
+        )}
         <div className="pt-1">
           <Button type="submit" variant="primary" size="md" disabled={create.isPending}>
             {create.isPending ? "creating…" : "create project"}

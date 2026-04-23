@@ -227,6 +227,7 @@ pub(super) fn output_to_response(output: agentjail::Output) -> ExecResponse {
 /// `POST /v1/sessions/:id/exec` — run a command in a session's jail.
 pub(crate) async fn exec_in_session(
     State(state): State<AppState>,
+    scope: crate::tenant::TenantScope,
     Path(id): Path<String>,
     Json(req): Json<ExecRequest>,
 ) -> Result<Json<ExecResponse>> {
@@ -234,6 +235,7 @@ pub(crate) async fn exec_in_session(
         .ok_or_else(|| CtlError::Internal("exec not enabled".into()))?;
 
     let session = state.sessions.get(&id).await
+        .filter(|s| scope.can_see(&s.tenant_id))
         .ok_or_else(|| CtlError::NotFound(format!("session {id}")))?;
 
     // Enforce session expiry.
@@ -261,11 +263,15 @@ pub(crate) async fn exec_in_session(
 
     let config = jail_config(
         source.path(), output.path(), memory, timeout, env, &req.options, /* source_rw */ false,
+        /* no flavors for one-shot session exec — jail lives ~1 request */
+        Vec::new(),
     )?;
     let jail = agentjail::Jail::new(config)?;
     let args_refs: Vec<&str> = req.args.iter().map(|s| s.as_str()).collect();
 
-    let rec_id = state.jails.start(JailKind::Exec, req.cmd.clone(), Some(id.clone()), None).await;
+    let rec_id = state.jails
+        .start(scope.tenant.clone(), JailKind::Exec, req.cmd.clone(), Some(id.clone()), None)
+        .await;
     state.jails.attach_config(rec_id, config_snapshot(&req.options, memory, timeout, None)).await;
     let result = run_monitored(&state.jails, rec_id, &jail, &req.cmd, &args_refs).await;
     let result = match result {
@@ -290,6 +296,7 @@ pub(crate) async fn exec_in_session(
 /// `POST /v1/runs` — one-shot code execution.
 pub(crate) async fn create_run(
     State(state): State<AppState>,
+    scope: crate::tenant::TenantScope,
     Json(req): Json<RunRequest>,
 ) -> Result<(StatusCode, Json<ExecResponse>)> {
     let exec_cfg = state.exec_config.as_ref()
@@ -320,10 +327,13 @@ pub(crate) async fn create_run(
     let config = jail_config(
         source.path(), output_dir.path(), memory, timeout, run_env, &req.options,
         /* source_rw */ false,
+        Vec::new(),
     )?;
 
     let jail = agentjail::Jail::new(config)?;
-    let rec_id = state.jails.start(JailKind::Run, req.language.clone(), None, None).await;
+    let rec_id = state.jails
+        .start(scope.tenant.clone(), JailKind::Run, req.language.clone(), None, None)
+        .await;
     state.jails.attach_config(
         rec_id,
         config_snapshot(&req.options, memory, timeout, req.git.as_ref()),
@@ -361,6 +371,7 @@ pub(super) fn jail_config(
     env: Vec<(String, String)>,
     options: &ExecOptions,
     source_rw: bool,
+    readonly_overlays: Vec<std::path::PathBuf>,
 ) -> Result<agentjail::JailConfig> {
     let network = match options.network.as_ref() {
         None | Some(NetworkSpec::None) => agentjail::Network::None,
@@ -392,6 +403,7 @@ pub(super) fn jail_config(
         user_namespace: !is_root,
         pid_namespace: true,
         env,
+        readonly_overlays,
         ..Default::default()
     })
 }
@@ -437,7 +449,7 @@ mod tests {
         let c = jail_config(
             &PathBuf::from("/tmp/src"),
             &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &opts(), false,
+            256, 60, vec![], &opts(), false, Vec::new(),
         ).unwrap();
         assert!(matches!(c.network, agentjail::Network::None));
         assert!(matches!(c.seccomp, agentjail::SeccompLevel::Standard));
@@ -458,7 +470,7 @@ mod tests {
         let c = jail_config(
             &PathBuf::from("/tmp/src"),
             &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &o, false,
+            256, 60, vec![], &o, false, Vec::new(),
         ).unwrap();
         match c.network {
             agentjail::Network::Allowlist(d) => assert_eq!(d.len(), 2),
@@ -479,7 +491,7 @@ mod tests {
         let c = jail_config(
             &PathBuf::from("/tmp/src"),
             &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &o, false,
+            256, 60, vec![], &o, false, Vec::new(),
         ).unwrap();
         assert_eq!(c.cpu_percent, 800);
         assert_eq!(c.max_pids, 1024);
@@ -493,7 +505,7 @@ mod tests {
         };
         assert!(jail_config(
             &PathBuf::from("/tmp/src"), &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &o, false,
+            256, 60, vec![], &o, false, Vec::new(),
         ).is_err());
     }
 
@@ -507,7 +519,7 @@ mod tests {
         };
         assert!(jail_config(
             &PathBuf::from("/tmp/src"), &PathBuf::from("/tmp/out"),
-            256, 60, vec![], &o, false,
+            256, 60, vec![], &o, false, Vec::new(),
         ).is_err());
     }
 

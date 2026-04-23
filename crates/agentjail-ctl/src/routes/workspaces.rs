@@ -17,11 +17,36 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CtlError, Result};
+use crate::tenant::TenantScope;
 use crate::workspaces::{Workspace, WorkspaceSpec, new_workspace_id, slug};
 
 use super::AppState;
+use super::clone_jail::git_clone_in_jail;
 use super::exec::{ExecOptions, GitSpec, NetworkSpec, SeccompSpec};
 use super::exec_git::git_clone;
+
+/// Tenant filter for store list calls: `None` for admins (see every
+/// tenant's rows), `Some(scope.tenant)` for operators (see only their
+/// own). Owned so the caller can pass `.as_deref()` into the async
+/// store call without juggling borrow lifetimes across await points.
+fn tenant_filter(scope: &TenantScope) -> Option<String> {
+    if scope.role.is_admin() { None } else { Some(scope.tenant.clone()) }
+}
+
+/// Zero out host-filesystem paths on the outbound view when the caller
+/// isn't an admin — operators own the row but don't need to know where
+/// the daemon stores it, and recorded dashboards / bug-report
+/// screenshots shouldn't teach viewers the on-disk layout.
+///
+/// Returns a new `Workspace` to keep `get_workspace`'s ergonomic
+/// `.map(Json)` chain untouched.
+fn redact_for(scope: &TenantScope, mut ws: Workspace) -> Workspace {
+    if !scope.role.is_admin() {
+        ws.source_dir = std::path::PathBuf::new();
+        ws.output_dir = std::path::PathBuf::new();
+    }
+    ws
+}
 
 // ---------- request / response shapes ----------
 
@@ -49,6 +74,12 @@ pub(crate) struct CreateWorkspaceRequest {
     /// listener (when `AGENTJAIL_GATEWAY_ADDR` is set on the server).
     #[serde(default)]
     domains: Option<Vec<crate::workspaces::WorkspaceDomain>>,
+    /// Optional runtime flavors to mount into the jail (e.g.
+    /// `["nodejs", "python"]`). Each name is resolved against the
+    /// server's flavor registry at create time; unknown names fail fast
+    /// with a 400 so operators catch typos immediately.
+    #[serde(default)]
+    flavors: Option<Vec<String>>,
     #[serde(default, flatten)]
     options: ExecOptions,
 }
@@ -124,6 +155,7 @@ pub(crate) struct WorkspaceExecRequest {
 )]
 pub(crate) async fn create_workspace(
     State(state): State<AppState>,
+    scope: TenantScope,
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> Result<(StatusCode, Json<Workspace>)> {
     let exec_cfg = state.exec_config.as_ref()
@@ -133,7 +165,16 @@ pub(crate) async fn create_workspace(
     let timeout   = req.timeout_secs.unwrap_or(exec_cfg.default_timeout_secs).clamp(1, 3600);
     let idle      = req.idle_timeout_secs.unwrap_or(0);
 
-    let spec = options_to_spec(&req.options, memory_mb, timeout, idle)?;
+    // Validate requested flavors against the registry up front so
+    // typos fail at create instead of at first exec (operators notice
+    // the former immediately).
+    let flavors = req.flavors.clone().unwrap_or_default();
+    if !flavors.is_empty() {
+        state.flavors.resolve(&flavors).map_err(|missing| {
+            CtlError::BadRequest(format!("unknown flavor: {missing:?}"))
+        })?;
+    }
+    let spec = options_to_spec(&req.options, memory_mb, timeout, idle, flavors)?;
 
     let id = new_workspace_id();
     let ws_root = state.state_dir.join("workspaces").join(&id);
@@ -142,9 +183,28 @@ pub(crate) async fn create_workspace(
     std::fs::create_dir_all(&source_dir).map_err(CtlError::Io)?;
     std::fs::create_dir_all(&output_dir).map_err(CtlError::Io)?;
 
-    // Optional git clone happens outside the jail, before first exec.
+    // Optional git clone. Two modes:
+    //
+    //   host  (default) — runs `git clone` on the host with every
+    //                     known hardening flag. Fast, no extra caps.
+    //   jail            — runs git inside a short-lived agentjail with
+    //                     strict seccomp + per-repo allowlist. Extra
+    //                     defense-in-depth but requires CAP_SYS_ADMIN
+    //                     on the server process.
+    //
+    // Opt-in via `AGENTJAIL_CLONE_MODE=jail` so the existing safer-
+    // on-paper default doesn't regress on container runtimes that
+    // can't spawn nested namespaces.
     let (git_repo, git_ref_value) = if let Some(g) = &req.git {
-        git_clone(g, &source_dir).await.inspect_err(|_| {
+        let use_jail = std::env::var("AGENTJAIL_CLONE_MODE")
+            .map(|v| v.eq_ignore_ascii_case("jail"))
+            .unwrap_or(false);
+        let cloned = if use_jail {
+            git_clone_in_jail(g, &source_dir).await
+        } else {
+            git_clone(g, &source_dir).await
+        };
+        cloned.inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&ws_root);
         })?;
         g.primary()
@@ -163,6 +223,7 @@ pub(crate) async fn create_workspace(
     }
     let ws = Workspace {
         id: id.clone(),
+        tenant_id: scope.tenant.clone(),
         created_at: time::OffsetDateTime::now_utc(),
         deleted_at: None,
         source_dir,
@@ -185,7 +246,7 @@ pub(crate) async fn create_workspace(
         let _ = std::fs::remove_dir_all(&ws_root);
     })?;
 
-    Ok((StatusCode::CREATED, Json(ws)))
+    Ok((StatusCode::CREATED, Json(redact_for(&scope, ws))))
 }
 
 /// `POST /v1/workspaces/:id/fork` — atomic N-way fork of a persistent
@@ -201,6 +262,7 @@ pub(crate) async fn create_workspace(
 )]
 pub(crate) async fn fork_workspace(
     State(state): State<AppState>,
+    scope: TenantScope,
     AxumPath(id): AxumPath<String>,
     Json(req): Json<ForkWorkspaceRequest>,
 ) -> Result<(StatusCode, Json<ForkWorkspaceResponse>)> {
@@ -214,6 +276,7 @@ pub(crate) async fn fork_workspace(
         .workspaces
         .get(&id)
         .await
+        .filter(|p| scope.can_see(&p.tenant_id))
         .ok_or_else(|| CtlError::NotFound(format!("workspace {id}")))?;
 
     // 1. Capture one snapshot of the parent. Freeze iff an exec is in
@@ -230,6 +293,7 @@ pub(crate) async fn fork_workspace(
 
     let snap_record = crate::snapshots::SnapshotRecord {
         id: snap_id.clone(),
+        tenant_id: parent.tenant_id.clone(),
         workspace_id: Some(parent.id.clone()),
         name: Some(format!("fork-origin:{}", parent.id)),
         created_at: time::OffsetDateTime::now_utc(),
@@ -272,6 +336,7 @@ pub(crate) async fn fork_workspace(
 
         let child = Workspace {
             id: new_id.clone(),
+            tenant_id: parent.tenant_id.clone(),
             created_at: time::OffsetDateTime::now_utc(),
             deleted_at: None,
             source_dir,
@@ -295,6 +360,10 @@ pub(crate) async fn fork_workspace(
         forks.push(child);
     }
 
+    // Redact host paths on the parent + all children using the
+    // caller's scope before returning — admins keep the full view.
+    let parent = redact_for(&scope, parent);
+    let forks: Vec<Workspace> = forks.into_iter().map(|f| redact_for(&scope, f)).collect();
     Ok((
         StatusCode::CREATED,
         Json(ForkWorkspaceResponse {
@@ -308,24 +377,30 @@ pub(crate) async fn fork_workspace(
 /// `GET /v1/workspaces`
 pub(crate) async fn list_workspaces(
     State(state): State<AppState>,
+    scope: TenantScope,
     Query(q): Query<WorkspaceListQuery>,
 ) -> Json<WorkspaceList> {
     let limit  = q.limit.unwrap_or(50).min(500);
     let offset = q.offset.unwrap_or(0);
     let needle = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let (rows, total) = state.workspaces.list(limit, offset, needle).await;
+    let t = tenant_filter(&scope);
+    let (rows, total) = state.workspaces.list(t.as_deref(), limit, offset, needle).await;
+    let rows: Vec<Workspace> = rows.into_iter().map(|w| redact_for(&scope, w)).collect();
     Json(WorkspaceList { rows, total, limit, offset })
 }
 
 /// `GET /v1/workspaces/:id`
 pub(crate) async fn get_workspace(
     State(state): State<AppState>,
+    scope: TenantScope,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Workspace>> {
     state
         .workspaces
         .get(&id)
         .await
+        .filter(|w| scope.can_see(&w.tenant_id))
+        .map(|w| redact_for(&scope, w))
         .map(Json)
         .ok_or_else(|| CtlError::NotFound(format!("workspace {id}")))
 }
@@ -341,9 +416,17 @@ pub(crate) struct PatchWorkspaceRequest {
 
 pub(crate) async fn patch_workspace(
     State(state): State<AppState>,
+    scope: TenantScope,
     AxumPath(id): AxumPath<String>,
     Json(req): Json<PatchWorkspaceRequest>,
 ) -> Result<Json<Workspace>> {
+    // Pre-check ownership so an operator can't rename another tenant's
+    // workspace. Failing with 404 (not 403) keeps us from leaking whether
+    // the id exists at all.
+    let existing = state.workspaces.get(&id).await;
+    if !existing.as_ref().is_some_and(|w| scope.can_see(&w.tenant_id)) {
+        return Err(CtlError::NotFound(format!("workspace {id}")));
+    }
     let next = req
         .label
         .map(|s| s.trim().to_string())
@@ -353,6 +436,7 @@ pub(crate) async fn patch_workspace(
         .workspaces
         .set_label(&id, Some(&next))
         .await
+        .map(|w| redact_for(&scope, w))
         .map(Json)
         .ok_or_else(|| CtlError::NotFound(format!("workspace {id}")))
 }
@@ -362,8 +446,15 @@ pub(crate) async fn patch_workspace(
 /// remain usable.
 pub(crate) async fn delete_workspace(
     State(state): State<AppState>,
+    scope: TenantScope,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode> {
+    // Pre-check ownership; if this operator can't see the row, the
+    // response mirrors "row doesn't exist" regardless of whether it does.
+    let existing = state.workspaces.get(&id).await;
+    if !existing.as_ref().is_some_and(|w| scope.can_see(&w.tenant_id)) {
+        return Err(CtlError::NotFound(format!("workspace {id}")));
+    }
     let Some(ws) = state.workspaces.mark_deleted(&id).await else {
         return Err(CtlError::NotFound(format!("workspace {id}")));
     };
@@ -387,6 +478,7 @@ fn options_to_spec(
     memory_mb: u64,
     timeout_secs: u64,
     idle_timeout_secs: u64,
+    flavors: Vec<String>,
 ) -> Result<WorkspaceSpec> {
     // Validate up front — network-allowlist rules live in exec.rs as
     // `validate_domains`, reached through `jail_config`. Here we just
@@ -409,6 +501,7 @@ fn options_to_spec(
         network_domains,
         seccomp,
         idle_timeout_secs,
+        flavors,
     })
 }
 
@@ -419,7 +512,9 @@ pub(crate) async fn reconcile_on_startup(
     store: &dyn crate::workspaces::WorkspaceStore,
     state_dir: &Path,
 ) {
-    let (rows, _) = store.list(500, 0, None).await;
+    // Startup reconcile runs without a tenant scope — it sweeps every
+    // row, admin-style.
+    let (rows, _) = store.list(None, 500, 0, None).await;
     for ws in rows {
         let expected = state_dir.join("workspaces").join(&ws.id);
         if !expected.exists() {

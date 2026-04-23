@@ -23,6 +23,11 @@ use crate::error::{CtlError, Result};
 pub struct Workspace {
     /// Opaque identifier, `wrk_<hex>`.
     pub id: String,
+    /// Tenant that owns this workspace. Stamped from the caller's
+    /// [`crate::tenant::TenantScope`] at create time and immutable
+    /// thereafter; cross-tenant reads are filtered out at the route
+    /// layer.
+    pub tenant_id: String,
     /// When the workspace was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -150,6 +155,13 @@ pub struct WorkspaceSpec {
     /// this many seconds. `0` = never auto-pause.
     #[serde(default)]
     pub idle_timeout_secs: u64,
+    /// Flavor names this workspace expects at exec time. Each name is
+    /// resolved against [`crate::FlavorRegistry`] into a host directory
+    /// that gets bind-mounted read-only into the jail. The stored list
+    /// is the names (stable across flavor-directory changes), not the
+    /// resolved paths (which depend on deployment layout).
+    #[serde(default)]
+    pub flavors: Vec<String>,
 }
 
 /// Contract for workspace persistence. Mirrors [`crate::SessionStore`] and
@@ -165,12 +177,18 @@ pub trait WorkspaceStore: Send + Sync + 'static {
     /// `domains` list. Case-insensitive match on the `domain` field.
     /// Used by the gateway listener to route incoming requests.
     async fn by_domain(&self, host: &str) -> Option<(Workspace, WorkspaceDomain)>;
-    /// List live workspaces, newest first. `limit` capped at 500. When
-    /// `q` is `Some`, the result is filtered to rows whose `id`,
-    /// `label`, or `git_repo` contain `q` (case-insensitive substring);
-    /// `total` reflects the filtered count.
+    /// List live workspaces, newest first. `limit` capped at 500.
+    ///
+    /// `tenant`: `Some(id)` restricts the result to rows stamped with
+    /// that tenant — used by the operator role. `None` returns every
+    /// tenant's rows — used by admins.
+    ///
+    /// `q`: case-insensitive substring match on `id` / `label` /
+    /// `git_repo`. Applied after the tenant filter; `total` reflects
+    /// the filtered count.
     async fn list(
         &self,
+        tenant: Option<&str>,
         limit: usize,
         offset: usize,
         q: Option<&str>,
@@ -379,6 +397,7 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
 
     async fn list(
         &self,
+        tenant: Option<&str>,
         limit: usize,
         offset: usize,
         q: Option<&str>,
@@ -390,6 +409,10 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
         let mut live: Vec<Workspace> = g
             .values()
             .filter(|w| w.deleted_at.is_none())
+            .filter(|w| match tenant {
+                None    => true,
+                Some(t) => w.tenant_id == t,
+            })
             .filter(|w| match &needle {
                 None => true,
                 Some(n) =>
@@ -460,8 +483,13 @@ mod tests {
     use super::*;
 
     fn sample(id: &str) -> Workspace {
+        sample_in(id, "dev")
+    }
+
+    fn sample_in(id: &str, tenant: &str) -> Workspace {
         Workspace {
             id: id.into(),
+            tenant_id: tenant.into(),
             created_at: OffsetDateTime::now_utc(),
             deleted_at: None,
             source_dir: PathBuf::from(format!("/tmp/wrk/{id}/source")),
@@ -475,6 +503,7 @@ mod tests {
                 network_domains: vec![],
                 seccomp: "standard".into(),
                 idle_timeout_secs: 0,
+                flavors: vec![],
             },
             git_repo: None,
             git_ref: None,
@@ -511,7 +540,7 @@ mod tests {
 
         assert!(store.get("wrk_a").await.is_none());
         assert!(store.get("wrk_b").await.is_some());
-        let (rows, total) = store.list(100, 0, None).await;
+        let (rows, total) = store.list(None, 100, 0, None).await;
         assert_eq!(total, 1);
         assert_eq!(rows[0].id, "wrk_b");
     }
@@ -524,7 +553,7 @@ mod tests {
             ws.created_at = OffsetDateTime::now_utc() + time::Duration::seconds(i as i64);
             store.insert(ws).await.unwrap();
         }
-        let (rows, total) = store.list(2, 1, None).await;
+        let (rows, total) = store.list(None, 2, 1, None).await;
         assert_eq!(total, 5);
         assert_eq!(rows.len(), 2);
     }
@@ -543,26 +572,26 @@ mod tests {
         store.insert(beta).await.unwrap();
 
         // id match
-        let (rows, total) = store.list(100, 0, Some("alpha")).await;
+        let (rows, total) = store.list(None, 100, 0, Some("alpha")).await;
         assert_eq!(total, 1);
         assert_eq!(rows[0].id, "wrk_alpha");
 
         // label match (case-insensitive)
-        let (rows, total) = store.list(100, 0, Some("REVIEW")).await;
+        let (rows, total) = store.list(None, 100, 0, Some("REVIEW")).await;
         assert_eq!(total, 1);
         assert_eq!(rows[0].id, "wrk_alpha");
 
         // git_repo match
-        let (rows, total) = store.list(100, 0, Some("org/beta")).await;
+        let (rows, total) = store.list(None, 100, 0, Some("org/beta")).await;
         assert_eq!(total, 1);
         assert_eq!(rows[0].id, "wrk_beta");
 
         // no match
-        let (_, total) = store.list(100, 0, Some("nomatch")).await;
+        let (_, total) = store.list(None, 100, 0, Some("nomatch")).await;
         assert_eq!(total, 0);
 
         // empty / whitespace q = no filter
-        let (_, total) = store.list(100, 0, Some("   ")).await;
+        let (_, total) = store.list(None, 100, 0, Some("   ")).await;
         assert_eq!(total, 2);
     }
 
@@ -600,6 +629,49 @@ mod tests {
 
         let cleared = store.set_label("wrk_a", None).await.unwrap();
         assert!(cleared.label.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_admin_sees_every_tenants_rows() {
+        let store = InMemoryWorkspaceStore::new();
+        store.insert(sample_in("wrk_a", "acme")).await.unwrap();
+        store.insert(sample_in("wrk_b", "other")).await.unwrap();
+        store.insert(sample_in("wrk_c", "dev")).await.unwrap();
+
+        let (rows, total) = store.list(None, 100, 0, None).await;
+        assert_eq!(total, 3);
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn list_operator_only_sees_own_tenant() {
+        let store = InMemoryWorkspaceStore::new();
+        store.insert(sample_in("wrk_a", "acme")).await.unwrap();
+        store.insert(sample_in("wrk_b", "other")).await.unwrap();
+        store.insert(sample_in("wrk_c", "acme")).await.unwrap();
+
+        let (rows, total) = store.list(Some("acme"), 100, 0, None).await;
+        assert_eq!(total, 2);
+        for r in &rows {
+            assert_eq!(r.tenant_id, "acme");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_tenant_filter_composes_with_q() {
+        let store = InMemoryWorkspaceStore::new();
+        let mut a = sample_in("wrk_a", "acme");
+        a.label = Some("review".into());
+        store.insert(a).await.unwrap();
+
+        let mut b = sample_in("wrk_b", "other");
+        b.label = Some("review".into());
+        store.insert(b).await.unwrap();
+
+        // Operator scoped to "acme" + q=review hits only acme's row.
+        let (rows, total) = store.list(Some("acme"), 100, 0, Some("review")).await;
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, "wrk_a");
     }
 
     #[tokio::test]

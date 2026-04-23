@@ -35,7 +35,9 @@ pub struct IdleReaperConfig {
 /// near-simultaneous exec touches the row right after we snapshot,
 /// and the next tick unpauses via the restore path).
 pub async fn run_once(cfg: &IdleReaperConfig) -> usize {
-    let (rows, _) = cfg.workspaces.list(500, 0, None).await;
+    // Idle reaper is a background sweeper — it runs without a tenant
+    // scope, admin-style, so every tenant's idle workspaces get paused.
+    let (rows, _) = cfg.workspaces.list(None, 500, 0, None).await;
     let now = OffsetDateTime::now_utc();
     let mut paused = 0usize;
 
@@ -108,6 +110,10 @@ async fn pause_one(cfg: &IdleReaperConfig, ws: &Workspace) -> Result<(), String>
 
     let record = SnapshotRecord {
         id: snap_id.clone(),
+        // Auto-snapshots inherit the workspace's tenant — they're
+        // produced by the reaper, not a human caller, so there's no
+        // other tenant context to draw from.
+        tenant_id: ws.tenant_id.clone(),
         workspace_id: Some(ws.id.clone()),
         name: Some(format!("auto:{}", ws.id)),
         created_at: OffsetDateTime::now_utc(),

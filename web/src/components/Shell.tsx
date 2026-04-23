@@ -1,33 +1,51 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { useEffect, useRef, useState } from "react";
-import { useAuth } from "../lib/auth";
+import { NavLink, Outlet, useLocation, useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useAuth, useWhoami } from "../lib/auth";
 import { Logo } from "./Logo";
 import { cn } from "../lib/cn";
 
-const PRIMARY = [
-  { to: "/",             label: "Dashboard"    },
-  { to: "/projects",     label: "Projects"     },
-  { to: "/sessions",     label: "API Sessions" },
-  { to: "/integrations", label: "Integrations" },
-  { to: "/playground",   label: "Playground"   },
-  { to: "/docs",         label: "Docs"         },
-] as const;
+// Paths are derived per-request from the URL `:tenant` param so the
+// tenant id stays visible + bookmarkable. Admins can edit the URL to
+// switch tenants; operators are locked to their own by server-side
+// scope regardless of what they type.
+function primaryNav(t: string) {
+  return [
+    { to: `/t/${t}`,              label: "Dashboard",    end: true  },
+    { to: `/t/${t}/projects`,     label: "Projects"                   },
+    { to: `/t/${t}/sessions`,     label: "API Sessions"               },
+    { to: `/t/${t}/integrations`, label: "Integrations"               },
+    { to: `/t/${t}/playground`,   label: "Playground"                 },
+    { to: "/docs",                label: "Docs"                       },
+  ] as const;
+}
 
-const OPERATOR = [
-  { to: "/operator/ledger",    label: "Execution Ledger" },
-  { to: "/operator/snapshots", label: "Snapshots"        },
-  { to: "/operator/audit",     label: "API Audit"        },
-  { to: "/operator/settings",  label: "System Settings"  },
-] as const;
+function operatorNav(t: string) {
+  return [
+    { to: `/t/${t}/operator/ledger`,    label: "Execution Ledger" },
+    { to: `/t/${t}/operator/snapshots`, label: "Snapshots"        },
+    { to: `/t/${t}/operator/audit`,     label: "API Audit"        },
+    { to: `/t/${t}/operator/accounts`,  label: "Accounts"         },
+    { to: `/t/${t}/operator/settings`,  label: "System Settings"  },
+  ] as const;
+}
 
 export function Shell() {
   const { auth, logout } = useAuth();
+  const me = useWhoami();
   const host = auth ? new URL(auth.baseUrl).host : "";
+
+  // Prefer the URL's tenant — an admin browsing another tenant sees
+  // that tenant in the badge. Fall back to their own scope while the
+  // router is still resolving.
+  const params = useParams<{ tenant?: string }>();
+  const activeTenant = params.tenant ?? me?.tenant ?? "…";
+  const primary  = useMemo(() => primaryNav(activeTenant),  [activeTenant]);
+  const operator = useMemo(() => operatorNav(activeTenant), [activeTenant]);
 
   const location = useLocation();
   const [advOpen, setAdvOpen] = useState(false);
   const advRef = useRef<HTMLDivElement | null>(null);
-  const advActive = location.pathname.startsWith("/operator/");
+  const advActive = location.pathname.includes("/operator/");
 
   useEffect(() => { setAdvOpen(false); }, [location.pathname]);
 
@@ -59,11 +77,11 @@ export function Shell() {
         </div>
 
         <nav className="flex items-center gap-1">
-          {PRIMARY.map((n) => (
+          {primary.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
-              end={n.to === "/"}
+              end={"end" in n ? n.end : undefined}
               className={({ isActive }) =>
                 cn(
                   "relative h-9 px-3.5 flex items-center text-[13px] rounded-md transition-colors",
@@ -127,7 +145,7 @@ export function Shell() {
                 <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-ink-500 mono">
                   Operator tools
                 </div>
-                {OPERATOR.map((n) => (
+                {operator.map((n) => (
                   <NavLink
                     key={n.to}
                     to={n.to}
@@ -150,6 +168,20 @@ export function Shell() {
         </nav>
 
         <div className="flex items-center gap-3">
+          {me && (
+            <div className="hidden md:flex items-center gap-1.5 text-[11px] mono text-ink-400">
+              <span className="text-ink-500">tenant</span>
+              <span className="text-ink-100">{me.tenant}</span>
+              <span className={cn(
+                "uppercase tracking-wider text-[9.5px] px-1.5 py-0.5 rounded ring-1",
+                me.role === "admin"
+                  ? "text-[var(--color-phantom)] ring-[var(--color-phantom)]/40 bg-[var(--color-phantom)]/10"
+                  : "text-ink-300 ring-ink-700 bg-ink-800/60",
+              )}>
+                {me.role}
+              </span>
+            </div>
+          )}
           <div className="hidden md:flex items-center gap-2 text-[11px] mono text-ink-400">
             <span className="relative inline-flex w-1.5 h-1.5 rounded-full bg-[var(--color-phantom)] pulse-dot" />
             <span>{host}</span>

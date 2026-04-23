@@ -48,11 +48,13 @@ mod credential;
 pub(crate) mod db;
 mod error;
 mod exec;
+mod flavors;
 mod jails;
 mod routes;
 mod sampler;
 mod session;
 mod snapshots;
+mod tenant;
 mod workspaces;
 
 use std::path::PathBuf;
@@ -79,6 +81,7 @@ pub use session::{InMemorySessionStore, Session, SessionStore};
 pub use snapshots::{
     InMemorySnapshotStore, SnapshotGcConfig, SnapshotRecord, SnapshotStore, gc as snapshot_gc,
 };
+pub use flavors::{DirFlavorRegistry, Flavor, FlavorRegistry};
 pub use workspaces::{
     ActiveCgroups, ActiveJailIps, InMemoryWorkspaceStore, Workspace, WorkspaceDomain,
     WorkspaceDomainTarget, WorkspaceLocks, WorkspaceSpec, WorkspaceStore,
@@ -275,6 +278,13 @@ impl ControlPlane {
         });
         let workspace_locks  = Arc::new(WorkspaceLocks::new());
         let active_cgroups   = Arc::new(ActiveCgroups::new());
+        // Flavors live under `$state_dir/flavors/` by default. The
+        // directory may not exist — the scanner treats absence as "no
+        // flavors" so fresh installs boot cleanly; operators drop
+        // runtime layers in later without restarting.
+        let flavors: Arc<dyn FlavorRegistry> = Arc::new(
+            crate::flavors::DirFlavorRegistry::new(state_dir.join("flavors"))
+        );
         // Share with the gateway when the caller passed an Arc in —
         // otherwise own a private one. Either way the exec path
         // publishes to the same registry AppState sees.
@@ -300,10 +310,11 @@ impl ControlPlane {
             state_dir,
             snapshot_pool_dir,
             platform: config.platform,
+            flavors,
         };
         Self {
             state,
-            api_keys: ApiKeys::new(config.api_keys),
+            api_keys: ApiKeys::from_config_strings(config.api_keys),
         }
     }
 
@@ -364,6 +375,8 @@ impl ControlPlane {
             .route("/v1/runs/stream", post(routes::create_stream_run))
             .route("/v1/audit", get(routes::list_audit))
             .route("/v1/config", get(routes::get_settings))
+            .route("/v1/whoami", get(routes::whoami))
+            .route("/v1/flavors", get(routes::list_flavors))
             .route("/v1/jails", get(routes::list_jails))
             .route("/v1/jails/:id", get(routes::get_jail))
             .route(

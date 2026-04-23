@@ -21,6 +21,7 @@ use super::exec::{RunRequest, config_snapshot, jail_config, language_runtime};
 
 pub(crate) async fn create_stream_run(
     State(state): State<AppState>,
+    scope: crate::tenant::TenantScope,
     Json(req): Json<RunRequest>,
 ) -> Result<axum::response::sse::Sse<
     futures::stream::BoxStream<
@@ -53,6 +54,7 @@ pub(crate) async fn create_stream_run(
     let config  = jail_config(
         source_dir.path(), output_dir.path(), memory, timeout, run_env, &req.options,
         /* source_rw */ false,
+        Vec::new(),
     )?;
 
     let jail = agentjail::Jail::new(config)?;
@@ -60,7 +62,9 @@ pub(crate) async fn create_stream_run(
     let pid: u32 = handle.pid().as_raw();
 
     let started_guard = state.exec_metrics.clone().start_owned();
-    let stream_rec    = state.jails.start(JailKind::Stream, req.language.clone(), None, None).await;
+    let stream_rec    = state.jails
+        .start(scope.tenant.clone(), JailKind::Stream, req.language.clone(), None, None)
+        .await;
     state.jails.attach_config(
         stream_rec,
         config_snapshot(&req.options, memory, timeout, req.git.as_ref()),

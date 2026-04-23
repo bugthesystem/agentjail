@@ -95,9 +95,10 @@ impl From<agentjail::ForkInfo> for ForkMeta {
 /// row" left rows stuck in `running` forever.
 pub(crate) async fn create_fork_run(
     State(state): State<AppState>,
+    scope: crate::tenant::TenantScope,
     Json(req): Json<ForkRequest>,
 ) -> Result<(StatusCode, Json<ForkResponse>)> {
-    let mut orch = ForkOrch::new(&state);
+    let mut orch = ForkOrch::new(&state, scope.tenant.clone());
     match orch.run(req).await {
         Ok(resp) => Ok(resp),
         Err(e) => {
@@ -125,6 +126,10 @@ struct ForkPlan {
 /// give us a cleanup hook, not to model transitions.
 struct ForkOrch<'s> {
     state: &'s AppState,
+    /// Tenant of the caller — stamped on every jail row this fork
+    /// creates (parent + children) so operator queries see only their
+    /// own runs.
+    tenant: String,
     parent_rec: Option<i64>,
     child_recs: Vec<i64>,
     /// Ids already terminated via `finish` / `error`. Prevents
@@ -133,9 +138,10 @@ struct ForkOrch<'s> {
 }
 
 impl<'s> ForkOrch<'s> {
-    fn new(state: &'s AppState) -> Self {
+    fn new(state: &'s AppState, tenant: String) -> Self {
         Self {
             state,
+            tenant,
             parent_rec: None,
             child_recs: Vec::new(),
             finalized: std::collections::HashSet::new(),
@@ -232,10 +238,12 @@ impl<'s> ForkOrch<'s> {
         let parent_config = jail_config(
             source_dir.path(), parent_out.path(), plan.memory, plan.timeout, run_env.clone(),
             &req.options, /* source_rw */ false,
+            Vec::new(),
         )?;
 
         let parent_jail   = agentjail::Jail::new(parent_config)?;
         let parent_rec    = self.state.jails.start(
+            self.tenant.clone(),
             JailKind::Fork,
             format!("{} · parent", req.language),
             None,
@@ -277,7 +285,9 @@ impl<'s> ForkOrch<'s> {
             } else {
                 format!("{} · child {}", req.language, i)
             };
-            let id = self.state.jails.start(JailKind::Fork, label, None, Some(parent_rec)).await;
+            let id = self.state.jails
+                .start(self.tenant.clone(), JailKind::Fork, label, None, Some(parent_rec))
+                .await;
             self.state.jails.attach_config(id, run_config.clone()).await;
             self.child_recs.push(id);
         }

@@ -39,7 +39,7 @@
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let tokens = Arc::new(InMemoryTokenStore::new());
 //! let keys = Arc::new(InMemoryKeyStore::new());
-//! keys.set(ServiceId::OpenAi, SecretString::new("sk-real"));
+//! keys.set("dev", ServiceId::OpenAi, SecretString::new("sk-real"));
 //!
 //! let proxy = PhantomProxy::builder()
 //!     .provider(Arc::new(OpenAiProvider::new()))?
@@ -50,7 +50,7 @@
 //!
 //! // Issue a phantom token for a session.
 //! let phantom = tokens
-//!     .issue("sess_demo".into(), ServiceId::OpenAi, Scope::any(), None)
+//!     .issue("sess_demo".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
 //!     .await;
 //! println!("OPENAI_API_KEY={}", phantom.to_string());
 //!

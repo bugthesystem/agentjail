@@ -12,8 +12,13 @@ use time::OffsetDateTime;
 
 use crate::error::{CtlError, Result};
 use crate::session::{Session, new_session_id};
+use crate::tenant::TenantScope;
 
 use super::AppState;
+
+fn tenant_filter(scope: &TenantScope) -> Option<String> {
+    if scope.role.is_admin() { None } else { Some(scope.tenant.clone()) }
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateSessionRequest {
@@ -65,6 +70,7 @@ impl From<Session> for SessionView {
 
 pub(crate) async fn create_session(
     State(state): State<AppState>,
+    scope: TenantScope,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<CreateSessionResponse>)> {
     if req.services.is_empty() {
@@ -72,11 +78,19 @@ pub(crate) async fn create_session(
             "services must contain at least one entry".into(),
         ));
     }
-    // Verify every requested service has a real key.
+    // Verify every requested service has a real key configured for
+    // the caller's tenant. Admins fall back to the `"dev"` pool if
+    // their own tenant hasn't set one — the same sentinel the key
+    // store fills from env vars — so a platform-admin using the dev
+    // harness still finds keys without jumping through hoops.
     for svc in &req.services {
-        if state.keys.get(*svc).await.is_none() {
+        let has = state.keys.get(&scope.tenant, *svc).await.is_some()
+            || (scope.role.is_admin()
+                && state.keys.get("dev", *svc).await.is_some());
+        if !has {
             return Err(CtlError::BadRequest(format!(
-                "no credential configured for service {svc}"
+                "no credential configured for service {svc} (tenant {})",
+                scope.tenant,
             )));
         }
     }
@@ -96,15 +110,29 @@ pub(crate) async fn create_session(
 
     let mut env = HashMap::new();
 
+    // Sessions inherit the caller's tenant. Admins issuing a session
+    // don't get to impersonate a different tenant here — they'd use
+    // the admin-scoped credential routes for cross-tenant work.
+    let session_tenant = scope.tenant.clone();
+
     for svc in &req.services {
-        let scope = req
+        let path_scope = req
             .scopes
             .get(svc)
             .map(|paths| Scope {
                 allowed_paths: paths.iter().map(|p| PathGlob::new(p.clone())).collect(),
             })
             .unwrap_or_else(Scope::any);
-        let token = state.tokens.issue(id.clone(), *svc, scope, ttl).await;
+        let token = state.tokens.issue(
+            id.clone(),
+            // Token carries the session's tenant so the phantom
+            // proxy can look up the right (tenant, service) pair
+            // at forward time.
+            session_tenant.clone(),
+            *svc,
+            path_scope,
+            ttl,
+        ).await;
         let token_str = token.to_string();
         match svc {
             ServiceId::OpenAi => {
@@ -140,6 +168,7 @@ pub(crate) async fn create_session(
 
     let session = Session {
         id: id.clone(),
+        tenant_id: scope.tenant.clone(),
         created_at: OffsetDateTime::now_utc(),
         expires_at,
         services: req.services,
@@ -155,11 +184,15 @@ pub(crate) async fn create_session(
     ))
 }
 
-pub(crate) async fn list_sessions(State(state): State<AppState>) -> Json<Vec<SessionView>> {
+pub(crate) async fn list_sessions(
+    State(state): State<AppState>,
+    scope: TenantScope,
+) -> Json<Vec<SessionView>> {
+    let t = tenant_filter(&scope);
     Json(
         state
             .sessions
-            .list()
+            .list(t.as_deref())
             .await
             .into_iter()
             .map(SessionView::from)
@@ -169,12 +202,14 @@ pub(crate) async fn list_sessions(State(state): State<AppState>) -> Json<Vec<Ses
 
 pub(crate) async fn get_session(
     State(state): State<AppState>,
+    scope: TenantScope,
     Path(id): Path<String>,
 ) -> Result<Json<SessionView>> {
     state
         .sessions
         .get(&id)
         .await
+        .filter(|s| scope.can_see(&s.tenant_id))
         .map(SessionView::from)
         .map(Json)
         .ok_or_else(|| CtlError::NotFound(format!("session {id}")))
@@ -182,8 +217,14 @@ pub(crate) async fn get_session(
 
 pub(crate) async fn delete_session(
     State(state): State<AppState>,
+    scope: TenantScope,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
+    // Pre-check ownership; delete-then-discover would leak existence.
+    let existing = state.sessions.get(&id).await;
+    if !existing.as_ref().is_some_and(|s| scope.can_see(&s.tenant_id)) {
+        return Err(CtlError::NotFound(format!("session {id}")));
+    }
     let Some(session) = state.sessions.remove(&id).await else {
         return Err(CtlError::NotFound(format!("session {id}")));
     };

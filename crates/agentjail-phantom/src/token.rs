@@ -134,6 +134,10 @@ impl Scope {
 pub struct TokenRecord {
     /// Session this token belongs to. Opaque to the proxy.
     pub session_id: String,
+    /// Tenant the issuing session belongs to. The proxy looks up the
+    /// real upstream key using this + [`Self::service`], so a token
+    /// issued to tenant A can only spend tenant A's credential.
+    pub tenant_id: String,
     /// Which upstream this token can reach.
     pub service: ServiceId,
     /// What paths within that upstream.
@@ -155,6 +159,7 @@ pub trait TokenStore: Send + Sync + 'static {
     async fn issue(
         &self,
         session_id: String,
+        tenant_id: String,
         service: ServiceId,
         scope: Scope,
         ttl: Option<Duration>,
@@ -192,6 +197,7 @@ impl TokenStore for InMemoryTokenStore {
     async fn issue(
         &self,
         session_id: String,
+        tenant_id: String,
         service: ServiceId,
         scope: Scope,
         ttl: Option<Duration>,
@@ -199,6 +205,7 @@ impl TokenStore for InMemoryTokenStore {
         let token = PhantomToken::generate();
         let record = TokenRecord {
             session_id,
+            tenant_id,
             service,
             scope,
             expires_at: ttl.map(|d| SystemTime::now() + d),
@@ -279,7 +286,7 @@ mod tests {
     async fn issue_and_lookup() {
         let store = InMemoryTokenStore::new();
         let tok = store
-            .issue("sess_1".into(), ServiceId::OpenAi, Scope::any(), None)
+            .issue("sess_1".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
             .await;
         let rec = store.lookup(&tok).await.unwrap();
         assert_eq!(rec.session_id, "sess_1");
@@ -290,7 +297,7 @@ mod tests {
     async fn revoke_removes_token() {
         let store = InMemoryTokenStore::new();
         let tok = store
-            .issue("s".into(), ServiceId::OpenAi, Scope::any(), None)
+            .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
             .await;
         assert!(store.lookup(&tok).await.is_some());
         store.revoke(&tok).await;
@@ -301,13 +308,13 @@ mod tests {
     async fn revoke_session_clears_all_for_session() {
         let store = InMemoryTokenStore::new();
         let a = store
-            .issue("s1".into(), ServiceId::OpenAi, Scope::any(), None)
+            .issue("s1".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
             .await;
         let b = store
-            .issue("s1".into(), ServiceId::Anthropic, Scope::any(), None)
+            .issue("s1".into(), "dev".into(), ServiceId::Anthropic, Scope::any(), None)
             .await;
         let c = store
-            .issue("s2".into(), ServiceId::OpenAi, Scope::any(), None)
+            .issue("s2".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
             .await;
 
         store.revoke_session("s1").await;
@@ -323,6 +330,7 @@ mod tests {
         let tok = store
             .issue(
                 "s".into(),
+                "dev".into(),
                 ServiceId::OpenAi,
                 Scope::any(),
                 Some(Duration::from_millis(1)),

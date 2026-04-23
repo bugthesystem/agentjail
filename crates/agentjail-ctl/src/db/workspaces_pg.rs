@@ -33,6 +33,11 @@ fn row_to_workspace(row: &sqlx::postgres::PgRow) -> Result<Workspace> {
         .unwrap_or_default();
     Ok(Workspace {
         id:            row.get::<String, _>("id"),
+        // `try_get` so the reader still works against a DB that hasn't
+        // run the tenancy migration yet — stale rows default to `"dev"`.
+        tenant_id:     row
+            .try_get::<String, _>("tenant_id")
+            .unwrap_or_else(|_| "dev".to_string()),
         created_at:    row.get::<OffsetDateTime, _>("created_at"),
         deleted_at:    row.get::<Option<OffsetDateTime>, _>("deleted_at"),
         source_dir:    PathBuf::from(row.get::<String, _>("source_dir")),
@@ -49,7 +54,7 @@ fn row_to_workspace(row: &sqlx::postgres::PgRow) -> Result<Workspace> {
 }
 
 const WORKSPACE_COLS: &str =
-    "id, created_at, deleted_at, source_dir, output_dir, config, \
+    "id, tenant_id, created_at, deleted_at, source_dir, output_dir, config, \
      git_repo, git_ref, label, domains, last_exec_at, paused_at, auto_snapshot";
 
 #[async_trait]
@@ -61,11 +66,12 @@ impl WorkspaceStore for PgWorkspaceStore {
             .map_err(|e| CtlError::Internal(format!("workspace.domains encode: {e}")))?;
         let r = sqlx::query(
             "INSERT INTO workspaces
-                (id, created_at, deleted_at, source_dir, output_dir, config,
+                (id, tenant_id, created_at, deleted_at, source_dir, output_dir, config,
                  git_repo, git_ref, label, domains)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&ws.id)
+        .bind(&ws.tenant_id)
         .bind(ws.created_at)
         .bind(ws.deleted_at)
         .bind(ws.source_dir.to_string_lossy().as_ref())
@@ -132,6 +138,7 @@ impl WorkspaceStore for PgWorkspaceStore {
 
     async fn list(
         &self,
+        tenant: Option<&str>,
         limit: usize,
         offset: usize,
         q: Option<&str>,
@@ -140,25 +147,33 @@ impl WorkspaceStore for PgWorkspaceStore {
         let offset_i = offset as i64;
         let needle   = q.map(|s| s.trim()).filter(|s| !s.is_empty());
 
-        // Build the query lazily — one set of SQL when `q` is None, a
-        // widened WHERE with a single bind when `q` is set. Keeps the
-        // fast path simple.
+        // `tenant` IS NULL ⇒ no restriction (admin); otherwise equals.
+        // A single COALESCE-style bind per branch keeps SQL readable
+        // without dynamic query construction.
+        let tenant_filter_sql =
+            if tenant.is_some() { "AND tenant_id = $1" } else { "" };
+
         let (total, rows) = match needle {
             None => {
-                let total: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM workspaces WHERE deleted_at IS NULL",
-                )
-                .fetch_one(&self.pool)
-                .await
-                .unwrap_or(0);
+                let count_sql = format!(
+                    "SELECT COUNT(*) FROM workspaces
+                     WHERE deleted_at IS NULL {tenant_filter_sql}",
+                );
+                let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+                if let Some(t) = tenant { count_q = count_q.bind(t); }
+                let total = count_q.fetch_one(&self.pool).await.unwrap_or(0);
+
+                let (pos_limit, pos_offset) = if tenant.is_some() { ("$2", "$3") } else { ("$1", "$2") };
                 let sql = format!(
                     "SELECT {WORKSPACE_COLS}
                      FROM workspaces
-                     WHERE deleted_at IS NULL
+                     WHERE deleted_at IS NULL {tenant_filter_sql}
                      ORDER BY created_at DESC
-                     LIMIT $1 OFFSET $2",
+                     LIMIT {pos_limit} OFFSET {pos_offset}",
                 );
-                let rows = sqlx::query(&sql)
+                let mut rows_q = sqlx::query(&sql);
+                if let Some(t) = tenant { rows_q = rows_q.bind(t); }
+                let rows = rows_q
                     .bind(limit_i)
                     .bind(offset_i)
                     .fetch_all(&self.pool)
@@ -170,24 +185,29 @@ impl WorkspaceStore for PgWorkspaceStore {
                 // `%needle%` — escape `%` and `_` so users can't
                 // accidentally match everything.
                 let pat = format!("%{}%", n.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
-                let total: i64 = sqlx::query_scalar(
+                let (pat_pos, lim_pos, off_pos) =
+                    if tenant.is_some() { ("$2", "$3", "$4") } else { ("$1", "$2", "$3") };
+                let count_sql = format!(
                     "SELECT COUNT(*) FROM workspaces
-                     WHERE deleted_at IS NULL
-                       AND (id ILIKE $1 ESCAPE '\' OR label ILIKE $1 ESCAPE '\' OR git_repo ILIKE $1 ESCAPE '\')",
-                )
-                .bind(&pat)
-                .fetch_one(&self.pool)
-                .await
-                .unwrap_or(0);
+                     WHERE deleted_at IS NULL {tenant_filter_sql}
+                       AND ({pat_pos} IS NOT NULL
+                            AND (id ILIKE {pat_pos} ESCAPE '\\' OR label ILIKE {pat_pos} ESCAPE '\\' OR git_repo ILIKE {pat_pos} ESCAPE '\\'))",
+                );
+                let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+                if let Some(t) = tenant { count_q = count_q.bind(t); }
+                let total = count_q.bind(&pat).fetch_one(&self.pool).await.unwrap_or(0);
+
                 let sql = format!(
                     "SELECT {WORKSPACE_COLS}
                      FROM workspaces
-                     WHERE deleted_at IS NULL
-                       AND (id ILIKE $1 ESCAPE '\' OR label ILIKE $1 ESCAPE '\' OR git_repo ILIKE $1 ESCAPE '\')
+                     WHERE deleted_at IS NULL {tenant_filter_sql}
+                       AND (id ILIKE {pat_pos} ESCAPE '\\' OR label ILIKE {pat_pos} ESCAPE '\\' OR git_repo ILIKE {pat_pos} ESCAPE '\\')
                      ORDER BY created_at DESC
-                     LIMIT $2 OFFSET $3",
+                     LIMIT {lim_pos} OFFSET {off_pos}",
                 );
-                let rows = sqlx::query(&sql)
+                let mut rows_q = sqlx::query(&sql);
+                if let Some(t) = tenant { rows_q = rows_q.bind(t); }
+                let rows = rows_q
                     .bind(&pat)
                     .bind(limit_i)
                     .bind(offset_i)

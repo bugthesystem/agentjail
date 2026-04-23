@@ -46,6 +46,9 @@ pub enum JailError {
 
     #[error("path does not exist: {0}")]
     PathNotFound(std::path::PathBuf),
+
+    #[error("bad config: {0}")]
+    BadConfig(String),
 }
 
 pub type Result<T> = std::result::Result<T, JailError>;
