@@ -80,7 +80,7 @@ impl std::fmt::Display for PhantomToken {
 
 /// A single path glob, matched against the request path *after* the service
 /// prefix has been stripped. Supports a trailing `*` wildcard.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PathGlob {
     pattern: String,
 }
@@ -107,7 +107,7 @@ impl PathGlob {
 }
 
 /// A scope limits what a token can do with its service.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Scope {
     /// Allowed paths. Empty list = allow any path.
     pub allowed_paths: Vec<PathGlob>,
@@ -238,6 +238,134 @@ impl TokenStore for InMemoryTokenStore {
     }
 }
 
+// ---------- LRU cache wrapper ----------
+
+/// Wrap any [`TokenStore`] in a bounded in-memory LRU cache so the
+/// phantom proxy's hot-path `lookup` doesn't hit Postgres on every
+/// upstream call.
+///
+/// The cache is read-through (miss → delegate → insert) and
+/// write-through (`issue` / `revoke*` go to both). `revoke_session`
+/// invalidates by linear scan; sessions are low cardinality (thousands,
+/// not millions), and session-wide revocation is rare — so the
+/// quadratic-vs-N behaviour is fine.
+///
+/// Eviction is FIFO on capacity. Not strict LRU, but token access is
+/// uniform-random — strict recency doesn't buy much, and keeping the
+/// cache lockless-friendly matters more on the hot path.
+pub struct LruTokenCache<Inner: TokenStore> {
+    inner: Inner,
+    cache: tokio::sync::RwLock<LruInner>,
+    capacity: usize,
+}
+
+struct LruInner {
+    map: HashMap<[u8; 32], TokenRecord>,
+    order: std::collections::VecDeque<[u8; 32]>,
+}
+
+impl LruInner {
+    fn new(capacity: usize) -> Self {
+        Self {
+            map: HashMap::with_capacity(capacity),
+            order: std::collections::VecDeque::with_capacity(capacity),
+        }
+    }
+
+    fn put(&mut self, key: [u8; 32], rec: TokenRecord, capacity: usize) {
+        if self.map.insert(key, rec).is_none() {
+            self.order.push_back(key);
+        }
+        while self.map.len() > capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.map.remove(&evicted);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn remove(&mut self, key: &[u8; 32]) {
+        self.map.remove(key);
+        // Leave the entry in `order` — it'll be a cheap no-op eviction
+        // later. Cleaning here is O(n) and wasteful given how rare
+        // individual revokes are.
+    }
+
+    fn clear_session(&mut self, session_id: &str) {
+        self.map.retain(|_, rec| rec.session_id != session_id);
+    }
+}
+
+impl<Inner: TokenStore> LruTokenCache<Inner> {
+    /// Wrap `inner` with an LRU cache capped at `capacity` entries.
+    /// A cap of 10_000 — ~1 MB memory assuming ~100 B per record — is
+    /// a sensible default for a single-tenant deployment; scale up
+    /// linearly with expected concurrent sessions.
+    #[must_use]
+    pub fn new(inner: Inner, capacity: usize) -> Self {
+        let capacity = capacity.max(1);
+        Self {
+            inner,
+            cache: tokio::sync::RwLock::new(LruInner::new(capacity)),
+            capacity,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<Inner: TokenStore> TokenStore for LruTokenCache<Inner> {
+    async fn issue(
+        &self,
+        session_id: String,
+        tenant_id: String,
+        service: ServiceId,
+        scope: Scope,
+        ttl: Option<Duration>,
+    ) -> PhantomToken {
+        let token = self.inner.issue(
+            session_id.clone(), tenant_id.clone(), service, scope.clone(), ttl,
+        ).await;
+        // Pull the canonical record back through `lookup` so the
+        // cached entry exactly matches what the store would return
+        // (particularly the resolved `expires_at`).
+        if let Some(rec) = self.inner.lookup(&token).await {
+            let mut g = self.cache.write().await;
+            g.put(*token.as_bytes(), rec, self.capacity);
+        }
+        token
+    }
+
+    async fn lookup(&self, token: &PhantomToken) -> Option<TokenRecord> {
+        // Fast path: cache hit.
+        {
+            let g = self.cache.read().await;
+            if let Some(rec) = g.map.get(token.as_bytes()) {
+                return Some(rec.clone());
+            }
+        }
+        // Miss: delegate + populate.
+        let rec = self.inner.lookup(token).await?;
+        {
+            let mut g = self.cache.write().await;
+            g.put(*token.as_bytes(), rec.clone(), self.capacity);
+        }
+        Some(rec)
+    }
+
+    async fn revoke(&self, token: &PhantomToken) {
+        self.inner.revoke(token).await;
+        let mut g = self.cache.write().await;
+        g.remove(token.as_bytes());
+    }
+
+    async fn revoke_session(&self, session_id: &str) {
+        self.inner.revoke_session(session_id).await;
+        let mut g = self.cache.write().await;
+        g.clear_session(session_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +493,77 @@ mod tests {
         };
         assert!(s.allows_path("/v1/chat/completions"));
         assert!(!s.allows_path("/v1/files"));
+    }
+
+    // ---------- LruTokenCache ----------
+
+    #[tokio::test]
+    async fn lru_cache_reads_through_then_hits_cache() {
+        let inner = InMemoryTokenStore::new();
+        let tok = inner
+            .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
+            .await;
+        let wrapped = LruTokenCache::new(inner, 4);
+
+        // First lookup is a miss on the cache — goes to inner, then
+        // populates. Second is a hit. We can't directly observe that
+        // without instrumenting; instead verify both return the same
+        // record (the interesting regression would be "cache returns
+        // stale entry after the inner revoked").
+        let a = wrapped.lookup(&tok).await.unwrap();
+        assert_eq!(a.session_id, "s");
+        let b = wrapped.lookup(&tok).await.unwrap();
+        assert_eq!(b.session_id, "s");
+    }
+
+    #[tokio::test]
+    async fn lru_cache_evicts_when_full() {
+        let inner = InMemoryTokenStore::new();
+        let wrapped = LruTokenCache::new(inner, 2);
+
+        // Mint three tokens — cache holds only two. Oldest gets
+        // evicted; third lookup goes back to the inner store (which
+        // still has it). Correctness check: all three lookups succeed.
+        let t1 = wrapped.issue("s".into(), "dev".into(), ServiceId::OpenAi,    Scope::any(), None).await;
+        let t2 = wrapped.issue("s".into(), "dev".into(), ServiceId::Anthropic, Scope::any(), None).await;
+        let t3 = wrapped.issue("s".into(), "dev".into(), ServiceId::GitHub,    Scope::any(), None).await;
+
+        assert!(wrapped.lookup(&t1).await.is_some());
+        assert!(wrapped.lookup(&t2).await.is_some());
+        assert!(wrapped.lookup(&t3).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn lru_cache_invalidates_on_revoke() {
+        let inner = InMemoryTokenStore::new();
+        let wrapped = LruTokenCache::new(inner, 4);
+        let tok = wrapped
+            .issue("s".into(), "dev".into(), ServiceId::OpenAi, Scope::any(), None)
+            .await;
+
+        assert!(wrapped.lookup(&tok).await.is_some());
+        wrapped.revoke(&tok).await;
+        assert!(wrapped.lookup(&tok).await.is_none(),
+            "cache must not serve revoked tokens");
+    }
+
+    #[tokio::test]
+    async fn lru_cache_invalidates_on_revoke_session() {
+        let inner = InMemoryTokenStore::new();
+        let wrapped = LruTokenCache::new(inner, 4);
+        let a = wrapped.issue("s1".into(), "dev".into(), ServiceId::OpenAi,    Scope::any(), None).await;
+        let b = wrapped.issue("s1".into(), "dev".into(), ServiceId::Anthropic, Scope::any(), None).await;
+        let c = wrapped.issue("s2".into(), "dev".into(), ServiceId::OpenAi,    Scope::any(), None).await;
+
+        // Warm the cache for all three.
+        assert!(wrapped.lookup(&a).await.is_some());
+        assert!(wrapped.lookup(&b).await.is_some());
+        assert!(wrapped.lookup(&c).await.is_some());
+
+        wrapped.revoke_session("s1").await;
+
+        assert!(wrapped.lookup(&a).await.is_none(), "s1/a stale in cache");
+        assert!(wrapped.lookup(&b).await.is_none(), "s1/b stale in cache");
+        assert!(wrapped.lookup(&c).await.is_some(), "s2 shouldn't be touched");
     }
 }

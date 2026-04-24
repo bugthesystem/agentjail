@@ -89,4 +89,6 @@ pub use error::{PhantomError, Result};
 pub use keys::{InMemoryKeyStore, KeyStore, SecretString};
 pub use provider::{Provider, ProviderRegistry, ServiceId};
 pub use proxy::{AuditEntry, AuditSink, NoAudit, PhantomProxy, PhantomProxyBuilder, TracingAudit};
-pub use token::{InMemoryTokenStore, PathGlob, PhantomToken, Scope, TokenRecord, TokenStore};
+pub use token::{
+    InMemoryTokenStore, LruTokenCache, PathGlob, PhantomToken, Scope, TokenRecord, TokenStore,
+};

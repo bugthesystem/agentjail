@@ -11,6 +11,7 @@ name = "agentjail-server"
 path = "src/main.rs"
 
 [dependencies]
+agentjail.workspace = true
 agentjail-phantom.workspace = true
 agentjail-ctl.workspace = true
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }

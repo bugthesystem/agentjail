@@ -86,7 +86,9 @@ impl Stack {
                 "stripe" => (ServiceId::Stripe, "sk_test_real"),
                 _ => continue,
             };
-            keys.set(id, SecretString::new(secret));
+            // Server integration harness runs under the `"dev"`
+            // tenant — the ControlPlane's unauthenticated-default.
+            keys.set("dev", id, SecretString::new(secret));
         }
 
         // 3. Phantom proxy.

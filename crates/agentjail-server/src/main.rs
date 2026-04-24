@@ -51,7 +51,8 @@ use agentjail_phantom::providers::{
     AnthropicProvider, GitHubProvider, OpenAiProvider, StripeProvider,
 };
 use agentjail_phantom::{
-    InMemoryKeyStore, InMemoryTokenStore, PhantomProxy, SecretString, ServiceId,
+    InMemoryKeyStore, InMemoryTokenStore, LruTokenCache, PhantomProxy, SecretString, ServiceId,
+    TokenStore,
 };
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
@@ -68,11 +69,12 @@ async fn main() -> Result<()> {
     agentjail::cleanup_stale_veths();
 
     let config = Config::from_env()?;
-    let stores = Stores::new_from_env();
+    let mut stores = Stores::new_from_env();
 
     // Optional Postgres. When DATABASE_URL is set we hydrate the phantom
-    // key store from persisted credentials and route credential/audit/jail
-    // writes through the DB.
+    // key store from persisted credentials, route credential/audit/jail
+    // writes through the DB, and flip the phantom-token store to a
+    // PG-backed + LRU-cached impl so issued tokens survive restarts.
     let pg = match std::env::var("DATABASE_URL").ok().filter(|s| !s.trim().is_empty()) {
         Some(url) => {
             tracing::info!("connecting to postgres");
@@ -81,6 +83,14 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("connecting to {url}"))?;
             let rehydrated = pg.rehydrate_keys(&stores.keys).await?;
             tracing::info!(%rehydrated, "postgres ready");
+
+            // Durable tokens: DB is source of truth, LRU cache fronts
+            // the proxy's hot-path lookup. Cache size configurable via
+            // `AGENTJAIL_TOKEN_CACHE_SIZE`.
+            let raw  = agentjail_ctl::PgTokenStore::new(pg.pool.clone());
+            let cap  = token_cache_capacity();
+            stores.tokens = Arc::new(LruTokenCache::new(raw, cap));
+            tracing::info!(capacity = cap, "phantom token store: postgres + LRU cache");
             Some(pg)
         }
         None => {
@@ -407,7 +417,11 @@ fn parse_env_u64(var: &str) -> Option<u64> {
 }
 
 struct Stores {
-    tokens: Arc<InMemoryTokenStore>,
+    /// Polymorphic: either the in-memory default (dev / no-DB mode)
+    /// or [`PgTokenStore`] wrapped in [`LruTokenCache`] when a
+    /// database is configured. The proxy's hot-path `lookup` only
+    /// ever sees `dyn TokenStore`, so both shapes plug in identically.
+    tokens: Arc<dyn TokenStore>,
     keys: Arc<InMemoryKeyStore>,
     audit: Arc<InMemoryAuditStore>,
 }
@@ -420,6 +434,8 @@ impl Stores {
         seed_if_set(&keys, ServiceId::GitHub, "GITHUB_TOKEN");
         seed_if_set(&keys, ServiceId::Stripe, "STRIPE_API_KEY");
         Self {
+            // Default is in-memory; `attach_postgres_tokens` swaps it
+            // for a DB-backed + cached store once the pool is ready.
             tokens: Arc::new(InMemoryTokenStore::new()),
             keys,
             audit: Arc::new(InMemoryAuditStore::new()),
@@ -427,11 +443,26 @@ impl Stores {
     }
 }
 
+/// Token-cache capacity. 10k entries ≈ ~1 MB — plenty for a single
+/// agentjail-server handling up to a few thousand concurrent
+/// sessions. Tune via `AGENTJAIL_TOKEN_CACHE_SIZE` if needed.
+fn token_cache_capacity() -> usize {
+    std::env::var("AGENTJAIL_TOKEN_CACHE_SIZE")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(10_000)
+}
+
 fn seed_if_set(keys: &InMemoryKeyStore, service: ServiceId, env_var: &str) {
     if let Ok(v) = std::env::var(env_var)
         && !v.trim().is_empty()
     {
-        keys.set(service, SecretString::new(v));
-        tracing::info!(%service, %env_var, "seeded upstream key from env");
+        // Env-seeded keys land under the `"dev"` tenant — the same
+        // sentinel `KeyStore::from_env()` uses and the control plane
+        // emits when auth is disabled. Per-tenant keys go through
+        // `POST /v1/credentials?tenant=<id>` at runtime.
+        keys.set("dev", service, SecretString::new(v));
+        tracing::info!(%service, %env_var, "seeded upstream key from env (tenant=dev)");
     }
 }

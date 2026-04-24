@@ -9,7 +9,9 @@
 mod audit_pg;
 mod credentials_pg;
 mod jails_pg;
+mod sessions_pg;
 mod snapshots_pg;
+mod tokens_pg;
 mod workspaces_pg;
 
 use sqlx::PgPool;
@@ -19,7 +21,9 @@ use std::time::Duration;
 pub use audit_pg::PgAuditStore;
 pub use credentials_pg::{PgCredentialStore, rehydrate_keystore};
 pub use jails_pg::PgJailStore;
+pub use sessions_pg::{PgSessionStore, sweep_expired_sessions};
 pub use snapshots_pg::PgSnapshotStore;
+pub use tokens_pg::{PgTokenStore, sweep_expired_tokens};
 pub use workspaces_pg::PgWorkspaceStore;
 
 /// Migrations applied at startup, in order. Each file is expected to be
@@ -38,6 +42,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0006_jail_live_stats",      include_str!("../../migrations/0006_jail_live_stats.sql")),
     ("0007_tenant_id",            include_str!("../../migrations/0007_tenant_id.sql")),
     ("0008_credentials_tenant",   include_str!("../../migrations/0008_credentials_tenant.sql")),
+    ("0009_sessions_tokens",      include_str!("../../migrations/0009_sessions_tokens.sql")),
 ];
 
 /// Connect to Postgres + run every embedded migration. Idempotent.

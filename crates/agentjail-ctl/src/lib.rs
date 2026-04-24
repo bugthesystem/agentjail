@@ -70,7 +70,8 @@ use tower_http::trace::TraceLayer;
 
 pub use audit::{AuditRow, AuditStore, AuditStoreSink, InMemoryAuditStore};
 pub use db::{
-    PgAuditStore, PgCredentialStore, PgJailStore, PgSnapshotStore, PgWorkspaceStore,
+    PgAuditStore, PgCredentialStore, PgJailStore, PgSessionStore, PgSnapshotStore,
+    PgTokenStore, PgWorkspaceStore,
 };
 pub use auth::ApiKeys;
 pub use credential::{CredentialRecord, CredentialStore, InMemoryCredentialStore};
@@ -319,18 +320,48 @@ impl ControlPlane {
     }
 
     /// Build with Postgres-backed stores for credentials, audit, jails, and
-    /// workspaces. Sessions stay in-memory because they have TTL-based
-    /// eviction and they're short-lived. Call `Postgres::rehydrate_keys`
-    /// separately before serving traffic if you want to seed the phantom
-    /// key store.
+    /// workspaces. Sessions are now PG-backed too so multi-instance
+    /// deploys share state; in-flight tokens survive control-plane
+    /// restarts. Call `Postgres::rehydrate_keys` separately before
+    /// serving traffic if you want to seed the phantom key store.
+    ///
+    /// Spawns a background sweeper that deletes expired sessions +
+    /// tokens every 60 s. The returned [`ControlPlane`] keeps the
+    /// sweeper alive as long as it's alive; drop it to stop.
     #[must_use]
     pub fn with_postgres(config: ControlPlaneConfig, pg: &Postgres) -> Self {
-        let sessions:    Arc<dyn SessionStore>    = Arc::new(InMemorySessionStore::new());
+        let sessions:    Arc<dyn SessionStore>    = Arc::new(db::PgSessionStore::new(pg.pool.clone()));
         let credentials: Arc<dyn CredentialStore> = Arc::new(db::PgCredentialStore::new(pg.pool.clone()));
         let audit:       Arc<dyn AuditStore>      = Arc::new(db::PgAuditStore::new(pg.pool.clone()));
         let jails:       Arc<dyn JailStore>       = Arc::new(db::PgJailStore::new(pg.pool.clone()));
         let workspaces:  Arc<dyn WorkspaceStore>  = Arc::new(db::PgWorkspaceStore::new(pg.pool.clone()));
         let snapshots:   Arc<dyn SnapshotStore>   = Arc::new(db::PgSnapshotStore::new(pg.pool.clone()));
+
+        // Sweeper: best-effort, fire-and-forget. Failures log; no
+        // retry loop — the next tick handles it. Leaks the handle on
+        // purpose — the control-plane is meant to own it for process
+        // lifetime.
+        let pool = pg.pool.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let sess = db::sweep_expired_sessions(&pool).await;
+                // Session delete cascades into phantom_tokens via FK,
+                // but tokens can have a tighter TTL than their session
+                // so we sweep them directly too.
+                let toks = db::sweep_expired_tokens(&pool).await;
+                if sess > 0 || toks > 0 {
+                    tracing::info!(
+                        sessions_deleted = sess,
+                        tokens_deleted = toks,
+                        "sessions/tokens sweeper"
+                    );
+                }
+            }
+        });
+
         Self::with_all_stores(config, sessions, credentials, audit, jails, workspaces, snapshots)
     }
 

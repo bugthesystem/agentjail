@@ -87,6 +87,7 @@ dependencies = [
 name = "agentjail-server"
 version = "0.1.0"
 dependencies = [
+ "agentjail",
  "agentjail-ctl",
  "agentjail-phantom",
  "anyhow",

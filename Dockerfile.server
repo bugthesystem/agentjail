@@ -23,7 +23,7 @@ FROM debian:bookworm-slim
 # into /usr/local/bin keeps PATH clean.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libseccomp2 \
-    nodejs npm python3 \
+    nodejs npm python3 python3-pip \
     git curl unzip \
   && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local/bun bash \
   && ln -s /usr/local/bun/bin/bun /usr/local/bin/bun \
@@ -35,8 +35,18 @@ WORKDIR /srv
 
 COPY --from=build /src/target/release/agentjail-server /usr/local/bin/agentjail-server
 
+# Seed script: populates $AGENTJAIL_STATE_DIR/flavors/ with the
+# runtimes baked into this image (nodejs, python, bun). Kept separate
+# from the server binary so operators can review what's pre-declared
+# and swap in their own images without patching Rust code.
+COPY scripts/seed-flavors.sh /usr/local/bin/seed-flavors.sh
+RUN chmod +x /usr/local/bin/seed-flavors.sh
+
 ENV CTL_ADDR=0.0.0.0:7000
 ENV PROXY_ADDR=0.0.0.0:8443
 EXPOSE 7000 8443
 
-ENTRYPOINT ["/usr/local/bin/agentjail-server"]
+# Seed first, then exec the server. `exec` hands PID 1 over so signal
+# forwarding (SIGTERM from docker stop → server graceful shutdown)
+# still works correctly.
+ENTRYPOINT ["/bin/sh", "-c", "/usr/local/bin/seed-flavors.sh && exec /usr/local/bin/agentjail-server \"$@\"", "--"]
