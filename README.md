@@ -2,9 +2,9 @@
   <img src="logo.svg" width="100" height="100" alt="agentjail">
 </p>
 
-# agentjail
+<h1 align="center">agentjail</h1>
 
-Minimal Linux sandboxes for running untrusted code.
+<p align="center">Minimal Linux sandboxes for running untrusted code.</p>
 
 ## Why
 
@@ -183,8 +183,10 @@ let handle = jail.spawn("python", &["train.py"])?;
 let (forked, _info) = jail.live_fork(Some(&handle), "/tmp/fork-out")?;
 ```
 
-Snapshot restore strips `S_ISUID`/`S_ISGID` and rejects manifest
-entries with absolute or `..` paths.
+Files are content-addressed by BLAKE3 in a shared object pool;
+unchanged files (same `size + mtime_ns`) skip rehashing and reuse
+the prior blob. Restore strips `S_ISUID`/`S_ISGID` and rejects
+manifest entries with absolute or `..` paths.
 
 ## Threat model
 
